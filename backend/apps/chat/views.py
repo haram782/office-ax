@@ -227,10 +227,12 @@ class ChatMessageCreateView(APIView):
                 dup_has_snippet  = bool(artifact_url)
                 dup_snippet_data = result.get("snippet_data", {})
 
+            # 중복 케이스에서도 dup_upload_log 연결 — id 기반 매칭 보장
             ChatMessage.objects.create(
                 session=session,
                 role=ChatMessage.Role.ASSISTANT,
                 content="\n".join(lines),
+                upload_log=dup_upload_log,
                 artifact_url=artifact_url,
                 has_snippet=dup_has_snippet,
                 snippet_data=dup_snippet_data,

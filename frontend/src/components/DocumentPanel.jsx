@@ -799,10 +799,26 @@ export function useFileItems(messages) {
       .filter(m => m.role === 'user' && m.upload_log?.id)
       .reverse()
       .map(userMsg => {
+        const userUploadId = userMsg.upload_log.id
         const idx = messages.indexOf(userMsg)
-        const assistantMsg = messages.slice(idx + 1).find(m => m.role === 'assistant')
+
+        // 1순위: upload_log.id가 일치하는 assistant 메시지 (백엔드 명시 연결)
+        const linkedMsg = messages.find(
+          m => m.role === 'assistant' && m.upload_log?.id === userUploadId,
+        )
+
+        // 2순위: upload_log가 없는 구형 메시지만 위치 기반 폴백
+        // upload_log가 있는 다른 파일의 결과를 탈취하지 않도록 조건 추가
+        const positionalMsg = !linkedMsg
+          ? messages.slice(idx + 1).find(
+              m => m.role === 'assistant' && !m.upload_log,
+            )
+          : null
+
+        const assistantMsg = linkedMsg ?? positionalMsg
+
         return {
-          id: userMsg.upload_log.id,
+          id: userUploadId,
           filename: userMsg.upload_log.original_filename,
           fileUrl: userMsg.upload_log.file_url || '',
           status: assistantMsg

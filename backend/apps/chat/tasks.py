@@ -94,10 +94,12 @@ def notify_chat_response(chat_message_id: int, result: dict) -> None:
             ],
         }
 
+    # upload_log를 assistant 메시지에도 연결 — 프론트엔드가 id 기반 매칭을 할 수 있도록
     ChatMessage.objects.create(
         session=user_message.session,
         role=ChatMessage.Role.ASSISTANT,
         content="\n".join(lines),
+        upload_log=user_message.upload_log,
         artifact_url=artifact_url,
         has_snippet=has_snippet,
         snippet_data=snippet_data,
