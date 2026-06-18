@@ -1,4 +1,5 @@
 import { useMemo, useRef, useCallback, useState, useEffect } from 'react'
+import { resolveAssistantMsg } from '../utils/fileItemsUtils'
 import initRhwp, { HwpDocument } from '@rhwp/core'
 // ?url — Vite가 해당 파일을 asset으로 복사하고 실제 경로(해시 포함)를 반환
 // node_modules 번들링 시 import.meta.url 기반 경로가 깨지는 문제를 우회
@@ -799,26 +800,10 @@ export function useFileItems(messages) {
       .filter(m => m.role === 'user' && m.upload_log?.id)
       .reverse()
       .map(userMsg => {
-        const userUploadId = userMsg.upload_log.id
-        const idx = messages.indexOf(userMsg)
-
-        // 1순위: upload_log.id가 일치하는 assistant 메시지 (백엔드 명시 연결)
-        const linkedMsg = messages.find(
-          m => m.role === 'assistant' && m.upload_log?.id === userUploadId,
-        )
-
-        // 2순위: upload_log가 없는 구형 메시지만 위치 기반 폴백
-        // upload_log가 있는 다른 파일의 결과를 탈취하지 않도록 조건 추가
-        const positionalMsg = !linkedMsg
-          ? messages.slice(idx + 1).find(
-              m => m.role === 'assistant' && !m.upload_log,
-            )
-          : null
-
-        const assistantMsg = linkedMsg ?? positionalMsg
-
+        // 매칭 로직은 순수 함수로 추출 → fileItemsUtils.js 에서 단독 테스트 가능
+        const assistantMsg = resolveAssistantMsg(messages, userMsg)
         return {
-          id: userUploadId,
+          id: userMsg.upload_log.id,
           filename: userMsg.upload_log.original_filename,
           fileUrl: userMsg.upload_log.file_url || '',
           status: assistantMsg
