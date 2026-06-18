@@ -1,4 +1,5 @@
 import { useMemo, useRef, useCallback, useState, useEffect } from 'react'
+import { resolveAssistantMsg } from '../utils/fileItemsUtils'
 import initRhwp, { HwpDocument } from '@rhwp/core'
 // ?url — Vite가 해당 파일을 asset으로 복사하고 실제 경로(해시 포함)를 반환
 // node_modules 번들링 시 import.meta.url 기반 경로가 깨지는 문제를 우회
@@ -799,8 +800,8 @@ export function useFileItems(messages) {
       .filter(m => m.role === 'user' && m.upload_log?.id)
       .reverse()
       .map(userMsg => {
-        const idx = messages.indexOf(userMsg)
-        const assistantMsg = messages.slice(idx + 1).find(m => m.role === 'assistant')
+        // 매칭 로직은 순수 함수로 추출 → fileItemsUtils.js 에서 단독 테스트 가능
+        const assistantMsg = resolveAssistantMsg(messages, userMsg)
         return {
           id: userMsg.upload_log.id,
           filename: userMsg.upload_log.original_filename,

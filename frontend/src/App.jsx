@@ -152,8 +152,9 @@ export default function App() {
         )}
 
         {/* ── 2열: 문서 뷰어 — viewingFileId 있을 때만 렌더 ── */}
+        {/* key=viewingFileId: 파일 전환 시 뷰어를 강제 remount → viewer-local state 초기화 */}
         {showViewer && previewData && (
-          <div className="hidden lg:flex flex-[11] min-w-0 flex-col border-r border-gray-200">
+          <div key={viewingFileId} className="hidden lg:flex flex-[11] min-w-0 flex-col border-r border-gray-200">
             <DocViewer
               previewData={previewData}
               onClose={handleCloseViewer}
@@ -161,24 +162,43 @@ export default function App() {
           </div>
         )}
 
-        {/* ── 3열: AI 채팅 ── */}
-        <div className={`flex-1 ${showViewer ? 'lg:flex-[9]' : ''} min-w-0 flex flex-col overflow-hidden bg-gray-50/30`}>
+        {/* ── 3열: AI 채팅 (모바일 오버레이 앵커 포함) ── */}
+        <div className={`flex-1 ${showViewer ? 'lg:flex-[9]' : ''} relative min-w-0 flex flex-col overflow-hidden bg-gray-50/30`}>
 
-          {/* 파일 있고 뷰어 닫혔을 때 — 모바일에서 간단한 파일 리스트 토글 */}
-          {hasFiles && !showViewer && fileItems.length > 0 && (
+          {/* 파일 칩 바 — 모바일에서 항상 표시 (showViewer 무관)
+              데스크탑에서는 사이드바가 대신하므로 lg:hidden 유지 */}
+          {hasFiles && (
             <div className="flex-shrink-0 lg:hidden border-b border-gray-200 bg-white">
               <div className="px-4 py-2 flex gap-1.5 overflow-x-auto">
                 {fileItems.map(f => (
                   <button
                     key={f.id}
                     onClick={() => handleFileView(f.id)}
-                    className="flex-shrink-0 flex items-center gap-1 text-xs bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 hover:border-blue-300 transition-colors"
+                    className={`flex-shrink-0 flex items-center gap-1 text-xs border rounded-lg px-2.5 py-1.5 transition-colors
+                      ${f.id === viewingFileId
+                        ? 'bg-blue-50 border-blue-400 text-blue-700'
+                        : 'bg-white border-gray-200 hover:border-blue-300 text-gray-700'
+                      }`}
                   >
                     <span>{f.filename.endsWith('.xlsx') ? '📊' : '📄'}</span>
-                    <span className="max-w-[100px] truncate text-gray-700">{f.filename}</span>
+                    <span className="max-w-[100px] truncate">{f.filename}</span>
                   </button>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* 모바일 전용 문서 뷰어 오버레이 — 파일 선택 시 전체화면으로 표시
+              key=viewingFileId: 파일 전환 시 remount → viewer-local state 초기화 */}
+          {showViewer && previewData && (
+            <div
+              key={viewingFileId}
+              className="absolute inset-0 z-40 flex flex-col bg-white lg:hidden"
+            >
+              <DocViewer
+                previewData={previewData}
+                onClose={handleCloseViewer}
+              />
             </div>
           )}
 
