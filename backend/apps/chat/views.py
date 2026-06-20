@@ -16,6 +16,8 @@ from rest_framework.views import APIView
 
 from apps.documents.models import FileStructure, UploadLog, compute_file_structure_hash, pdf_structure_hash
 from apps.documents.utils import compute_sha256, extract_excel_columns, extract_csv_columns, generic_structure_hash
+from apps.documents.pptx_render import render_one_slide
+from .change_highlights import corrections_to_change_highlights, patches_to_change_highlights
 from .models import ChatSession, ChatMessage, UserActionLog
 from .serializers import (
     ChatMessageCreateSerializer,
@@ -23,6 +25,12 @@ from .serializers import (
     ChatSessionCreateSerializer,
     ChatSessionSerializer,
 )
+
+# python-pptx 선택적 의존: 미설치 시 PptxPatchView가 500 응답을 반환한다
+try:
+    from pptx import Presentation
+except ImportError:
+    Presentation = None  # type: ignore[assignment, misc]
 
 logger = logging.getLogger(__name__)
 
@@ -209,30 +217,41 @@ class ChatMessageCreateView(APIView):
                 lines.extend(f"• {e}" for e in errors[:5])
 
             # 파일 타입별 snippet_data 구성
-            dup_source_type   = result.get("source_type", "")
-            dup_slide_urls    = result.get("slide_urls", [])
+            dup_source_type    = result.get("source_type", "")
+            dup_slide_urls     = result.get("slide_urls", [])
             dup_docx_page_urls = result.get("docx_page_urls", [])
             if dup_source_type == "pptx":
                 dup_has_snippet  = bool(dup_slide_urls)
                 dup_snippet_data = {
-                    "type":             "pptx_preview",
-                    "upload_log_id":    dup_upload_log.pk,
-                    "slide_urls":       dup_slide_urls,
-                    "slide_count":      len(dup_slide_urls),
-                    "pptx_structured":  result.get("pptx_structured", []),
-                    "render_available": bool(dup_slide_urls),
+                    "type":              "pptx_preview",
+                    "upload_log_id":     dup_upload_log.pk,
+                    "slide_urls":        dup_slide_urls,
+                    "slide_count":       len(dup_slide_urls),
+                    "pptx_structured":   result.get("pptx_structured", []),
+                    "render_available":  bool(dup_slide_urls),
+                    # 원본 결과의 change_highlights 전달 (없으면 빈 리스트)
+                    "change_highlights": result.get("change_highlights", []),
                 }
             elif dup_source_type == "docx":
                 dup_has_snippet  = bool(dup_docx_page_urls)
                 dup_snippet_data = {
-                    "type":             "docx_pages",
-                    "page_urls":        dup_docx_page_urls,
-                    "page_count":       len(dup_docx_page_urls),
-                    "render_available": bool(dup_docx_page_urls),
+                    "type":              "docx_pages",
+                    "page_urls":         dup_docx_page_urls,
+                    "page_count":        len(dup_docx_page_urls),
+                    "render_available":  bool(dup_docx_page_urls),
+                    "change_highlights": result.get("change_highlights", []),
                 }
             else:
                 dup_has_snippet  = bool(artifact_url)
-                dup_snippet_data = result.get("snippet_data", {})
+                dup_snippet_data = dict(result.get("snippet_data") or {})
+                # change_highlights: 이미 있으면 유지, 없으면 corrections에서 파생
+                if "change_highlights" not in dup_snippet_data:
+                    fmt = "csv" if dup_source_type == "csv" else "xlsx"
+                    dup_snippet_data["change_highlights"] = corrections_to_change_highlights(
+                        dup_snippet_data.get("corrections", []),
+                        upload_log_id=dup_upload_log.pk,
+                        fmt=fmt,
+                    )
 
             # 중복 케이스에서도 dup_upload_log 연결 — id 기반 매칭 보장
             ChatMessage.objects.create(
@@ -382,10 +401,7 @@ class PptxPatchView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        from pathlib import Path as Pth
         import time
-        from apps.documents.models import UploadLog
-        from apps.documents.pptx_render import render_one_slide
 
         upload_log_id = request.data.get("upload_log_id")
         patches       = request.data.get("patches", [])
@@ -407,18 +423,18 @@ class PptxPatchView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        abs_path = Pth(str(settings.MEDIA_ROOT)) / upload_log.file.name
-
-        try:
-            from pptx import Presentation
-        except ImportError:
+        if Presentation is None:
             return Response(
                 {"error": "python-pptx 미설치 — pip install python-pptx"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
+        abs_path = Path(str(settings.MEDIA_ROOT)) / upload_log.file.name
         prs = Presentation(str(abs_path))
+
         affected_slides: set[int] = set()
+        # 실제 적용된 패치: 원본 텍스트(_original) 포함해 저장
+        applied_patches: list[dict] = []
 
         for patch in patches:
             slide_idx  = int(patch.get("slide_index", 0))
@@ -433,17 +449,22 @@ class PptxPatchView(APIView):
                 continue
             shape = slide.shapes[shape_idx]
 
+            original_text = ""
+            applied = False
+
             if patch_type == "text" and shape.has_text_frame:
                 tf = shape.text_frame
                 # 첫 번째 단락 텍스트 교체 (서식 일부 보존)
                 if tf.paragraphs:
                     para = tf.paragraphs[0]
+                    original_text = para.text  # 변경 전 텍스트 캡처
                     for run in para.runs:
                         run.text = ""
                     if para.runs:
                         para.runs[0].text = new_text
                     else:
                         para.text = new_text
+                    applied = True
                 affected_slides.add(slide_idx)
 
             elif patch_type == "table_cell" and shape.has_table:
@@ -453,8 +474,13 @@ class PptxPatchView(APIView):
                 if row_idx < len(tbl.rows) and col_idx < len(tbl.rows[row_idx].cells):
                     cell_tf = tbl.rows[row_idx].cells[col_idx].text_frame
                     if cell_tf.paragraphs:
+                        original_text = cell_tf.paragraphs[0].text  # 변경 전 텍스트 캡처
                         cell_tf.paragraphs[0].text = new_text
+                        applied = True
                 affected_slides.add(slide_idx)
+
+            if applied:
+                applied_patches.append({**patch, "_original": original_text})
 
         # 수정된 PPTX 덮어쓰기
         prs.save(str(abs_path))
@@ -472,7 +498,14 @@ class PptxPatchView(APIView):
                 render_errors.append(f"슬라이드 {slide_idx}: {e}")
                 logger.warning("슬라이드 재렌더링 실패 | slide=%s | err=%s", slide_idx, e)
 
-        response_data: dict = {"updated_slides": updated_slides, "version": v}
+        # 적용된 패치를 change_highlights 계약으로 변환
+        change_highlights = patches_to_change_highlights(applied_patches, upload_log.pk)
+
+        response_data: dict = {
+            "updated_slides":   updated_slides,
+            "version":          v,
+            "change_highlights": change_highlights,
+        }
         if render_errors:
             response_data["render_errors"] = render_errors
 

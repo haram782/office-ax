@@ -2,6 +2,7 @@ from celery import shared_task
 from celery.utils.log import get_task_logger
 
 from apps.documents.models import UploadLog
+from .change_highlights import corrections_to_change_highlights
 
 logger = get_task_logger(__name__)
 
@@ -64,6 +65,8 @@ def notify_chat_response(chat_message_id: int, result: dict) -> None:
             "pptx_structured":  result.get("pptx_structured", []),
             # slide_urls 가 비어있으면 LibreOffice 미설치 상태
             "render_available": bool(slide_urls),
+            # AX Engine이 제공하는 변경 영역 메타데이터 (없으면 빈 리스트)
+            "change_highlights": result.get("change_highlights", []),
         }
     elif source_type == "docx":
         # DOCX: LibreOffice+pdftoppm로 생성한 페이지별 PNG URL 배열
@@ -73,26 +76,42 @@ def notify_chat_response(chat_message_id: int, result: dict) -> None:
             "page_urls":        docx_page_urls,
             "page_count":       len(docx_page_urls),
             "render_available": bool(docx_page_urls),
+            # AX Engine이 제공하는 변경 영역 메타데이터
+            "change_highlights": result.get("change_highlights", []),
         }
     elif artifact_url:
         # Excel / CSV / 기타: artifact + 교정 스니펫
         has_snippet  = True
-        snippet_data = result.get("snippet_data") or {
-            "type":         "excel_preview",
-            "upload_log_id": user_message.upload_log_id,
-            "headers":      ["날짜", "품목", "수량", "단가", "합계"],
-            "preview_rows": [
-                ["2024-01-03", "사무용품A", 10, 15000, 150000],
-                ["2024-01-10", "사무용품B", 5,  3200,  16000],
-                ["2024-01-15", "사무용품C", 8,  7500,  60000],
-            ],
-            "corrections": [
-                {"cell": "D12", "original": "-15,000", "corrected": "15,000"},
-                {"cell": "D27", "original": "-3,200",  "corrected": "3,200"},
-                {"cell": "D31", "original": "-500",    "corrected": "500"},
-                {"cell": "B34", "original": "#REF!",   "corrected": "=SUM(E2:E33)"},
-            ],
-        }
+        snippet_data = dict(
+            result.get("snippet_data") or {
+                "type":         "excel_preview",
+                "upload_log_id": user_message.upload_log_id,
+                "headers":      ["날짜", "품목", "수량", "단가", "합계"],
+                "preview_rows": [
+                    ["2024-01-03", "사무용품A", 10, 15000, 150000],
+                    ["2024-01-10", "사무용품B", 5,  3200,  16000],
+                    ["2024-01-15", "사무용품C", 8,  7500,  60000],
+                ],
+                "corrections": [
+                    {"cell": "D12", "original": "-15,000", "corrected": "15,000"},
+                    {"cell": "D27", "original": "-3,200",  "corrected": "3,200"},
+                    {"cell": "D31", "original": "-500",    "corrected": "500"},
+                    {"cell": "B34", "original": "#REF!",   "corrected": "=SUM(E2:E33)"},
+                ],
+            }
+        )
+        # change_highlights: 이미 있으면 유지, 없으면 corrections에서 파생
+        if "change_highlights" not in snippet_data:
+            top_highlights = result.get("change_highlights")
+            if top_highlights:
+                snippet_data["change_highlights"] = top_highlights
+            else:
+                fmt = "csv" if source_type == "csv" else "xlsx"
+                snippet_data["change_highlights"] = corrections_to_change_highlights(
+                    snippet_data.get("corrections", []),
+                    upload_log_id=user_message.upload_log_id,
+                    fmt=fmt,
+                )
 
     # upload_log를 assistant 메시지에도 연결 — 프론트엔드가 id 기반 매칭을 할 수 있도록
     ChatMessage.objects.create(
