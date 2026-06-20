@@ -178,6 +178,96 @@ class DuplicateUploadAssistantBindingTest(TestCase):
             "duplicate 경로: assistant.upload_log_id가 새 dup_upload_log.id와 일치해야 함",
         )
 
+    def _post_duplicate(self, result_override):
+        """result_override로 existing_log.result를 교체하고 duplicate 업로드를 시뮬레이션."""
+        from rest_framework.test import APIClient
+
+        self.existing_log.result = result_override
+        self.existing_log.save(update_fields=["result"])
+
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+
+        with patch("apps.chat.views.compute_sha256", return_value="sha256same"), \
+             patch("apps.chat.views.default_storage.save", return_value="uploads/dup.xlsx"), \
+             patch("apps.chat.views.default_storage.delete"), \
+             patch("apps.chat.views.os.path.join", return_value="/tmp/dup.xlsx"), \
+             patch("apps.chat.views.extract_excel_columns", return_value=[]):
+
+            file_data = SimpleUploadedFile("dup.xlsx", b"fake", content_type="application/vnd.ms-excel")
+            response = client.post(
+                f"/api/v1/chat/sessions/{self.session.pk}/messages/send/",
+                {"file": file_data},
+                format="multipart",
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.data["status"], "duplicate")
+        return ChatMessage.objects.filter(
+            session=self.session, role=ChatMessage.Role.ASSISTANT
+        ).order_by("-pk").first()
+
+    def test_duplicate_excel_top_level_change_highlights_preserved(self):
+        """
+        result에 top-level change_highlights가 있고 snippet_data에는 없는 경우,
+        duplicate 경로가 top-level 값을 우선 보존해야 한다 (notify_chat_response와 동일 정책).
+        """
+        top_highlights = [{"id": "hl-0", "kind": "correction", "cell": "A1", "source": "analysis"}]
+        result = {
+            "summary": "기존 결과",
+            "source_type": "excel",
+            "artifact_url": "/media/original.xlsx",
+            # top-level change_highlights 존재, snippet_data에는 없음
+            "change_highlights": top_highlights,
+            "snippet_data": {
+                "type": "excel_preview",
+                "headers": [],
+                "preview_rows": [],
+                "corrections": [{"cell": "B2", "original": "0", "corrected": "1"}],
+                # change_highlights 키 없음
+            },
+        }
+
+        assistant = self._post_duplicate(result)
+
+        self.assertIsNotNone(assistant)
+        highlights = assistant.snippet_data.get("change_highlights", "MISSING")
+        self.assertNotEqual(highlights, "MISSING", "change_highlights 키가 snippet_data에 있어야 함")
+        self.assertEqual(
+            highlights,
+            top_highlights,
+            "top-level result.change_highlights가 snippet_data.corrections 파생보다 우선해야 함",
+        )
+
+    def test_duplicate_excel_falls_back_to_corrections_when_no_top_level(self):
+        """
+        result에 top-level change_highlights가 없고 snippet_data에도 없는 경우,
+        corrections에서 자동 파생되어야 한다.
+        """
+        corrections = [
+            {"cell": "C3", "original": "-500", "corrected": "500"},
+        ]
+        result = {
+            "summary": "기존 결과",
+            "source_type": "excel",
+            "artifact_url": "/media/original.xlsx",
+            # top-level change_highlights 없음
+            "snippet_data": {
+                "type": "excel_preview",
+                "headers": [],
+                "preview_rows": [],
+                "corrections": corrections,
+            },
+        }
+
+        assistant = self._post_duplicate(result)
+
+        self.assertIsNotNone(assistant)
+        highlights = assistant.snippet_data.get("change_highlights", [])
+        self.assertEqual(len(highlights), 1, "corrections 1건이 highlights 1건으로 파생되어야 함")
+        self.assertEqual(highlights[0]["cell"], "C3")
+        self.assertEqual(highlights[0]["kind"], "correction")
+
 
 # ── 3. UploadLogSerializer: file_hash 노출 검증 ─────────────────────────────────
 

@@ -244,14 +244,20 @@ class ChatMessageCreateView(APIView):
             else:
                 dup_has_snippet  = bool(artifact_url)
                 dup_snippet_data = dict(result.get("snippet_data") or {})
-                # change_highlights: 이미 있으면 유지, 없으면 corrections에서 파생
+                # change_highlights: snippet_data에 이미 있으면 유지,
+                # 없으면 top-level result.change_highlights 우선 보존,
+                # 그것도 없으면 corrections에서 파생 — notify_chat_response와 동일 정책
                 if "change_highlights" not in dup_snippet_data:
-                    fmt = "csv" if dup_source_type == "csv" else "xlsx"
-                    dup_snippet_data["change_highlights"] = corrections_to_change_highlights(
-                        dup_snippet_data.get("corrections", []),
-                        upload_log_id=dup_upload_log.pk,
-                        fmt=fmt,
-                    )
+                    top_highlights = result.get("change_highlights")
+                    if top_highlights:
+                        dup_snippet_data["change_highlights"] = top_highlights
+                    else:
+                        fmt = "csv" if dup_source_type == "csv" else "xlsx"
+                        dup_snippet_data["change_highlights"] = corrections_to_change_highlights(
+                            dup_snippet_data.get("corrections", []),
+                            upload_log_id=dup_upload_log.pk,
+                            fmt=fmt,
+                        )
 
             # 중복 케이스에서도 dup_upload_log 연결 — id 기반 매칭 보장
             ChatMessage.objects.create(
