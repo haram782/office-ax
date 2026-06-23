@@ -6,8 +6,9 @@ class UploadLogSerializer(serializers.ModelSerializer):
     file_url = serializers.SerializerMethodField()
 
     def get_file_url(self, obj) -> str:
-        if obj.file:
-            return obj.file.url  # /media/uploads/...
+        # 파일 필드가 있고 실제 디스크에 존재하는 경우만 URL 반환
+        if obj.file and obj.file.storage.exists(obj.file.name):
+            return obj.file.url
         return ""
 
     class Meta:

@@ -174,8 +174,16 @@ class ChatMessageCreateView(APIView):
         ).first()
 
         if existing_log and existing_log.result:
-            # 중복 파일 → 새 저장 파일 제거, 기존 결과 즉시 반환
-            default_storage.delete(saved_rel)
+            # 기존 파일이 디스크에 있으면 새 파일 제거 후 재사용, 없으면 새 파일 유지
+            existing_file_ok = (
+                existing_log.file
+                and existing_log.file.storage.exists(existing_log.file.name)
+            )
+            if existing_file_ok:
+                default_storage.delete(saved_rel)
+                file_ref = existing_log.file.name
+            else:
+                file_ref = saved_rel
 
             dup_upload_log = UploadLog.objects.create(
                 user=request.user,
@@ -184,8 +192,7 @@ class ChatMessageCreateView(APIView):
                 status=UploadLog.Status.DONE,
                 file_hash=sha256,
                 result=existing_log.result,
-                # 기존 파일 레퍼런스 재사용 (미리보기용)
-                file=existing_log.file.name if existing_log.file else None,
+                file=file_ref,
             )
 
             user_message.upload_log = dup_upload_log
