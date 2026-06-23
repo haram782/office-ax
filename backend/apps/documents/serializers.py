@@ -21,6 +21,7 @@ class UploadLogSerializer(serializers.ModelSerializer):
             "ax_task_id",
             "result",
             "file_url",
+            "file_hash",
         ]
         read_only_fields = fields
 

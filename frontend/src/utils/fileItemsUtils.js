@@ -48,12 +48,19 @@ export function resolveAssistantMsg(messages, userMsg) {
  * @returns {Array}
  */
 export function deriveFileItems(messages) {
+  // file_hash 기준 중복 제거 — 최신 업로드(reverse 후 첫 번째)만 유지
+  const seenHashes = new Set()
+
   return messages
     .filter(m => m.role === 'user' && m.upload_log?.id)
     .reverse()
-    .map(userMsg => {
+    .reduce((acc, userMsg) => {
+      const hash = userMsg.upload_log.file_hash
+      if (hash && seenHashes.has(hash)) return acc
+      if (hash) seenHashes.add(hash)
+
       const assistantMsg = resolveAssistantMsg(messages, userMsg)
-      return {
+      acc.push({
         id: userMsg.upload_log.id,
         filename: userMsg.upload_log.original_filename,
         fileUrl: userMsg.upload_log.file_url || '',
@@ -62,6 +69,7 @@ export function deriveFileItems(messages) {
           : (userMsg._pending ? 'processing' : (userMsg.upload_log.status ?? 'processing')),
         artifactUrl: assistantMsg?.artifact_url || '',
         snippetData: assistantMsg?.snippet_data || null,
-      }
-    })
+      })
+      return acc
+    }, [])
 }

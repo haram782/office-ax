@@ -174,3 +174,22 @@ class DuplicateUploadAssistantBindingTest(TestCase):
             dup_log.pk,
             "duplicate 경로: assistant.upload_log_id가 새 dup_upload_log.id와 일치해야 함",
         )
+
+
+# ── 3. UploadLogSerializer: file_hash 노출 검증 ─────────────────────────────────
+
+class UploadLogSerializerFileHashTest(TestCase):
+    """
+    UploadLogSerializer가 file_hash 필드를 직렬화 결과에 포함하는지 검증.
+    프론트엔드가 file_hash 기준으로 중복 파일을 필터링하기 위해 필요하다.
+    """
+
+    def test_file_hash_in_serialized_output(self):
+        user = _make_user(username="hash_tester")
+        log = _make_upload_log(user)
+
+        from apps.documents.serializers import UploadLogSerializer
+        data = UploadLogSerializer(log).data
+
+        self.assertIn("file_hash", data, "UploadLogSerializer 결과에 file_hash가 포함되어야 함")
+        self.assertEqual(data["file_hash"], "deadbeef")
