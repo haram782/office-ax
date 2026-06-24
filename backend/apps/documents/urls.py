@@ -1,6 +1,8 @@
 from django.urls import path
 from .views import (
+    DashboardStatsView,
     DocumentUploadView,
+    EmailInboxView,
     InboundEmailWebhookView,
     UploadListView,
     UploadResultView,
@@ -16,4 +18,6 @@ urlpatterns = [
     path("workflows/<int:pk>/activate/", WorkflowActivateView.as_view(), name="workflow-activate"),
     # SendGrid Inbound Parse 웹훅 — 인증 없이 수신, 내부 시크릿+DB로 검증
     path("inbound-email/", InboundEmailWebhookView.as_view(), name="inbound-email"),
+    path("email-inbox/", EmailInboxView.as_view(), name="email-inbox"),
+    path("dashboard/stats/", DashboardStatsView.as_view(), name="dashboard-stats"),
 ]

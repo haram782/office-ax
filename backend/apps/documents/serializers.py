@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import UploadLog, IngestionWorkflow
+from .models import InboundEmail, UploadLog, IngestionWorkflow
 
 
 class UploadLogSerializer(serializers.ModelSerializer):
@@ -22,6 +22,20 @@ class UploadLogSerializer(serializers.ModelSerializer):
             "result",
             "file_url",
             "file_hash",
+        ]
+        read_only_fields = fields
+
+
+class InboundEmailSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = InboundEmail
+        fields = [
+            "id",
+            "sender",
+            "subject",
+            "attachment_filename",
+            "received_at",
+            "status",
         ]
         read_only_fields = fields
 

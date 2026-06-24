@@ -23,6 +23,8 @@ INSTALLED_APPS = [
     "drf_spectacular",
     "apps.documents",
     "apps.chat",
+    "apps.pipelines",
+    "apps.rag",
 ]
 
 MIDDLEWARE = [

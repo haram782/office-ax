@@ -97,6 +97,56 @@ class UploadLog(models.Model):
         return f"{self.user} | {self.original_filename} | {self.status}"
 
 
+class InboundEmail(models.Model):
+    """
+    인바운드 이메일 수신 이력.
+    InboundEmailWebhookView가 SendGrid 웹훅을 처리할 때 자동 생성된다.
+    이메일 인박스 화면에서 수신 내역을 조회하는 원천 데이터다.
+    """
+
+    class Status(models.TextChoices):
+        RECEIVED   = "received",   "수신"
+        PROCESSING = "processing", "처리 중"
+        DONE       = "done",       "완료"
+        FAILED     = "failed",     "실패"
+
+    # 수신 이메일과 연결된 자동화 워크플로우 (비활성화되거나 삭제되어도 이력은 보존)
+    workflow   = models.ForeignKey(
+        "IngestionWorkflow",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="inbound_emails",
+    )
+    # IngestionWorkflow 삭제 이후에도 소유자 식별을 위해 직접 FK 보관
+    user       = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name="inbound_emails"
+    )
+    sender     = models.EmailField(blank=True)
+    subject    = models.CharField(max_length=500, blank=True)
+    # 첨부파일이 여러 개일 수 있으므로 처리된 첫 번째 파일명을 대표로 저장
+    attachment_filename = models.CharField(max_length=255, blank=True)
+    # 연결된 UploadLog (첨부파일 처리 결과)
+    upload_log = models.ForeignKey(
+        "UploadLog",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="inbound_email_records",
+    )
+    received_at = models.DateTimeField(auto_now_add=True)
+    status      = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.RECEIVED
+    )
+
+    class Meta:
+        verbose_name = "수신 이메일"
+        ordering = ["-received_at"]
+
+    def __str__(self) -> str:
+        return f"{self.sender} → {self.subject[:30]} | {self.status}"
+
+
 class IngestionWorkflow(models.Model):
     """
     자동화 파이프라인 프로필.

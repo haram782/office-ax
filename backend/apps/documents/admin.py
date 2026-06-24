@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import FileStructure, IngestionWorkflow, UploadLog
+from .models import FileStructure, InboundEmail, IngestionWorkflow, UploadLog
 
 
 @admin.register(UploadLog)
@@ -26,6 +26,18 @@ class FileStructureAdmin(admin.ModelAdmin):
     @admin.display(description="해시 (앞 12자)")
     def hash_short(self, obj):
         return obj.hash[:12] + "…"
+
+
+@admin.register(InboundEmail)
+class InboundEmailAdmin(admin.ModelAdmin):
+    list_display  = ["id", "user", "sender", "subject_short", "attachment_filename", "status", "received_at"]
+    list_filter   = ["status"]
+    search_fields = ["sender", "subject", "user__username"]
+    readonly_fields = ["received_at"]
+
+    @admin.display(description="제목 (앞 40자)")
+    def subject_short(self, obj):
+        return (obj.subject[:40] + "…") if len(obj.subject) > 40 else obj.subject
 
 
 @admin.register(IngestionWorkflow)

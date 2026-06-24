@@ -15,8 +15,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import FileStructure, IngestionWorkflow, UploadLog, compute_file_structure_hash, pdf_structure_hash
-from .serializers import IngestionWorkflowSerializer, UploadLogSerializer, WorkflowActivateSerializer
+from .models import FileStructure, InboundEmail, IngestionWorkflow, UploadLog, compute_file_structure_hash, pdf_structure_hash
+from .serializers import InboundEmailSerializer, IngestionWorkflowSerializer, UploadLogSerializer, WorkflowActivateSerializer
 from .utils import extract_excel_columns, save_temp_file
 
 logger = logging.getLogger(__name__)
@@ -205,6 +205,9 @@ class InboundEmailWebhookView(APIView):
             return Response(status=status.HTTP_200_OK)
 
         processed = 0
+        first_upload_log = None  # 이메일 이력에 연결할 첫 번째 UploadLog
+        first_filename = ""
+
         for file_obj, filename in self._iter_attachments(request):
             suffix = Path(filename).suffix.lower()
             if suffix not in self._ALLOWED_SUFFIXES:
@@ -227,13 +230,43 @@ class InboundEmailWebhookView(APIView):
             upload_log.ax_task_id = task.id
             upload_log.status = UploadLog.Status.PROCESSING
             upload_log.save(update_fields=["ax_task_id", "status"])
+
+            if processed == 0:
+                # 첫 번째 첨부파일 정보를 이메일 이력에 기록
+                first_upload_log = upload_log
+                first_filename = filename
             processed += 1
+
+        # 수신 이메일 이력을 DB에 저장 (첨부파일이 없어도 기록)
+        self._save_inbound_email_record(workflow, request, first_filename, first_upload_log)
 
         logger.info(
             "inbound-email 웹훅 처리 완료 | user_id=%s | 첨부파일=%d건",
             workflow.user_id, processed,
         )
         return Response({"processed_attachments": processed}, status=status.HTTP_200_OK)
+
+    @staticmethod
+    def _save_inbound_email_record(
+        workflow: IngestionWorkflow,
+        request,
+        first_filename: str,
+        upload_log: UploadLog | None,
+    ) -> None:
+        """수신 이메일 이력 레코드를 생성한다. 실패해도 웹훅 응답에 영향 없음."""
+        try:
+            sender = request.data.get("from", "")
+            subject = request.data.get("subject", "")
+            InboundEmail.objects.create(
+                workflow=workflow,
+                user=workflow.user,
+                sender=sender,
+                subject=subject,
+                attachment_filename=first_filename,
+                upload_log=upload_log,
+            )
+        except Exception:
+            logger.exception("InboundEmail 레코드 생성 실패 | user_id=%s", workflow.user_id)
 
     @staticmethod
     def _verify_webhook_token(request) -> bool:
@@ -282,6 +315,58 @@ class InboundEmailWebhookView(APIView):
             info = attachment_info.get(key, {})
             filename = info.get("filename") or getattr(file_obj, "name", None) or key
             yield file_obj, filename
+
+
+class DashboardStatsView(APIView):
+    """
+    GET /api/v1/dashboard/stats/
+    대시보드 통계 응답.
+    - 토큰/잔액 필드: 현재 결제 모델 없으므로 하드코딩 (추후 결제 앱 연동 시 대체)
+    - monthly_processed/errors: UploadLog DB 집계 (이번 달, 본인 것만)
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    # 토큰·결제 관련 필드는 결제 모델 구현 전 임시 고정값
+    _HARDCODED = {
+        "token_used":    716000,
+        "token_total":   2000000,
+        "balance":       312000,
+        "deposit":       500000,
+        "monthly_spent": 188000,
+    }
+
+    def get(self, request):
+        from django.utils import timezone
+
+        now = timezone.now()
+        # 이번 달 1일 00:00:00 기준으로 필터링
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        base_qs = UploadLog.objects.filter(
+            user=request.user,
+            uploaded_at__gte=month_start,
+        )
+        monthly_processed = base_qs.filter(status=UploadLog.Status.DONE).count()
+        monthly_errors = base_qs.filter(status=UploadLog.Status.FAILED).count()
+        monthly_corrected = monthly_processed - monthly_errors
+
+        return Response({
+            **self._HARDCODED,
+            "monthly_processed": monthly_processed,
+            "monthly_errors":    monthly_errors,
+            "monthly_corrected": monthly_corrected,
+        })
+
+
+class EmailInboxView(ListAPIView):
+    """GET /api/v1/email-inbox/ — 본인 수신 이메일 이력 목록."""
+
+    serializer_class = InboundEmailSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return InboundEmail.objects.filter(user=self.request.user)
 
 
 def _sync_task_result(upload_log: UploadLog) -> None:
