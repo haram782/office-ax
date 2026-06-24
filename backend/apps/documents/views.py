@@ -317,6 +317,41 @@ class InboundEmailWebhookView(APIView):
             yield file_obj, filename
 
 
+class EmailInboxAttachmentView(APIView):
+    """
+    GET /api/v1/email-inbox/:id/attachment/
+    수신 이메일에 연결된 업로드 파일 URL을 반환한다.
+    upload_log 또는 파일이 없으면 404.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk: int):
+        try:
+            inbox = InboundEmail.objects.select_related("upload_log").get(
+                pk=pk, user=request.user
+            )
+        except InboundEmail.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        upload_log = inbox.upload_log
+        if upload_log is None or not upload_log.file:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        # 파일이 실제로 디스크에 존재하는지 확인
+        file_url = ""
+        try:
+            if upload_log.file.storage.exists(upload_log.file.name):
+                file_url = upload_log.file.url
+        except Exception:
+            pass
+
+        return Response({
+            "file_url": file_url,
+            "original_filename": upload_log.original_filename,
+        })
+
+
 class DashboardStatsView(APIView):
     """
     GET /api/v1/dashboard/stats/

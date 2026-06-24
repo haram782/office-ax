@@ -23,6 +23,20 @@ class ChatSessionSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class ConversationListSerializer(serializers.ModelSerializer):
+    """
+    대화 세션 목록 전용 직렬화 — messages 배열 미포함 (경량).
+    목록 조회 시 N+1 쿼리와 페이로드 과다를 방지하기 위해 별도 분리.
+    """
+
+    message_count = serializers.IntegerField(source="messages.count", read_only=True)
+
+    class Meta:
+        model = ChatSession
+        fields = ["id", "title", "message_count", "created_at", "updated_at"]
+        read_only_fields = fields
+
+
 class ChatSessionCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = ChatSession

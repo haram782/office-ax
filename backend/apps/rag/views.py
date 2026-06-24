@@ -1,7 +1,10 @@
 from celery import current_app
+from rest_framework import status
 from rest_framework.generics import DestroyAPIView, ListCreateAPIView
 from rest_framework.parsers import MultiPartParser
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from .models import RagAsset
 from .serializers import RagAssetSerializer
@@ -32,6 +35,28 @@ class RagAssetListCreateView(ListCreateAPIView):
             "rag.train_asset",
             kwargs={"asset_id": asset.pk},
         )
+
+
+class RagAssetFileUrlView(APIView):
+    """
+    GET /api/v1/rag-assets/:id/file/
+    RAG 자산 파일의 다운로드 URL을 반환한다.
+    본인 소유 자산만 접근 가능 — 타인 접근 시 404.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk: int):
+        try:
+            asset = RagAsset.objects.get(pk=pk, owner=request.user)
+        except RagAsset.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        return Response({
+            "file_url": asset.file.url if asset.file else "",
+            "group_name": asset.group_name,
+            "kind": asset.kind,
+        })
 
 
 class RagAssetDestroyView(DestroyAPIView):

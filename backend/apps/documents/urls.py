@@ -2,6 +2,7 @@ from django.urls import path
 from .views import (
     DashboardStatsView,
     DocumentUploadView,
+    EmailInboxAttachmentView,
     EmailInboxView,
     InboundEmailWebhookView,
     UploadListView,
@@ -19,5 +20,6 @@ urlpatterns = [
     # SendGrid Inbound Parse 웹훅 — 인증 없이 수신, 내부 시크릿+DB로 검증
     path("inbound-email/", InboundEmailWebhookView.as_view(), name="inbound-email"),
     path("email-inbox/", EmailInboxView.as_view(), name="email-inbox"),
+    path("email-inbox/<int:pk>/attachment/", EmailInboxAttachmentView.as_view(), name="email-inbox-attachment"),
     path("dashboard/stats/", DashboardStatsView.as_view(), name="dashboard-stats"),
 ]
