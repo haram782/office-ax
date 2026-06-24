@@ -15,6 +15,13 @@
   }
 }
 
+/* 로그인 카드 등 진입 애니메이션 */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-in { animation: fadeIn .2s ease; }
+
 @layer utilities {
   /* 전역 스크롤바 스타일 */
   *::-webkit-scrollbar        { width: 9px; height: 9px; }

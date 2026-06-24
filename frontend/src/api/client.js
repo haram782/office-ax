@@ -8,6 +8,20 @@ api.interceptors.request.use((config) => {
   return config
 })
 
+// ── 인증 API ──────────────────────────────────────────────────────────────────
+
+/** Google OAuth 액세스 토큰으로 서버 인증 → { token, user } 반환 */
+export async function googleLogin(accessToken) {
+  const { data } = await api.post('/auth/google/', { access_token: accessToken })
+  return data
+}
+
+/** 현재 로그인 사용자 정보 조회 */
+export async function getMe() {
+  const { data } = await api.get('/auth/me/')
+  return data
+}
+
 // ── 기존 문서 업로드 API (레거시 단방향 플로우) ────────────────────────────────
 
 export async function uploadFile(file) {
@@ -36,6 +50,12 @@ export async function activateWorkflow(workflowId, phoneNumber) {
 }
 
 // ── 채팅 워크스페이스 API ────────────────────────────────────────────────────
+
+/** 저장된 전체 채팅 세션 목록 조회 */
+export async function getChatSessions() {
+  const { data } = await api.get('/chat/sessions/')
+  return data  // [{ id, title, message_count, messages, created_at, updated_at }]
+}
 
 export async function createChatSession(title = '') {
   const { data } = await api.post('/chat/sessions/', { title })

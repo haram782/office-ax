@@ -17,6 +17,7 @@ export function WorkspaceSidebar({
   rules,
   onToggleRule,
   activeRuleCount,
+  isLoadingSessions,
 }) {
   const RULE_LABELS = {
     table: '표 셀 서식 자동 정렬',
@@ -120,7 +121,15 @@ export function WorkspaceSidebar({
         <div>
           <SectionLabel text="대화" action={newBtn} />
           <div className="flex flex-col gap-1">
-            {conversations.map(c => <ConvItem key={c.id} conv={c} />)}
+            {isLoadingSessions ? (
+              // 백엔드 세션 로드 중 스피너
+              <div className="flex items-center justify-center py-8 text-zinc-400">
+                <span className="w-4 h-4 border-2 border-zinc-300 dark:border-zinc-600 border-t-blue-500 rounded-full animate-spin mr-2" />
+                <span className="text-xs">불러오는 중...</span>
+              </div>
+            ) : (
+              conversations.map(c => <ConvItem key={c.id} conv={c} />)
+            )}
           </div>
         </div>
 

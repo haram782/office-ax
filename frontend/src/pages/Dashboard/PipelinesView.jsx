@@ -75,7 +75,7 @@ export function PipelinesView() {
   const shown = filter === 'all' ? all : all.filter(p => p.tags.includes(filter))
 
   return (
-    <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 overflow-hidden">
+    <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 overflow-hidden shadow-sm">
       {/* 패널 헤더 */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-200 dark:border-zinc-800">
         <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">나의 파이프라인</h3>

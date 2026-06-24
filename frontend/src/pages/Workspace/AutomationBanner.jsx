@@ -20,7 +20,7 @@ export function AutomationBanner({ onDismiss }) {
         {/* 텍스트 */}
         <div className="min-w-0">
           <div className="text-sm font-semibold text-amber-800 dark:text-amber-200">
-            💡 자동화 패턴 감지!
+            자동화 패턴 감지!
           </div>
           <div className="text-xs text-amber-700/80 dark:text-amber-300/70">
             동일한 보정 작업이 3회 반복되었습니다. 파이프라인으로 등록할까요?

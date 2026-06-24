@@ -27,7 +27,7 @@ function Donut({ pct }) {
 /** 공통 통계 카드 */
 function StatCard({ children }) {
   return (
-    <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5">
+    <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-6 shadow-sm">
       {children}
     </div>
   )
@@ -64,10 +64,10 @@ export function DashStats() {
         <div className="flex items-end gap-4">
           <Donut pct={tokens.percent} />
           <div>
-            <div className="text-2xl font-bold text-zinc-800 dark:text-zinc-100">
+            <div className="text-[36px] leading-none font-bold tracking-tight text-zinc-800 dark:text-zinc-100">
               {tokens.used.toLocaleString()}
             </div>
-            <div className="text-xs text-zinc-400 mt-1">/ {tokens.total.toLocaleString()} 토큰</div>
+            <div className="text-[18px] text-zinc-400 mt-1 font-medium">/ {tokens.total.toLocaleString()} 토큰</div>
             <div className="text-xs text-emerald-600 dark:text-emerald-400 mt-2">예상 소진 D-{tokens.daysLeft}</div>
           </div>
         </div>
@@ -76,10 +76,10 @@ export function DashStats() {
       {/* 결제 잔고 */}
       <StatCard>
         <CardHead icon="wallet" label="결제 잔고 / 예치금" />
-        <div className="text-2xl font-bold text-zinc-800 dark:text-zinc-100">
+        <div className="text-[36px] leading-none font-bold tracking-tight text-zinc-800 dark:text-zinc-100">
           ₩ {balance.remaining.toLocaleString()}
         </div>
-        <div className="text-xs text-zinc-400 mt-1">
+        <div className="text-[18px] text-zinc-400 mt-1 font-medium">
           예치금 ₩ {balance.total.toLocaleString()} · 이번 달 사용 ₩ {balance.used.toLocaleString()}
         </div>
         <div className="mt-3 h-1.5 rounded-full bg-zinc-100 dark:bg-zinc-800 overflow-hidden">
@@ -97,21 +97,29 @@ export function DashStats() {
       {/* 자동 처리 건수 */}
       <StatCard>
         <CardHead icon="zap" label="이번 달 자동 처리" />
-        <div className="text-2xl font-bold text-zinc-800 dark:text-zinc-100">
+        <div className="text-[36px] leading-none font-bold tracking-tight text-zinc-800 dark:text-zinc-100">
           {processed.count.toLocaleString()} 건
         </div>
-        <div className="text-xs text-zinc-400 mt-1">
+        <div className="text-[18px] text-zinc-400 mt-1 font-medium">
           오류 검출 {processed.errors.toLocaleString()} · 자동 보정 {processed.corrected.toLocaleString()}
         </div>
-        {/* 바 차트 */}
+        {/* 바 차트 — 최고값 바만 blue-600, 나머지는 zinc */}
         <div className="flex gap-1.5 mt-4 items-end h-10">
-          {processed.chart.map((v, i) => (
-            <div
-              key={i}
-              className="flex-1 rounded-sm bg-blue-500/70 dark:bg-blue-400/60"
-              style={{ height: `${v}%` }}
-            />
-          ))}
+          {(() => {
+            const maxVal = Math.max(...processed.chart)
+            let maxUsed = false
+            return processed.chart.map((v, i) => {
+              const isMax = v === maxVal && !maxUsed
+              if (isMax) maxUsed = true
+              return (
+                <div
+                  key={i}
+                  className={'flex-1 rounded-sm ' + (isMax ? 'bg-blue-600' : 'bg-zinc-200 dark:bg-zinc-700')}
+                  style={{ height: `${v}%` }}
+                />
+              )
+            })
+          })()}
         </div>
       </StatCard>
     </div>

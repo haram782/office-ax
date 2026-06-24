@@ -23,7 +23,7 @@ function fileIcon(filename) {
 // ── 상태 배지 (processing 제외 — 스피너로 대체) ──────────────────────────────
 
 const STATUS_LABEL = {
-  pending: { text: '대기 중', cls: 'text-gray-400' },
+  pending: { text: '대기 중', cls: 'text-zinc-400' },
   done:    { text: '완료',    cls: 'text-emerald-500' },
   failed:  { text: '실패',    cls: 'text-red-400' },
 }
@@ -40,7 +40,7 @@ function FileCard({ id, filename, status, artifactUrl, isViewing, onClick }) {
       className={`rounded-xl border p-2.5 cursor-pointer transition-all
         ${isViewing
           ? 'border-blue-400 bg-blue-50 shadow-sm shadow-blue-100'
-          : 'border-gray-200 bg-white hover:border-blue-300 hover:bg-blue-50/40 shadow-sm'
+          : 'border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 hover:border-blue-300 hover:bg-blue-50/40 dark:hover:bg-blue-500/10 shadow-sm'
         }`}
     >
       <div className="flex items-start gap-2">
@@ -48,7 +48,7 @@ function FileCard({ id, filename, status, artifactUrl, isViewing, onClick }) {
         <div className="min-w-0 flex-1">
           {/* 파일명 + 분석 중 스피너 한 줄 배치 */}
           <div className="flex items-center gap-1.5 min-w-0">
-            <p className="text-[11px] font-semibold text-gray-700 truncate leading-tight" title={filename}>
+            <p className="text-[11px] font-semibold text-zinc-700 dark:text-zinc-200 truncate leading-tight" title={filename}>
               {filename}
             </p>
             {isProcessing && (
@@ -61,7 +61,7 @@ function FileCard({ id, filename, status, artifactUrl, isViewing, onClick }) {
           )}
         </div>
         {isViewing && (
-          <span className="flex-shrink-0 mt-0.5 text-gray-400">
+          <span className="flex-shrink-0 mt-0.5 text-zinc-400">
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
               <polyline points="9 18 15 12 9 6"/>
             </svg>
@@ -87,7 +87,7 @@ function FileCard({ id, filename, status, artifactUrl, isViewing, onClick }) {
 function ExcelViewer({ data, filename }) {
   if (!data) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-3 text-gray-400">
+      <div className="flex flex-col items-center justify-center h-full gap-3 text-zinc-400">
         <span className="text-4xl">📊</span>
         <p className="text-sm">분석이 완료되면<br />교정 내역이 여기에 표시됩니다</p>
       </div>
@@ -97,18 +97,18 @@ function ExcelViewer({ data, filename }) {
   return (
     <div className="flex-1 min-h-0 overflow-auto p-4 space-y-5">
       {/* 원본 데이터 테이블 */}
-      <div className="rounded-xl border border-gray-200 overflow-hidden shadow-sm">
-        <div className="px-4 py-2.5 bg-gradient-to-r from-gray-50 to-white border-b border-gray-200 flex items-center gap-2">
+      <div className="rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-hidden shadow-sm">
+        <div className="px-4 py-2.5 bg-gradient-to-r from-zinc-50 dark:from-zinc-800 to-white dark:to-zinc-900 border-b border-zinc-200 dark:border-zinc-700 flex items-center gap-2">
           <span className="text-sm">📊</span>
-          <span className="text-xs font-semibold text-gray-700">시트 미리보기</span>
-          <span className="ml-auto text-[10px] text-gray-400">{filename}</span>
+          <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-200">시트 미리보기</span>
+          <span className="ml-auto text-[10px] text-zinc-400">{filename}</span>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead>
-              <tr className="bg-gray-50 border-b border-gray-200">
+              <tr className="bg-zinc-50 dark:bg-zinc-800 border-b border-zinc-200 dark:border-zinc-700">
                 {(data.headers || []).map((h, i) => (
-                  <th key={i} className="px-3 py-2 text-left font-semibold text-gray-600 whitespace-nowrap">
+                  <th key={i} className="px-3 py-2 text-left font-semibold text-zinc-600 dark:text-zinc-300 whitespace-nowrap">
                     {h}
                   </th>
                 ))}
@@ -116,9 +116,9 @@ function ExcelViewer({ data, filename }) {
             </thead>
             <tbody>
               {(data.preview_rows || []).map((row, i) => (
-                <tr key={i} className="border-t border-gray-100 hover:bg-blue-50/30 transition-colors">
+                <tr key={i} className="border-t border-zinc-100 dark:border-zinc-800 hover:bg-blue-50/30 transition-colors">
                   {row.map((cell, j) => (
-                    <td key={j} className="px-3 py-2 text-gray-700 whitespace-nowrap">
+                    <td key={j} className="px-3 py-2 text-zinc-700 dark:text-zinc-200 whitespace-nowrap">
                       {typeof cell === 'number' ? cell.toLocaleString() : cell}
                     </td>
                   ))}
@@ -141,12 +141,12 @@ function ExcelViewer({ data, filename }) {
           <div className="divide-y divide-orange-50">
             {data.corrections.map((c, i) => (
               <div key={i} className="px-4 py-3 flex items-center gap-3">
-                <span className="font-mono text-xs font-bold text-gray-500 w-10 flex-shrink-0 bg-gray-100 rounded px-1.5 py-0.5 text-center">
+                <span className="font-mono text-xs font-bold text-zinc-500 dark:text-zinc-400 w-10 flex-shrink-0 bg-zinc-100 dark:bg-zinc-800 rounded px-1.5 py-0.5 text-center">
                   {c.cell}
                 </span>
                 <div className="flex-1 flex items-center gap-2 min-w-0 text-xs">
                   <span className="text-red-400 line-through truncate">{c.original}</span>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="flex-shrink-0 text-gray-400">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="flex-shrink-0 text-zinc-400">
                     <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
                   </svg>
                   <span className="text-emerald-600 font-semibold truncate">{c.corrected}</span>
@@ -164,7 +164,7 @@ function ExcelViewer({ data, filename }) {
 function PdfViewer({ fileUrl, filename }) {
   if (!fileUrl) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-3 text-gray-400">
+      <div className="flex flex-col items-center justify-center h-full gap-3 text-zinc-400">
         <span className="text-4xl">📄</span>
         <p className="text-sm text-center">PDF 미리보기를 준비 중입니다…<br /><span className="text-xs">잠시 후 다시 시도해 주세요</span></p>
       </div>
@@ -190,9 +190,9 @@ function PdfViewer({ fileUrl, filename }) {
 
 function FormatComingSoon({ icon, format, note, badge = '준비 중' }) {
   return (
-    <div className="flex flex-col items-center justify-center h-full gap-3 text-gray-400">
+    <div className="flex flex-col items-center justify-center h-full gap-3 text-zinc-400">
       <span className="text-4xl">{icon}</span>
-      <p className="text-sm font-medium text-gray-500">{format} 미리보기</p>
+      <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">{format} 미리보기</p>
       <p className="text-xs text-center max-w-sm leading-relaxed px-6">{note}</p>
       <span className="text-[10px] bg-blue-50 text-blue-400 border border-blue-100 rounded-full px-3 py-1 mt-1">
         {badge}
@@ -209,14 +209,14 @@ function CsvViewer({ data, filename }) {
 function ImageViewer({ fileUrl, filename }) {
   if (!fileUrl) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-3 text-gray-400">
+      <div className="flex flex-col items-center justify-center h-full gap-3 text-zinc-400">
         <span className="text-4xl">🖼</span>
         <p className="text-sm text-center">이미지를 불러오는 중입니다…</p>
       </div>
     )
   }
   return (
-    <div className="flex-1 min-h-0 flex items-center justify-center overflow-auto p-4 bg-gray-50/50">
+    <div className="flex-1 min-h-0 flex items-center justify-center overflow-auto p-4 bg-zinc-50/50 dark:bg-zinc-900/50">
       <img
         src={fileUrl}
         alt={filename}
@@ -245,12 +245,12 @@ function DocxViewer({ snippetData, filename }) {
 
   if (pageUrls.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-3 text-gray-400">
+      <div className="flex flex-col items-center justify-center h-full gap-3 text-zinc-400">
         <span className="text-4xl">📝</span>
-        <p className="text-sm text-center text-gray-500 font-medium">페이지 렌더링 결과가 없습니다</p>
+        <p className="text-sm text-center text-zinc-500 dark:text-zinc-400 font-medium">페이지 렌더링 결과가 없습니다</p>
         <p className="text-xs text-center max-w-xs leading-relaxed">
           LibreOffice 또는 poppler가 설치되어 있지 않거나 변환에 실패했습니다.<br />
-          <code className="bg-gray-100 px-1 rounded text-[10px]">brew install --cask libreoffice poppler</code>
+          <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded text-[10px]">brew install --cask libreoffice poppler</code>
         </p>
       </div>
     )
@@ -262,11 +262,11 @@ function DocxViewer({ snippetData, filename }) {
    * HWP canvasW = min(containerW-48, naturalW) 와 동일한 결과를 낸다.
    */
   return (
-    <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-gray-200">
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-zinc-200 dark:bg-zinc-800">
       {/* HwpViewer 상단 바와 동일한 스타일 */}
-      <div className="flex-shrink-0 flex items-center justify-center gap-3 px-4 py-2 bg-white border-b border-gray-200">
-        <span className="text-xs text-gray-600 tabular-nums">
-          전체 <span className="font-semibold text-gray-700">{pageUrls.length}</span>페이지
+      <div className="flex-shrink-0 flex items-center justify-center gap-3 px-4 py-2 bg-white dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-700">
+        <span className="text-xs text-zinc-600 dark:text-zinc-300 tabular-nums">
+          전체 <span className="font-semibold text-zinc-700 dark:text-zinc-200">{pageUrls.length}</span>페이지
         </span>
       </div>
 
@@ -274,11 +274,16 @@ function DocxViewer({ snippetData, filename }) {
        * HWP naturalW ≈ 595px (rhwp A4 72pt 기준).
        * maxWidth 595px + margin auto 를 inline style 로 확실히 적용.
        * Tailwind 클래스로 걸었을 때 JIT 미생성 문제 우회.
+       * 배경색은 dark: 클래스로 제어 — inline style에서 분리.
        */}
-      <div className="flex-1 overflow-auto p-6" style={{ background: '#e5e7eb' }}>
+      <div className="flex-1 overflow-auto p-6 bg-zinc-200 dark:bg-zinc-800">
         <div style={{ maxWidth: '793px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {pageUrls.map((url, i) => (
-            <div key={i} style={{ background: 'white', boxShadow: '0 4px 6px -1px rgba(0,0,0,.1), 0 2px 4px -2px rgba(0,0,0,.1)', borderRadius: '2px', overflow: 'hidden' }}>
+            <div
+              key={i}
+              className="bg-white dark:bg-zinc-900"
+              style={{ boxShadow: '0 4px 6px -1px rgba(0,0,0,.1), 0 2px 4px -2px rgba(0,0,0,.1)', borderRadius: '2px', overflow: 'hidden' }}
+            >
               <img
                 src={url}
                 alt={`${i + 1}페이지`}
@@ -379,7 +384,7 @@ function HwpViewer({ fileUrl, filename }) {
   // — 빈 상태 —
   if (!fileUrl) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-3 text-gray-400">
+      <div className="flex flex-col items-center justify-center h-full gap-3 text-zinc-400">
         <span className="text-4xl">📄</span>
         <p className="text-sm text-center">분석이 완료되면<br />문서 내용이 여기에 표시됩니다</p>
       </div>
@@ -389,10 +394,10 @@ function HwpViewer({ fileUrl, filename }) {
   // — 로딩 —
   if (status === 'loading') {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-3 text-gray-400">
+      <div className="flex flex-col items-center justify-center h-full gap-3 text-zinc-400">
         <span className="h-6 w-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
         <span className="text-sm">WASM 엔진으로 문서 분석 중…</span>
-        <span className="text-xs text-gray-300">파일이 브라우저 로컬에서 처리됩니다 (서버 미전송)</span>
+        <span className="text-xs text-zinc-300">파일이 브라우저 로컬에서 처리됩니다 (서버 미전송)</span>
       </div>
     )
   }
@@ -400,15 +405,15 @@ function HwpViewer({ fileUrl, filename }) {
   // — 에러 —
   if (status === 'error') {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-4 text-gray-400 px-6">
+      <div className="flex flex-col items-center justify-center h-full gap-4 text-zinc-400 px-6">
         <span className="text-4xl">⚠️</span>
         <p className="text-sm font-medium text-red-400">문서를 열지 못했습니다</p>
         {errMsg && (
-          <p className="text-[11px] text-center max-w-xs bg-gray-50 border border-gray-100 rounded-lg px-3 py-2 font-mono break-all text-gray-500">
+          <p className="text-[11px] text-center max-w-xs bg-zinc-50 dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 rounded-lg px-3 py-2 font-mono break-all text-zinc-500 dark:text-zinc-400">
             {errMsg}
           </p>
         )}
-        <p className="text-xs text-gray-400 text-center">
+        <p className="text-xs text-zinc-400 text-center">
           파일이 손상되었거나 암호화된 HWP일 수 있습니다.<br />
           한글 프로그램에서 다시 저장 후 업로드해 주세요.
         </p>
@@ -418,31 +423,31 @@ function HwpViewer({ fileUrl, filename }) {
 
   // — 정상 렌더 —
   return (
-    <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-gray-100">
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-zinc-100 dark:bg-zinc-800">
       {/* 페이지 내비게이터 */}
-      <div className="flex-shrink-0 flex items-center justify-center gap-3 px-4 py-2 bg-white border-b border-gray-200">
+      <div className="flex-shrink-0 flex items-center justify-center gap-3 px-4 py-2 bg-white dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-700">
         <button
           onClick={() => goToPage(pageNum - 1)}
           disabled={pageNum === 0}
-          className="w-7 h-7 flex items-center justify-center rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          className="w-7 h-7 flex items-center justify-center rounded-lg border border-zinc-200 dark:border-zinc-700 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
             <polyline points="15 18 9 12 15 6"/>
           </svg>
         </button>
-        <span className="text-xs text-gray-600 tabular-nums">
-          {pageNum + 1} <span className="text-gray-400">/ {totalPages}</span>
+        <span className="text-xs text-zinc-600 dark:text-zinc-300 tabular-nums">
+          {pageNum + 1} <span className="text-zinc-400">/ {totalPages}</span>
         </span>
         <button
           onClick={() => goToPage(pageNum + 1)}
           disabled={pageNum >= totalPages - 1}
-          className="w-7 h-7 flex items-center justify-center rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          className="w-7 h-7 flex items-center justify-center rounded-lg border border-zinc-200 dark:border-zinc-700 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
             <polyline points="9 18 15 12 9 6"/>
           </svg>
         </button>
-        <span className="ml-auto text-[10px] text-gray-300 flex items-center gap-1">
+        <span className="ml-auto text-[10px] text-zinc-300 flex items-center gap-1">
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
           </svg>
@@ -452,7 +457,7 @@ function HwpViewer({ fileUrl, filename }) {
 
       {/* Canvas 렌더링 영역 */}
       <div ref={containerRef} className="flex-1 overflow-auto p-6 flex justify-center items-start">
-        <div className="bg-white shadow-md rounded-sm overflow-hidden">
+        <div className="bg-white dark:bg-zinc-900 shadow-md rounded-sm overflow-hidden">
           <canvas ref={canvasRef} />
         </div>
       </div>
@@ -491,10 +496,10 @@ function PptxViewer({ snippetData, filename }) {
   // ── LibreOffice 미설치 / 렌더링 실패 ──
   if (!hasRender) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-3 text-gray-400 px-6">
+      <div className="flex flex-col items-center justify-center h-full gap-3 text-zinc-400 px-6">
         <span className="text-4xl">📑</span>
-        <p className="text-sm font-medium text-gray-500">PPTX 슬라이드 이미지를 생성하지 못했습니다</p>
-        <p className="text-xs text-center text-gray-400 leading-relaxed max-w-xs">
+        <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">PPTX 슬라이드 이미지를 생성하지 못했습니다</p>
+        <p className="text-xs text-center text-zinc-400 leading-relaxed max-w-xs">
           서버에 LibreOffice가 설치되어 있지 않거나 변환에 실패했습니다.<br />
           관리자에게 문의하거나 원본 PPTX를 직접 다운로드해 주세요.
         </p>
@@ -514,37 +519,37 @@ function PptxViewer({ snippetData, filename }) {
 
   return (
     // aspect-video로 카드 높이가 자연스럽게 결정되므로 overflow-auto로 스크롤 가능
-    <div className="flex-1 min-h-0 overflow-auto bg-gray-100">
+    <div className="flex-1 min-h-0 overflow-auto bg-zinc-100 dark:bg-zinc-800">
       <div
         className="mx-auto w-full px-5 py-5 flex flex-col gap-3"
         style={{ maxWidth: containerMaxWidth }}
       >
 
         {/* ── 슬라이드 카드 ── */}
-        <div className="bg-white rounded-md shadow-lg overflow-hidden">
+        <div className="bg-white dark:bg-zinc-900 rounded-md shadow-lg overflow-hidden">
           {/* 상단 내비게이터 바 */}
-          <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-100 bg-gray-50/70">
+          <div className="flex items-center justify-between px-4 py-2.5 border-b border-zinc-100 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-800/70">
             <button
               onClick={() => goTo(current - 1)}
               disabled={current === 0}
-              className="w-7 h-7 flex items-center justify-center rounded border border-gray-200 text-gray-400 hover:bg-white hover:text-gray-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              className="w-7 h-7 flex items-center justify-center rounded border border-zinc-200 dark:border-zinc-700 text-zinc-400 hover:bg-white dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
             >
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                 <polyline points="15 18 9 12 15 6"/>
               </svg>
             </button>
 
-            <span className="text-xs font-medium text-gray-500 tabular-nums select-none">
+            <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400 tabular-nums select-none">
               슬라이드&nbsp;
-              <span className="text-gray-800">{current + 1}</span>
-              <span className="text-gray-300"> / </span>
-              <span className="text-gray-400">{slideCount}</span>
+              <span className="text-zinc-800 dark:text-zinc-100">{current + 1}</span>
+              <span className="text-zinc-300"> / </span>
+              <span className="text-zinc-400">{slideCount}</span>
             </span>
 
             <button
               onClick={() => goTo(current + 1)}
               disabled={current >= slideCount - 1}
-              className="w-7 h-7 flex items-center justify-center rounded border border-gray-200 text-gray-400 hover:bg-white hover:text-gray-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              className="w-7 h-7 flex items-center justify-center rounded border border-zinc-200 dark:border-zinc-700 text-zinc-400 hover:bg-white dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
             >
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                 <polyline points="9 18 15 12 9 6"/>
@@ -553,10 +558,10 @@ function PptxViewer({ snippetData, filename }) {
           </div>
 
           {/* 16:9 슬라이드 이미지 영역 — aspect-video로 높이가 너비에서 결정됨 */}
-          <div className="aspect-video relative bg-white">
+          <div className="aspect-video relative bg-white dark:bg-zinc-900">
             {currentUrl ? (
               imgError ? (
-                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-gray-400">
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-zinc-400">
                   <span className="text-3xl">⚠️</span>
                   <p className="text-xs">슬라이드 이미지를 불러올 수 없습니다</p>
                 </div>
@@ -571,7 +576,7 @@ function PptxViewer({ snippetData, filename }) {
                 />
               )
             ) : (
-              <div className="absolute inset-0 flex items-center justify-center text-gray-300 text-sm">
+              <div className="absolute inset-0 flex items-center justify-center text-zinc-300 text-sm">
                 슬라이드 없음
               </div>
             )}
@@ -590,11 +595,11 @@ function PptxViewer({ snippetData, filename }) {
                   className={`flex-shrink-0 w-[108px] aspect-video rounded overflow-hidden border-2 transition-all
                     ${i === current
                       ? 'border-blue-500 shadow-md shadow-blue-100 scale-[1.03]'
-                      : 'border-gray-200 hover:border-blue-300 hover:shadow-sm'}`}
+                      : 'border-zinc-200 dark:border-zinc-700 hover:border-blue-300 hover:shadow-sm'}`}
                 >
                   {url
                     ? <img src={url} alt={`${i + 1}`} className="w-full h-full object-cover" draggable={false} />
-                    : <div className="w-full h-full bg-gray-100 flex items-center justify-center text-[9px] text-gray-400">{i + 1}</div>
+                    : <div className="w-full h-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-[9px] text-zinc-400">{i + 1}</div>
                   }
                 </button>
               )
@@ -647,10 +652,10 @@ export function resolveViewer({ filename, fileUrl, snippetData }) {
 
     default:
       return (
-        <div className="flex flex-col items-center justify-center h-full gap-3 text-gray-400">
+        <div className="flex flex-col items-center justify-center h-full gap-3 text-zinc-400">
           <span className="text-4xl">🗂</span>
           <p className="text-sm">미리보기를 지원하지 않는 형식입니다</p>
-          <p className="text-[11px] text-gray-300">.{ext}</p>
+          <p className="text-[11px] text-zinc-300">.{ext}</p>
         </div>
       )
   }
@@ -664,10 +669,10 @@ export function resolveViewer({ filename, fileUrl, snippetData }) {
  */
 export function FileSidebar({ fileItems, viewingFileId, onFileView }) {
   return (
-    <div className="h-full flex flex-col bg-gray-50/70">
+    <div className="h-full flex flex-col bg-zinc-50/70 dark:bg-zinc-900/70">
       {/* 헤더 */}
-      <div className="px-3 py-2.5 border-b border-gray-200 flex-shrink-0">
-        <h2 className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+      <div className="px-3 py-2.5 border-b border-zinc-200 dark:border-zinc-700 flex-shrink-0">
+        <h2 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">
           이 세션의 파일
         </h2>
       </div>
@@ -677,7 +682,7 @@ export function FileSidebar({ fileItems, viewingFileId, onFileView }) {
         {fileItems.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center py-8 gap-3">
             <span className="text-3xl opacity-25">📂</span>
-            <p className="text-[11px] text-gray-400 leading-relaxed">
+            <p className="text-[11px] text-zinc-400 leading-relaxed">
               파일을 첨부하면<br />여기에 표시됩니다
             </p>
           </div>
@@ -718,31 +723,16 @@ export function DocViewer({ previewData, onClose }) {
       updateId: Date.now(),
     }))
 
-    // 이미 열린 팝업이 있으면 포커스만
-    if (popupRef.current && !popupRef.current.closed) {
-      popupRef.current.focus()
-      return
-    }
-
-    // 유저 클릭 핸들러 안에서 호출 → 팝업 차단 우회
-    popupRef.current = window.open(
-      '/preview',
-      'ax-preview-window',
-      'width=1100,height=820,resizable=yes,scrollbars=yes,location=no,menubar=no,toolbar=no',
-    )
-
-    if (!popupRef.current) {
-      // eslint-disable-next-line no-alert
-      alert('팝업이 차단되었습니다. 브라우저 설정에서 이 사이트의 팝업을 허용해 주세요.')
-    }
+    // 새 탭으로 열기 (팝업 차단 우회 + 브라우저 탭 관리 편의)
+    window.open('/preview', '_blank')
   }, [filename, fileUrl, artifactUrl, snippetData])
 
   return (
-    <div className="h-full flex flex-col bg-white">
+    <div className="h-full flex flex-col bg-white dark:bg-zinc-900">
       {/* 뷰어 헤더 */}
-      <div className="flex-shrink-0 h-10 px-4 border-b border-gray-200 flex items-center gap-2.5 bg-white">
+      <div className="flex-shrink-0 h-10 px-4 border-b border-zinc-200 dark:border-zinc-700 flex items-center gap-2.5 bg-white dark:bg-zinc-900">
         <span className="text-sm">{fileIcon(filename)}</span>
-        <span className="text-xs font-semibold text-gray-700 truncate flex-1 min-w-0" title={filename}>
+        <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-200 truncate flex-1 min-w-0" title={filename}>
           {filename}
         </span>
 
@@ -750,7 +740,7 @@ export function DocViewer({ previewData, onClose }) {
         <button
           onClick={handleOpenPopup}
           title="새 창으로 열기"
-          className="flex-shrink-0 flex items-center gap-1 text-[11px] text-gray-500 hover:text-blue-600 border border-gray-200 hover:border-blue-300 rounded-lg px-2 py-1 transition-colors"
+          className="flex-shrink-0 flex items-center gap-1 text-[11px] text-zinc-500 dark:text-zinc-400 hover:text-blue-600 dark:hover:text-blue-400 border border-zinc-200 dark:border-zinc-700 hover:border-blue-300 rounded-lg px-2 py-1 transition-colors"
         >
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
@@ -779,7 +769,7 @@ export function DocViewer({ previewData, onClose }) {
         <button
           onClick={onClose}
           title="뷰어 닫기"
-          className="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+          className="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-zinc-400 dark:text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
             <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>

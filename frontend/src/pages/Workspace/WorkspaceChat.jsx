@@ -7,10 +7,10 @@ import { RagSelector }     from './RagSelector'
 /** 빈 대화 환영 화면 */
 function WelcomeScreen({ onChipClick }) {
   const chips = [
-    { label: '✨ 날짜 형식 통일', key: 'date' },
-    { label: '📋 표 서식 정렬',   key: 'table' },
-    { label: '🔒 개인정보 마스킹', key: 'mask' },
-    { label: '⬇ 보정 파일 다운로드', key: 'download' },
+    { label: '날짜 형식 통일',    key: 'date',     icon: 'history'   },
+    { label: '표 서식 정렬',      key: 'table',    icon: 'layout'    },
+    { label: '개인정보 마스킹',   key: 'mask',     icon: 'sparkles'  },
+    { label: '보정 파일 다운로드', key: 'download', icon: 'download'  },
   ]
   return (
     <div className="flex-1 flex flex-col items-center justify-center text-center px-6">
@@ -26,8 +26,9 @@ function WelcomeScreen({ onChipClick }) {
           <button
             key={c.key}
             onClick={() => onChipClick?.(c.key)}
-            className="inline-flex items-center gap-1 rounded-full border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-700 text-[11px] px-2.5 py-1 text-zinc-600 dark:text-zinc-300"
+            className="inline-flex items-center gap-1.5 rounded-full border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-700 text-[11px] px-2.5 py-1 text-zinc-600 dark:text-zinc-300"
           >
+            <Ic name={c.icon} className="w-3.5 h-3.5" />
             {c.label}
           </button>
         ))}
@@ -102,7 +103,7 @@ export function WorkspaceChat({
         <button
           onClick={onNewConversation}
           title="새 대화"
-          className="shrink-0 w-7 h-7 grid place-items-center rounded-lg text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+          className="shrink-0 w-11 h-11 min-w-[44px] min-h-[44px] grid place-items-center rounded-lg text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
         >
           <Ic name="plus" />
         </button>
@@ -142,15 +143,16 @@ export function WorkspaceChat({
         {/* 빠른 칩 */}
         <div className="px-3 pt-2.5 flex flex-wrap gap-1.5">
           {[
-            { label: '✨ 날짜 형식 통일', key: 'date' },
-            { label: '📋 표 서식 정렬',  key: 'table' },
-            { label: '🔁 반복 작업 실행', key: 'repeat', extra: onTriggerBanner },
+            { label: '날짜 형식 통일', key: 'date',   icon: 'history'  },
+            { label: '표 서식 정렬',   key: 'table',  icon: 'layout'   },
+            { label: '반복 작업 실행', key: 'repeat', icon: 'zap', extra: onTriggerBanner },
           ].map(c => (
             <button
               key={c.key}
               onClick={() => { c.extra?.(); handleChip(c.key) }}
-              className="inline-flex items-center gap-1 rounded-full border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-700 text-[11px] px-2.5 py-1 text-zinc-600 dark:text-zinc-300"
+              className="inline-flex items-center gap-1.5 rounded-full border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-700 text-[11px] px-2.5 py-1 text-zinc-600 dark:text-zinc-300"
             >
+              <Ic name={c.icon} className="w-3.5 h-3.5" />
               {c.label}
             </button>
           ))}

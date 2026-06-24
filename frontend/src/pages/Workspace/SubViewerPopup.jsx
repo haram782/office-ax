@@ -2,37 +2,58 @@ import { Ic } from '../../components/Ic'
 import { resolveViewer } from '../../components/DocumentPanel'
 
 /**
- * 워크스페이스 내 서브 뷰어 팝업 (인페이지 모달).
- * 메인 뷰어와 동기화 상태를 표시하며, 메인 뷰어와 동일한 resolveViewer()를 사용한다.
+ * 범용 파일 뷰어 모달.
+ * 이메일 첨부 · RAG 문서 · 워크스페이스 팝업 모두 이 컴포넌트를 재사용한다.
+ *
+ * @param {{
+ *   filename: string,
+ *   fileUrl?: string,
+ *   snippetData?: object,
+ *   title?: string,
+ *   onClose: () => void,
+ * }} props
  */
-export function SubViewerPopup({ previewData, isFixed, onClose, onReplayHighlight }) {
-  const { filename, artifactUrl } = previewData
+export function SubViewerPopup({ filename, fileUrl, snippetData, title, onClose }) {
+  // /preview 페이지는 localStorage의 ax_preview_data를 읽어 파일을 렌더링한다
+  const handleOpenNewTab = () => {
+    localStorage.setItem('ax_preview_data', JSON.stringify({
+      filename,
+      fileUrl:          fileUrl ?? '',
+      artifactUrl:      '',
+      snippetData:      snippetData ?? null,
+      highlightedCells: [],
+      updateId:         Date.now(),
+    }))
+    window.open('/preview', '_blank')
+    onClose()
+  }
 
   return (
-    // 모달 오버레이
     <div
       className="fixed inset-0 z-50 grid place-items-center bg-black/40 backdrop-blur-sm animate-fade-in"
       onClick={onClose}
     >
       <div
         onClick={e => e.stopPropagation()}
-        className="w-[560px] max-h-[80vh] flex flex-col rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-2xl overflow-hidden"
+        className="w-[640px] max-h-[80vh] flex flex-col rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-2xl overflow-hidden"
       >
-        {/* 팝업 헤더 */}
+        {/* 헤더: 파일명(좌) + [새 탭 버튼 + 닫기 버튼](우) */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-200 dark:border-zinc-800">
-          <div className="flex items-center gap-2 text-sm font-medium text-zinc-700 dark:text-zinc-200">
-            <Ic name="externalLink" className="w-4 h-4 text-blue-600" />
-            서브 뷰어 · {filename}
+          <div className="flex items-center gap-2 text-sm font-medium text-zinc-700 dark:text-zinc-200 min-w-0">
+            <Ic name="fileText" className="w-4 h-4 text-blue-600 shrink-0" />
+            <span className="truncate">{title ?? filename}</span>
           </div>
-          <div className="flex items-center gap-2">
-            {/* 동기화 상태 인디케이터 */}
-            <span className="inline-flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-              메인 뷰어와 동기화
-            </span>
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={handleOpenNewTab}
+              title="새 탭으로 열기"
+              className="shrink-0 w-7 h-7 grid place-items-center rounded-lg text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+            >
+              <Ic name="externalLink" className="w-3.5 h-3.5" />
+            </button>
             <button
               onClick={onClose}
-              className="w-7 h-7 grid place-items-center rounded-lg text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+              className="shrink-0 w-7 h-7 grid place-items-center rounded-lg text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
             >
               <Ic name="x" />
             </button>
@@ -40,22 +61,8 @@ export function SubViewerPopup({ previewData, isFixed, onClose, onReplayHighligh
         </div>
 
         {/* 뷰어 본문 */}
-        <div className="flex-1 overflow-auto bg-zinc-100 dark:bg-zinc-950 flex justify-center items-start min-h-0">
-          {resolveViewer(previewData)}
-        </div>
-
-        {/* 팝업 푸터 */}
-        <div className="px-4 py-2.5 border-t border-zinc-200 dark:border-zinc-800 flex items-center justify-between text-xs text-zinc-400">
-          <span>{isFixed ? '하이라이트 1건 · 동기화됨' : '변경 사항 없음'}</span>
-          {onReplayHighlight && (
-            <button
-              onClick={onReplayHighlight}
-              className="inline-flex items-center gap-1 text-blue-600 dark:text-blue-400 hover:underline"
-            >
-              <Ic name="history" className="w-3.5 h-3.5" />
-              하이라이트 재생
-            </button>
-          )}
+        <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+          {resolveViewer({ filename, fileUrl, snippetData })}
         </div>
       </div>
     </div>

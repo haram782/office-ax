@@ -1,41 +1,39 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
 
-import { Topbar }             from '../../components/Topbar'
-import { useChat }            from '../../hooks/useChat'
-import { useFileItems }       from '../../components/DocumentPanel'
+import { Topbar }           from '../../components/Topbar'
+import { useChat }          from '../../hooks/useChat'
+import { useFileItems }     from '../../components/DocumentPanel'
 
-import { WorkspaceSidebar }   from './WorkspaceSidebar'
-import { WorkspaceCenter }    from './WorkspaceCenter'
-import { WorkspaceChat }      from './WorkspaceChat'
-import { SubViewerPopup }     from './SubViewerPopup'
-
-// 사이드바에 표시할 더미 대화 목록 (BE 완성 후 API로 교체)
-const INITIAL_CONVERSATIONS = [
-  { id: 'c1',  title: '청약신청서 접수증 분석', ts: '오전 02:17' },
-  { id: 'c0b', title: '견적서 수식 오류 검토',  ts: '어제 18:40' },
-  { id: 'c0a', title: '계약서 개인정보 마스킹', ts: '어제 14:02' },
-]
+import { WorkspaceSidebar } from './WorkspaceSidebar'
+import { WorkspaceCenter }  from './WorkspaceCenter'
+import { WorkspaceChat }    from './WorkspaceChat'
 
 /**
  * 워크스페이스 페이지.
- * useChat(실제 API) + 더미 사이드바 대화 목록 + resolveViewer 연결.
+ * useChat의 sessions 맵을 사이드바 대화 목록으로 직접 사용한다.
  */
 export default function Workspace() {
-  const navigate  = useNavigate()
-  const { messages, isProcessing, error, sendMessage, resetSession } = useChat()
+  const {
+    sessions,
+    activeSessionId,
+    messages,
+    isProcessing,
+    isLoadingSessions,
+    error,
+    sendMessage,
+    createSession,
+    switchSession,
+  } = useChat()
 
   // 중앙 뷰어에 표시 중인 파일 ID
   const [viewingFileId, setViewingFileId] = useState(null)
-  const fileItems  = useFileItems(messages)
+
+  // 활성 세션 메시지 기준으로 파일 목록 추출
+  const fileItems   = useFileItems(messages)
   const previewData = useMemo(
     () => fileItems.find(f => f.id === viewingFileId) ?? null,
     [fileItems, viewingFileId],
   )
-
-  // 더미 대화 목록 상태
-  const [conversations, setConversations] = useState(INITIAL_CONVERSATIONS)
-  const [activeConv, setActiveConv]       = useState('c1')
 
   // 자동화 규칙 체크박스
   const [rules, setRules] = useState({ table: true, date: true, mask: false, tone: true })
@@ -45,18 +43,20 @@ export default function Workspace() {
   const [ragTone, setRagTone] = useState('하람_보고서_스타일')
   const [ragForm, setRagForm] = useState('회사_기획서_양식')
 
-  // 서브뷰어 팝업 / 자동화 배너
-  const [showPopup,  setShowPopup]  = useState(false)
+  // 자동화 배너
   const [showBanner, setShowBanner] = useState(false)
 
-  // 새 대화 생성 — 더미 목록에 추가하고 세션 리셋
+  // 새 대화 생성 — sessions 맵에 추가하고 뷰어 초기화
   const handleNewConversation = useCallback(() => {
-    const id = `c${Date.now()}`
-    setConversations(prev => [{ id, title: '새 대화', ts: '방금' }, ...prev])
-    setActiveConv(id)
+    createSession()
     setViewingFileId(null)
-    resetSession()
-  }, [resetSession])
+  }, [createSession])
+
+  // 대화 전환 — 뷰어 닫기
+  const handleSelectConversation = useCallback((convId) => {
+    switchSession(convId)
+    setViewingFileId(null)
+  }, [switchSession])
 
   const toggleRule = useCallback((key) => {
     setRules(prev => ({ ...prev, [key]: !prev[key] }))
@@ -66,7 +66,7 @@ export default function Workspace() {
   const completedFileIdsRef = useRef(new Set())
   useEffect(() => {
     if (!previewData) return
-    const corrections    = previewData.snippetData?.corrections ?? []
+    const corrections     = previewData.snippetData?.corrections ?? []
     const isNewCompletion = Boolean(previewData.artifactUrl) && !completedFileIdsRef.current.has(previewData.id)
     if (isNewCompletion) completedFileIdsRef.current.add(previewData.id)
 
@@ -80,8 +80,12 @@ export default function Workspace() {
     }))
   }, [previewData])
 
-  // 현재 활성 대화 제목
-  const activeConvTitle = conversations.find(c => c.id === activeConv)?.title ?? '새 대화'
+  // sessions 맵 → 사이드바용 배열 (최신순)
+  const conversations = useMemo(
+    () => Object.entries(sessions).map(([id, s]) => ({ id, title: s.title, ts: s.ts })).reverse(),
+    [sessions],
+  )
+  const activeConvTitle = sessions[activeSessionId]?.title ?? '새 대화'
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
@@ -91,8 +95,8 @@ export default function Workspace() {
         {/* 1열: 좌측 사이드바 */}
         <WorkspaceSidebar
           conversations={conversations}
-          activeConv={activeConv}
-          onSelectConversation={setActiveConv}
+          activeConv={activeSessionId}
+          onSelectConversation={handleSelectConversation}
           onNewConversation={handleNewConversation}
           fileItems={fileItems}
           viewingFileId={viewingFileId}
@@ -100,6 +104,7 @@ export default function Workspace() {
           rules={rules}
           onToggleRule={toggleRule}
           activeRuleCount={activeRuleCount}
+          isLoadingSessions={isLoadingSessions}
         />
 
         {/* 2열: 중앙 뷰어 — 파일 선택 시 표시, 닫혀 있으면 빈 flex-1로 채팅을 오른쪽에 고정 */}
@@ -108,7 +113,6 @@ export default function Workspace() {
             key={viewingFileId}
             previewData={previewData}
             onCloseViewer={() => setViewingFileId(null)}
-            onOpenPopup={() => setShowPopup(true)}
             showBanner={showBanner}
             onDismissBanner={() => setShowBanner(false)}
           />
@@ -133,14 +137,6 @@ export default function Workspace() {
         />
       </div>
 
-      {/* 서브뷰어 팝업 */}
-      {showPopup && previewData && (
-        <SubViewerPopup
-          previewData={previewData}
-          isFixed={false}
-          onClose={() => setShowPopup(false)}
-        />
-      )}
     </div>
   )
 }

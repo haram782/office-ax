@@ -1,28 +1,38 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
-import { createChatSession, getChatMessages, sendChatMessage } from '../api/client'
+import { createChatSession, getChatSessions, getChatMessages, sendChatMessage } from '../api/client'
 
 const POLL_INTERVAL_MS = 2500
 const MAX_POLLS = 40   // 100초 타임아웃
 
+function makeConvId() { return `conv_${Date.now()}` }
+
 /**
- * 채팅 워크스페이스 상태 머신.
+ * 채팅 워크스페이스 상태 머신 — sessions 맵 구조.
+ *
+ * sessions: Record<convId, { messages, title, ts }>
+ *   각 대화(conversation)를 독립적인 메시지 목록으로 관리한다.
+ * activeSessionId: 현재 선택된 대화 ID.
  *
  * 무한 루프 방지:
- *   - 전송 전 어시스턴트 메시지 수(baseline)를 확인
- *   - targetCount = baseline + 파일 수
- *   - 어시스턴트 메시지가 targetCount에 도달하면 즉시 폴링 종료
- *   - 중복 파일(dedup)인 경우 백엔드가 즉시 어시스턴트 메시지를 생성하므로
- *     첫 번째 폴링에서 바로 종료됨
+ *   전송 전 baseline 어시스턴트 수 → targetCount = baseline + 파일 수.
+ *   targetCount 도달 시 즉시 폴링 종료.
  */
 export function useChat() {
-  const [sessionId, setSessionId] = useState(null)
-  const [messages, setMessages] = useState([])
-  const [isProcessing, setIsProcessing] = useState(false)
-  const [error, setError] = useState(null)
+  const initId = useRef(makeConvId())
 
-  const intervalRef = useRef(null)
-  const pollCountRef = useRef(0)
-  const sessionIdRef = useRef(null)   // ref로도 보관 — interval closure 용
+  // 세션 맵: { [convId]: { messages, title, ts } }
+  const [sessions, setSessions] = useState(() => ({
+    [initId.current]: { messages: [], title: '새 대화', ts: '방금' },
+  }))
+  const [activeSessionId, setActiveSessionId] = useState(initId.current)
+  const [isProcessing, setIsProcessing]       = useState(false)
+  const [isLoadingSessions, setIsLoadingSessions] = useState(true)
+  const [error, setError]                     = useState(null)
+
+  // 백엔드 세션 ID 맵 (렌더 외부 — 클로저 안전)
+  const backendIdsRef = useRef({})   // { [convId]: string }
+  const intervalRef   = useRef(null)
+  const pollCountRef  = useRef(0)
 
   const stopPolling = useCallback(() => {
     if (intervalRef.current) {
@@ -33,15 +43,90 @@ export function useChat() {
 
   useEffect(() => () => stopPolling(), [stopPolling])
 
-  const getOrCreateSession = useCallback(async () => {
-    if (sessionIdRef.current) return sessionIdRef.current
+  // 마운트 시 백엔드에 저장된 세션 목록을 불러와 sessions 맵을 초기화한다
+  useEffect(() => {
+    getChatSessions()
+      .then(list => {
+        if (list.length === 0) {
+          // 신규 유저 — 초기 빈 세션 유지
+          setIsLoadingSessions(false)
+          return
+        }
+
+        // 최신순 정렬 (백엔드 응답이 최신순이어도 명시적으로 보장)
+        const sorted = [...list].sort(
+          (a, b) => new Date(b.updated_at) - new Date(a.updated_at)
+        )
+
+        // sessions 맵 구성: convId = String(backendId)
+        const newSessions = {}
+        sorted.forEach(s => {
+          newSessions[String(s.id)] = {
+            messages: s.messages ?? [],
+            title:    s.title || '새 대화',
+            ts:       s.updated_at,
+          }
+        })
+
+        // backendIdsRef 동기화: convId → 백엔드 정수 ID
+        sorted.forEach(s => {
+          backendIdsRef.current[String(s.id)] = s.id
+        })
+
+        setSessions(newSessions)
+        setActiveSessionId(String(sorted[0].id))
+      })
+      .catch(() => {
+        // 로드 실패 시 초기 빈 세션 유지 — 데이터 유실 없음
+      })
+      .finally(() => {
+        setIsLoadingSessions(false)
+      })
+  }, [])  // 마운트 1회만 실행
+
+  // 활성 세션 메시지 (파생)
+  const messages = sessions[activeSessionId]?.messages ?? []
+
+  // 세션 메시지 갱신 헬퍼
+  const setConvMessages = useCallback((convId, msgs) => {
+    setSessions(prev => ({
+      ...prev,
+      [convId]: { ...prev[convId], messages: msgs },
+    }))
+  }, [])
+
+  // 백엔드 세션 ID 획득 (없으면 생성)
+  const getOrCreateBackendId = useCallback(async (convId) => {
+    if (backendIdsRef.current[convId]) return backendIdsRef.current[convId]
     const session = await createChatSession()
-    sessionIdRef.current = session.id
-    setSessionId(session.id)
+    backendIdsRef.current[convId] = session.id
     return session.id
   }, [])
 
+  // 새 대화 생성 — sessions 맵에 추가하고 activeSessionId 변경
+  const createSession = useCallback((title = '새 대화') => {
+    const id = makeConvId()
+    setSessions(prev => ({ ...prev, [id]: { messages: [], title, ts: '방금' } }))
+    setActiveSessionId(id)
+    stopPolling()
+    setIsProcessing(false)
+    setError(null)
+    return id
+  }, [stopPolling])
+
+  // 대화 전환 — 다른 convId 선택
+  const switchSession = useCallback((convId) => {
+    stopPolling()
+    setActiveSessionId(convId)
+    setIsProcessing(false)
+    setError(null)
+  }, [stopPolling])
+
+  // 메시지 전송
   const sendMessage = useCallback(async (content, files = []) => {
+    const convId = activeSessionId
+    if (!convId) return
+
     const fileList = Array.isArray(files)
       ? files.filter(Boolean)
       : (files ? [files] : [])
@@ -53,7 +138,7 @@ export function useChat() {
 
     let sid
     try {
-      sid = await getOrCreateSession()
+      sid = await getOrCreateBackendId(convId)
     } catch {
       setIsProcessing(false)
       setError('세션 생성에 실패했습니다.')
@@ -86,41 +171,40 @@ export function useChat() {
           _pending: true,
         }]
 
-    setMessages(prev => [...prev, ...tempMsgs])
+    setSessions(prev => ({
+      ...prev,
+      [convId]: { ...prev[convId], messages: [...(prev[convId]?.messages ?? []), ...tempMsgs] },
+    }))
 
     try {
-      // ── 텍스트 전용 ─────────────────────────────────────────────────────────
+      // ── 텍스트 전용 ──────────────────────────────────────────────────────────
       if (fileList.length === 0) {
         await sendChatMessage(sid, content, null)
         const fresh = await getChatMessages(sid)
-        setMessages(fresh)
+        setConvMessages(convId, fresh)
         setIsProcessing(false)
         return
       }
 
-      // ── 파일 전송 ───────────────────────────────────────────────────────────
-      // 전송 전 기준 어시스턴트 메시지 수 파악 (세션 재개 시 기존 메시지 보정)
+      // ── 파일 전송 ────────────────────────────────────────────────────────────
       const beforeMsgs = await getChatMessages(sid)
       const baselineAssistantCount = beforeMsgs.filter(m => m.role === 'assistant').length
-      const targetAssistantCount = baselineAssistantCount + fileList.length
+      const targetAssistantCount   = baselineAssistantCount + fileList.length
 
-      // 파일 순차 전송: 첫 파일만 본문 포함
       for (let i = 0; i < fileList.length; i++) {
         await sendChatMessage(sid, i === 0 ? content : '', fileList[i])
       }
 
-      // 전송 직후 상태 갱신
       const afterSendMsgs = await getChatMessages(sid)
-      setMessages(afterSendMsgs)
+      setConvMessages(convId, afterSendMsgs)
 
-      // 중복 파일 dedup: 백엔드가 즉시 어시스턴트 메시지 생성 → 바로 종료
-      const currentAssistantCount = afterSendMsgs.filter(m => m.role === 'assistant').length
-      if (currentAssistantCount >= targetAssistantCount) {
+      // 중복 파일 dedup: 즉시 완료 여부 확인
+      if (afterSendMsgs.filter(m => m.role === 'assistant').length >= targetAssistantCount) {
         setIsProcessing(false)
         return
       }
 
-      // ── 폴링: Celery 완료 대기 ─────────────────────────────────────────────
+      // ── Celery 완료 폴링 ─────────────────────────────────────────────────────
       intervalRef.current = setInterval(async () => {
         pollCountRef.current += 1
 
@@ -133,7 +217,7 @@ export function useChat() {
 
         try {
           const fresh = await getChatMessages(sid)
-          setMessages(fresh)
+          setConvMessages(convId, fresh)
           if (fresh.filter(m => m.role === 'assistant').length >= targetAssistantCount) {
             stopPolling()
             setIsProcessing(false)
@@ -142,20 +226,31 @@ export function useChat() {
       }, POLL_INTERVAL_MS)
 
     } catch (err) {
-      setMessages(prev => prev.filter(m => !m._pending))
+      setSessions(prev => ({
+        ...prev,
+        [convId]: {
+          ...prev[convId],
+          messages: (prev[convId]?.messages ?? []).filter(m => !m._pending),
+        },
+      }))
       setIsProcessing(false)
       setError(err?.response?.data?.error ?? '메시지 전송에 실패했습니다.')
     }
-  }, [getOrCreateSession, stopPolling])
+  }, [activeSessionId, getOrCreateBackendId, setConvMessages, stopPolling])
 
-  const resetSession = useCallback(() => {
-    stopPolling()
-    sessionIdRef.current = null
-    setSessionId(null)
-    setMessages([])
-    setIsProcessing(false)
-    setError(null)
-  }, [stopPolling])
+  // resetSession — createSession의 별칭 (하위 호환)
+  const resetSession = useCallback(() => createSession(), [createSession])
 
-  return { sessionId, messages, isProcessing, error, sendMessage, resetSession }
+  return {
+    sessions,
+    activeSessionId,
+    messages,
+    isProcessing,
+    isLoadingSessions,
+    error,
+    sendMessage,
+    createSession,
+    switchSession,
+    resetSession,
+  }
 }

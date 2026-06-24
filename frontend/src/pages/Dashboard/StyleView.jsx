@@ -1,16 +1,26 @@
 import { useEffect, useState } from 'react'
 import { Ic } from '../../components/Ic'
 import { getRagAssets } from '../../api/client'
+import { SubViewerPopup } from '../Workspace/SubViewerPopup'
 
-/** 파일 행 */
-function FileRow({ name, meta }) {
+/**
+ * 파일 행 — 클릭 시 SubViewerPopup 열기.
+ * onView(name, fileUrl) 콜백을 통해 부모의 팝업 상태를 갱신한다.
+ */
+function FileRow({ name, meta, onView }) {
   return (
     <div className="flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-zinc-50 dark:hover:bg-zinc-800/60">
-      <Ic name="fileText" className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
-      <div className="flex-1 min-w-0">
-        <div className="text-[13px] text-zinc-700 dark:text-zinc-200 truncate">{name}</div>
-        <div className="text-[11px] text-zinc-400">{meta}</div>
-      </div>
+      {/* 파일명 클릭 → 뷰어 팝업 */}
+      <button
+        onClick={() => onView(name)}
+        className="flex items-center gap-2 flex-1 min-w-0 text-left"
+      >
+        <Ic name="fileText" className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+        <div className="flex-1 min-w-0">
+          <div className="text-[13px] text-blue-600 dark:text-blue-400 hover:underline truncate">{name}</div>
+          <div className="text-[11px] text-zinc-400">{meta}</div>
+        </div>
+      </button>
       <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300">
         학습완료
       </span>
@@ -22,7 +32,7 @@ function FileRow({ name, meta }) {
 }
 
 /** 에셋 그룹 카드 (어투 / 양식) */
-function AssetGroup({ kind, name, active, files, onAddFile }) {
+function AssetGroup({ kind, name, active, files, onAddFile, onViewFile }) {
   const isTone = kind === 'tone'
   const badgeColor = isTone
     ? 'bg-blue-50 text-blue-600 dark:bg-blue-500/15 dark:text-blue-300'
@@ -32,7 +42,7 @@ function AssetGroup({ kind, name, active, files, onAddFile }) {
     : 'border-zinc-200 dark:border-zinc-800'
 
   return (
-    <div className={`rounded-xl border bg-white dark:bg-zinc-900 overflow-hidden ${borderColor}`}>
+    <div className={`rounded-2xl border bg-white dark:bg-zinc-900 overflow-hidden shadow-sm ${borderColor}`}>
       {/* 헤더 */}
       <div className="flex items-center gap-2.5 px-3.5 py-3 border-b border-zinc-100 dark:border-zinc-800">
         <div className={`w-8 h-8 rounded-lg grid place-items-center shrink-0 ${badgeColor}`}>
@@ -56,7 +66,9 @@ function AssetGroup({ kind, name, active, files, onAddFile }) {
 
       {/* 파일 목록 */}
       <div className="p-1.5">
-        {files.map((f, i) => <FileRow key={i} name={f.name} meta={f.meta} />)}
+        {files.map((f, i) => (
+          <FileRow key={i} name={f.name} meta={f.meta} onView={onViewFile} />
+        ))}
       </div>
 
       {/* 파일 추가 버튼 */}
@@ -92,50 +104,72 @@ function Section({ title, sub, addLabel, children }) {
 
 /**
  * 스타일 & 템플릿 (RAG) 뷰 (대시보드 메인 콘텐츠).
+ * FileRow 클릭 → SubViewerPopup 열기.
  */
 export function StyleView() {
   const [assets, setAssets] = useState({ tones: [], forms: [] })
+  // { filename } | null
+  const [popup, setPopup]   = useState(null)
 
   useEffect(() => { getRagAssets().then(setAssets) }, [])
 
+  const handleViewFile = (filename) => setPopup({ filename })
+
   return (
-    <div className="flex flex-col gap-6">
-      {/* 파일 업로드 드롭존 */}
-      <div className="rounded-xl border-2 border-dashed border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900/40 p-8 text-center">
-        <div className="w-12 h-12 rounded-xl bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 grid place-items-center mx-auto mb-3 text-blue-600 dark:text-blue-400">
-          <Ic name="upload" className="w-5 h-5" />
+    <>
+      <div className="flex flex-col gap-6">
+        {/* 파일 업로드 드롭존 */}
+        <div className="rounded-2xl border-2 border-dashed border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900/40 p-8 text-center shadow-sm">
+          <div className="w-12 h-12 rounded-xl bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 grid place-items-center mx-auto mb-3 text-blue-600 dark:text-blue-400">
+            <Ic name="upload" className="w-5 h-5" />
+          </div>
+          <div className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
+            어투 파일 · 표준 서식을 끌어다 놓으세요
+          </div>
+          <div className="text-xs text-zinc-400 mt-1">.docx · .hwp · .pdf 지원 — RAG 학습에 사용됩니다</div>
+          <button className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-3.5 py-1.5">
+            <Ic name="upload" className="w-3.5 h-3.5" />
+            파일 선택
+          </button>
         </div>
-        <div className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
-          어투 파일 · 표준 서식을 끌어다 놓으세요
-        </div>
-        <div className="text-xs text-zinc-400 mt-1">.docx · .hwp · .pdf 지원 — RAG 학습에 사용됩니다</div>
-        <button className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-3.5 py-1.5">
-          <Ic name="upload" className="w-3.5 h-3.5" />
-          파일 선택
-        </button>
+
+        {/* 어투 스타일 섹션 */}
+        <Section
+          title="어투 스타일"
+          sub="하나의 어투에 여러 참조 파일을 연결해 문체를 학습시킵니다"
+          addLabel="어투 추가"
+        >
+          {assets.tones.map(t => (
+            <AssetGroup
+              key={t.id} kind="tone" name={t.name} active={t.active}
+              files={t.files} onAddFile={() => {}} onViewFile={handleViewFile}
+            />
+          ))}
+        </Section>
+
+        {/* 서식 양식 섹션 */}
+        <Section
+          title="서식 양식"
+          sub="하나의 양식에 여러 표준 템플릿 파일을 연결합니다"
+          addLabel="양식 추가"
+        >
+          {assets.forms.map(f => (
+            <AssetGroup
+              key={f.id} kind="form" name={f.name} active={f.active}
+              files={f.files} onAddFile={() => {}} onViewFile={handleViewFile}
+            />
+          ))}
+        </Section>
       </div>
 
-      {/* 어투 스타일 섹션 */}
-      <Section
-        title="어투 스타일"
-        sub="하나의 어투에 여러 참조 파일을 연결해 문체를 학습시킵니다"
-        addLabel="어투 추가"
-      >
-        {assets.tones.map(t => (
-          <AssetGroup key={t.id} kind="tone" name={t.name} active={t.active} files={t.files} onAddFile={() => {}} />
-        ))}
-      </Section>
-
-      {/* 서식 양식 섹션 */}
-      <Section
-        title="서식 양식"
-        sub="하나의 양식에 여러 표준 템플릿 파일을 연결합니다"
-        addLabel="양식 추가"
-      >
-        {assets.forms.map(f => (
-          <AssetGroup key={f.id} kind="form" name={f.name} active={f.active} files={f.files} onAddFile={() => {}} />
-        ))}
-      </Section>
-    </div>
+      {/* RAG 문서 뷰어 팝업 */}
+      {popup && (
+        <SubViewerPopup
+          filename={popup.filename}
+          title={`RAG 문서 · ${popup.filename}`}
+          onClose={() => setPopup(null)}
+        />
+      )}
+    </>
   )
 }

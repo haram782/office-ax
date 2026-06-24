@@ -51,7 +51,7 @@ function SnippetCard({ snippetData, onFileView }) {
           <thead>
             <tr className="bg-blue-50/80">
               {(snippetData.headers || []).map((h, i) => (
-                <th key={i} className="px-2 py-1.5 text-left font-semibold text-gray-600 whitespace-nowrap border-b border-blue-100">
+                <th key={i} className="px-2 py-1.5 text-left font-semibold text-zinc-600 dark:text-zinc-300 whitespace-nowrap border-b border-blue-100">
                   {h}
                 </th>
               ))}
@@ -61,7 +61,7 @@ function SnippetCard({ snippetData, onFileView }) {
             {(snippetData.preview_rows || []).slice(0, 4).map((row, i) => (
               <tr key={i} className="border-t border-blue-100/60 hover:bg-blue-50/30">
                 {row.map((cell, j) => (
-                  <td key={j} className="px-2 py-1.5 text-gray-700 whitespace-nowrap">
+                  <td key={j} className="px-2 py-1.5 text-zinc-700 dark:text-zinc-200 whitespace-nowrap">
                     {typeof cell === 'number' ? cell.toLocaleString() : cell}
                   </td>
                 ))}
@@ -73,14 +73,14 @@ function SnippetCard({ snippetData, onFileView }) {
 
       {/* 수정 항목 요약 */}
       {(snippetData.corrections || []).length > 0 && (
-        <div className="px-3 py-2 border-t border-blue-200 bg-white">
+        <div className="px-3 py-2 border-t border-blue-200 bg-white dark:bg-zinc-800">
           <div className="text-[11px] font-semibold text-red-500 mb-1.5">⚠ 감지된 오류 및 수정 사항</div>
           <div className="space-y-1">
             {snippetData.corrections.slice(0, 4).map((c, i) => (
               <div key={i} className="flex items-center gap-2 text-[11px]">
-                <span className="font-mono text-gray-500 w-8 flex-shrink-0">{c.cell}</span>
+                <span className="font-mono text-zinc-500 dark:text-zinc-400 w-8 flex-shrink-0">{c.cell}</span>
                 <span className="text-red-400 line-through truncate max-w-[80px]">{c.original}</span>
-                <span className="text-gray-400">→</span>
+                <span className="text-zinc-400">→</span>
                 <span className="text-emerald-600 font-medium truncate max-w-[80px]">{c.corrected}</span>
               </div>
             ))}
@@ -108,7 +108,7 @@ export function MessageBubble({ message, onFileView }) {
         {/* 첨부 파일 이름 배지 */}
         {message.upload_log && (
           <div className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl w-fit
-            ${isUser ? 'bg-blue-500 text-blue-100 ml-auto' : 'bg-gray-100 text-gray-500'}`}
+            ${isUser ? 'bg-blue-500 text-blue-100 ml-auto' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300'}`}
           >
             <span>📎</span>
             <span className="truncate max-w-[200px]">{message.upload_log.original_filename}</span>
@@ -121,7 +121,7 @@ export function MessageBubble({ message, onFileView }) {
           <div className={`rounded-2xl px-4 py-3 text-sm leading-relaxed space-y-1
             ${isUser
               ? 'bg-blue-600 text-white rounded-br-sm'
-              : 'bg-white border border-gray-200 text-gray-800 rounded-bl-sm shadow-sm'
+              : 'bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-800 text-zinc-800 dark:text-zinc-100 rounded-bl-sm shadow-sm'
             }
             ${isPending ? 'opacity-60' : ''}
           `}>
@@ -147,7 +147,7 @@ export function MessageBubble({ message, onFileView }) {
         )}
 
         {/* 타임스탬프 */}
-        <p className={`text-[10px] text-gray-400 ${isUser ? 'text-right' : 'text-left'}`}>
+        <p className={`text-[10px] text-zinc-400 ${isUser ? 'text-right' : 'text-left'}`}>
           {new Date(message.created_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
         </p>
       </div>
@@ -171,8 +171,8 @@ export function TypingIndicator() {
         AX
       </div>
       {/* max-w-max → 콘텐츠 너비만큼만 */}
-      <div className="max-w-max flex items-center gap-2 bg-slate-100 p-3 rounded-2xl">
-        <p key={stepIdx} className="text-sm text-gray-600 animate-fade-in-scale whitespace-nowrap">
+      <div className="max-w-max flex items-center gap-2 bg-zinc-100 dark:bg-zinc-800 p-3 rounded-2xl">
+        <p key={stepIdx} className="text-sm text-zinc-600 dark:text-zinc-300 animate-fade-in-scale whitespace-nowrap">
           {LOADING_STEPS[stepIdx]}
         </p>
         <div className="flex gap-1 items-center">

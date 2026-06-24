@@ -11,7 +11,6 @@ import { AutomationBanner } from './AutomationBanner'
 export function WorkspaceCenter({
   previewData,
   onCloseViewer,
-  onOpenPopup,
   showBanner,
   onDismissBanner,
 }) {
@@ -38,9 +37,12 @@ export function WorkspaceCenter({
           {filename}
         </div>
         <div className="flex items-center gap-1">
-          {/* 서브뷰어 팝업 열기 */}
+          {/* 새 탭 열기 — localStorage에 previewData 저장 후 /preview 탭 열기 */}
           <button
-            onClick={onOpenPopup}
+            onClick={() => {
+              localStorage.setItem('ax_preview_data', JSON.stringify(previewData))
+              window.open('/preview', '_blank')
+            }}
             className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-700 text-xs px-2.5 py-1.5 text-zinc-600 dark:text-zinc-300"
           >
             <Ic name="externalLink" className="w-3.5 h-3.5" />
@@ -49,7 +51,7 @@ export function WorkspaceCenter({
           {/* 뷰어 닫기 */}
           <button
             onClick={onCloseViewer}
-            className="w-8 h-8 grid place-items-center rounded-lg text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+            className="w-11 h-11 min-w-[44px] min-h-[44px] grid place-items-center rounded-lg text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
           >
             <Ic name="x" />
           </button>
