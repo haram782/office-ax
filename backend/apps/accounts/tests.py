@@ -9,6 +9,9 @@ Google OAuth 인증 API 테스트.
   5. 동일 이메일 재로그인 시 기존 유저 재사용 (get_or_create)
   6. GET /api/v1/auth/me/ — 인증된 사용자 정보 반환
   7. me/ 인증 없이 접근 시 401
+  8. [회귀] username=email 이미 존재하는 유저에 잘못 매핑되지 않는다 (email 필드 기준 조회)
+  9. [회귀] email 중복 유저 존재 시 MultipleObjectsReturned 방어 처리
+  10. [회귀] 기존 유저의 first_name이 비어 있으면 Google name으로 업데이트
 """
 from unittest.mock import MagicMock, patch
 
@@ -141,3 +144,110 @@ class MeViewTest(TestCase):
         """인증 헤더 없이 접근 시 401 반환."""
         response = APIClient().get("/api/v1/auth/me/")
         self.assertEqual(response.status_code, 401)
+
+
+class GoogleAuthUserMappingRegressionTest(TestCase):
+    """
+    username=email 기존 유저에 잘못 매핑되는 버그 회귀 테스트.
+    조회 기준을 email 필드로 변경했을 때의 동작을 검증한다.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.url = "/api/v1/auth/google/"
+
+    def _login_google(self, email="tester@example.com", name="홍길동"):
+        payload = {
+            "id": "999", "email": email, "verified_email": True,
+            "name": name, "given_name": "길동", "family_name": "홍",
+            "picture": "https://photo.jpg",
+        }
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = payload
+        mock_resp.raise_for_status = MagicMock()
+        with patch("apps.accounts.views.requests.get", return_value=mock_resp):
+            return self.client.post(self.url, {"access_token": "tok"}, format="json")
+
+    def test_existing_username_email_user_not_hijacked(self):
+        """
+        [회귀] username=email 형태로 미리 등록된 superuser/테스트 유저가 있어도
+        Google OAuth 로그인 시 해당 유저에 매핑되지 않고 신규 유저를 생성해야 한다.
+        조회 키가 username → email로 변경됐을 때의 핵심 동작 검증.
+        """
+        # username=email 기존 유저 생성 (email 필드는 다른 값)
+        existing = User.objects.create_user(
+            username="tester@example.com",
+            email="other@internal.com",  # email 필드가 다름
+            password="pw",
+        )
+        existing_session_count = existing.chat_sessions.count()  # 0
+
+        response = self._login_google(email="tester@example.com")
+        self.assertEqual(response.status_code, 200)
+
+        # OAuth로 로그인된 유저 ID가 기존 유저와 달라야 한다
+        oauth_user_id = response.data["user"]["id"]
+        self.assertNotEqual(
+            oauth_user_id, existing.pk,
+            "username=email 기존 유저에 잘못 매핑됐습니다 (버그 재현)",
+        )
+
+    def test_same_email_reuses_oauth_user(self):
+        """동일 email로 두 번 OAuth 로그인 시 유저가 하나만 존재해야 한다."""
+        self._login_google()
+        self._login_google()
+        count = User.objects.filter(email="tester@example.com").count()
+        self.assertEqual(count, 1)
+
+    def test_multiple_objects_returned_uses_first(self):
+        """
+        [방어] email 중복 유저가 DB에 있으면 MultipleObjectsReturned를 처리하고
+        id 기준 첫 번째 유저를 반환한다.
+        """
+        # email이 동일한 유저 두 명을 강제로 생성
+        u1 = User.objects.create_user(username="dup1", email="dup@example.com")
+        u2 = User.objects.create_user(username="dup2", email="dup@example.com")
+
+        payload = {
+            "id": "777", "email": "dup@example.com", "verified_email": True,
+            "name": "중복유저", "given_name": "", "family_name": "",
+            "picture": "",
+        }
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = payload
+        mock_resp.raise_for_status = MagicMock()
+        with patch("apps.accounts.views.requests.get", return_value=mock_resp):
+            response = self.client.post(self.url, {"access_token": "tok"}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        # id 오름차순 첫 번째 유저여야 한다
+        self.assertEqual(response.data["user"]["id"], u1.pk)
+
+    def test_existing_user_without_first_name_gets_updated(self):
+        """
+        [회귀] email 기준으로 조회된 기존 유저의 first_name이 비어 있으면
+        Google name 값으로 업데이트해야 한다.
+        """
+        # first_name 없이 미리 등록된 유저
+        existing = User.objects.create_user(
+            username="noname@example.com",
+            email="noname@example.com",
+            first_name="",
+        )
+
+        payload = {
+            "id": "888", "email": "noname@example.com", "verified_email": True,
+            "name": "이름업데이트", "given_name": "업데이트", "family_name": "이름",
+            "picture": "",
+        }
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = payload
+        mock_resp.raise_for_status = MagicMock()
+        with patch("apps.accounts.views.requests.get", return_value=mock_resp):
+            self.client.post(self.url, {"access_token": "tok"}, format="json")
+
+        existing.refresh_from_db()
+        self.assertEqual(existing.first_name, "이름업데이트")

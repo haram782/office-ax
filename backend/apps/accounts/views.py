@@ -1,3 +1,5 @@
+import uuid
+
 import requests
 
 from django.contrib.auth import get_user_model
@@ -56,12 +58,25 @@ class GoogleAuthView(APIView):
         name    = userinfo.get("name", "")
         picture = userinfo.get("picture", "")
 
-        # 이메일 기반으로 유저 조회 또는 생성
-        # first_name에 전체 이름을 저장해 me/ API에서도 일관 반환
-        user, _ = User.objects.get_or_create(
-            username=email,
-            defaults={"email": email, "first_name": name},
-        )
+        # email 필드 기준으로 유저 조회.
+        # username 기준 조회 시 username=email 형태의 기존 슈퍼유저·테스트 유저에
+        # 잘못 매핑되어 해당 유저의 세션 전체가 노출되는 버그가 발생한다.
+        # Django 기본 User의 email은 unique 제약이 없으므로 중복이 생길 수 있다.
+        user = User.objects.filter(email=email).order_by("id").first()
+        created = user is None
+
+        if created:
+            # username unique 제약 방어: 동일 username이 이미 있으면 uuid suffix 추가
+            username = email
+            if User.objects.filter(username=username).exists():
+                username = f"{email[:143]}_{uuid.uuid4().hex[:6]}"
+            user = User.objects.create_user(
+                username=username, email=email, first_name=name
+            )
+        elif not user.first_name and name:
+            # 기존 유저인데 이름 정보가 없으면 Google 이름으로 채워 준다
+            user.first_name = name
+            user.save(update_fields=["first_name"])
 
         # DRF 토큰 조회 또는 생성 — 재로그인 시 동일 토큰 유지
         token, _ = Token.objects.get_or_create(user=user)
