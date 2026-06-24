@@ -25,6 +25,7 @@ INSTALLED_APPS = [
     "apps.chat",
     "apps.pipelines",
     "apps.rag",
+    "apps.accounts",
 ]
 
 MIDDLEWARE = [
