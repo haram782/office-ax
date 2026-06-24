@@ -1,3 +1,6 @@
+/* Noto Sans KR 폰트 로드 */
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -10,4 +13,19 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
+}
+
+@layer utilities {
+  /* 전역 스크롤바 스타일 */
+  *::-webkit-scrollbar        { width: 9px; height: 9px; }
+  *::-webkit-scrollbar-thumb  { background: rgba(120,120,128,.38); border-radius: 5px; }
+  *::-webkit-scrollbar-track  { background: transparent; }
+
+  /* 스크롤바를 호버 시에만 표시 — width:0으로 숨기고 hover 시 복원 */
+  .scroll-on-hover                              { scrollbar-width: none; }
+  .scroll-on-hover:hover                        { scrollbar-width: thin; scrollbar-color: rgba(120,120,128,.38) transparent; }
+  .scroll-on-hover::-webkit-scrollbar           { width: 0; height: 0; }
+  .scroll-on-hover:hover::-webkit-scrollbar     { width: 6px; height: 6px; }
+  .scroll-on-hover:hover::-webkit-scrollbar-thumb { background: rgba(120,120,128,.38); border-radius: 4px; }
+  .scroll-on-hover:hover::-webkit-scrollbar-track { background: transparent; }
 }

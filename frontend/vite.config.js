@@ -7,6 +7,10 @@ export default defineConfig({
   assetsInclude: ['**/*.wasm'],
   server: {
     port: 5173,
+    // 클라우드플레어 퀵 터널의 임시 도메인(*.trycloudflare.com) 통과 허용
+    allowedHosts: ['.trycloudflare.com'],
+    // react-router-dom BrowserRouter — 404를 index.html로 폴백
+    historyApiFallback: true,
     proxy: {
       '/api': {
         target: 'http://localhost:8000',

@@ -350,8 +350,13 @@ function HwpViewer({ fileUrl, filename }) {
       // canvas.width/height 는 물리 픽셀, CSS 크기를 논리 픽셀로 역산
       const naturalW  = canvas.width  / dpr
       const naturalH  = canvas.height / dpr
-      const containerW = container.clientWidth - 48  // 패딩 여유
-      const ratio = Math.min(1, containerW / naturalW)
+      // 뷰어 영역(너비·높이) 안에 꽉 차되 넘치지 않도록 object-fit:contain 방식으로 배율 결정
+      const PAD = 48
+      const containerW = container.clientWidth  - PAD
+      const containerH = container.clientHeight - PAD
+      const ratioW = containerW / naturalW
+      const ratioH = containerH / naturalH
+      const ratio  = Math.min(ratioW, ratioH)
       canvas.style.width  = Math.floor(naturalW  * ratio) + 'px'
       canvas.style.height = Math.floor(naturalH  * ratio) + 'px'
       canvas.style.display = 'block'
@@ -721,7 +726,7 @@ export function DocViewer({ previewData, onClose }) {
 
     // 유저 클릭 핸들러 안에서 호출 → 팝업 차단 우회
     popupRef.current = window.open(
-      '/#preview',
+      '/preview',
       'ax-preview-window',
       'width=1100,height=820,resizable=yes,scrollbars=yes,location=no,menubar=no,toolbar=no',
     )

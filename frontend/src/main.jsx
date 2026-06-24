@@ -1,13 +1,16 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
+import { BrowserRouter } from 'react-router-dom'
 import App from './App'
-import PreviewPage from './PreviewPage'
+import { ThemeProvider } from './theme'
 import './index.css'
-
-const isPreview = window.location.hash === '#preview'
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    {isPreview ? <PreviewPage /> : <App />}
-  </React.StrictMode>
+    <BrowserRouter>
+      <ThemeProvider>
+        <App />
+      </ThemeProvider>
+    </BrowserRouter>
+  </React.StrictMode>,
 )

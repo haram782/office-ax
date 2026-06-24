@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { resolveViewer } from './components/DocumentPanel'
+import { resolveViewer } from '../components/DocumentPanel'
 
 const LS_KEY = 'ax_preview_data'
 
