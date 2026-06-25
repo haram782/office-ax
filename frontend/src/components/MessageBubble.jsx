@@ -1,9 +1,16 @@
 import { useState, useEffect } from 'react'
 
-const LOADING_STEPS = [
+// 파일 분석 로딩 스텝
+const FILE_LOADING_STEPS = [
   '📁 문서를 안전하게 업로드하는 중...',
   '🔍 내장 엔진으로 서류 데이터를 정밀 분석하는 중...',
   '🤖 AI가 오류 교정 및 수정본을 작성하는 중...',
+]
+
+// 텍스트 채팅 로딩 스텝
+const CHAT_LOADING_STEPS = [
+  'Gemini가 응답을 생성하는 중...',
+  '잠시만 기다려주세요...',
 ]
 
 /** 마크다운 **bold** 를 <strong>으로 변환하는 최소 렌더러 */
@@ -155,15 +162,23 @@ export function MessageBubble({ message, onFileView }) {
   )
 }
 
-export function TypingIndicator() {
+/**
+ * 로딩 인디케이터.
+ * mode="file"(기본): 파일 분석 단계별 메시지
+ * mode="chat": 텍스트 채팅 대기 메시지
+ */
+export function TypingIndicator({ mode = 'file' }) {
+  const steps = mode === 'chat' ? CHAT_LOADING_STEPS : FILE_LOADING_STEPS
   const [stepIdx, setStepIdx] = useState(0)
 
   useEffect(() => {
+    // mode 변경 시 스텝 초기화
+    setStepIdx(0)
     const id = setInterval(() => {
-      setStepIdx(prev => prev < LOADING_STEPS.length - 1 ? prev + 1 : 1)
+      setStepIdx(prev => prev < steps.length - 1 ? prev + 1 : 1)
     }, 1000)
     return () => clearInterval(id)
-  }, [])
+  }, [mode, steps.length])
 
   return (
     <div className="flex justify-start items-end gap-2">
@@ -173,7 +188,7 @@ export function TypingIndicator() {
       {/* max-w-max → 콘텐츠 너비만큼만 */}
       <div className="max-w-max flex items-center gap-2 bg-zinc-100 dark:bg-zinc-800 p-3 rounded-2xl">
         <p key={stepIdx} className="text-sm text-zinc-600 dark:text-zinc-300 animate-fade-in-scale whitespace-nowrap">
-          {LOADING_STEPS[stepIdx]}
+          {steps[stepIdx]}
         </p>
         <div className="flex gap-1 items-center">
           {[0, 150, 300].map(delay => (

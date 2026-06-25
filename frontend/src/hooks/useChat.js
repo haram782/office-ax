@@ -177,12 +177,44 @@ export function useChat() {
     }))
 
     try {
-      // ── 텍스트 전용 ──────────────────────────────────────────────────────────
+      // ── 텍스트 전용 — Gemini 응답을 폴링으로 대기 ──────────────────────────
       if (fileList.length === 0) {
+        // 전송 전 어시스턴트 수 baseline 기록
+        const beforeMsgs = await getChatMessages(sid)
+        const baselineAssistantCount = beforeMsgs.filter(m => m.role === 'assistant').length
+        const targetAssistantCount   = baselineAssistantCount + 1
+
         await sendChatMessage(sid, content, null)
-        const fresh = await getChatMessages(sid)
-        setConvMessages(convId, fresh)
-        setIsProcessing(false)
+
+        const afterSendMsgs = await getChatMessages(sid)
+        setConvMessages(convId, afterSendMsgs)
+
+        // 동기 응답(mock 등)이 즉시 왔으면 폴링 불필요
+        if (afterSendMsgs.filter(m => m.role === 'assistant').length >= targetAssistantCount) {
+          setIsProcessing(false)
+          return
+        }
+
+        // Celery text_chat 태스크 완료까지 폴링
+        intervalRef.current = setInterval(async () => {
+          pollCountRef.current += 1
+
+          if (pollCountRef.current > MAX_POLLS) {
+            stopPolling()
+            setIsProcessing(false)
+            setError('응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.')
+            return
+          }
+
+          try {
+            const fresh = await getChatMessages(sid)
+            setConvMessages(convId, fresh)
+            if (fresh.filter(m => m.role === 'assistant').length >= targetAssistantCount) {
+              stopPolling()
+              setIsProcessing(false)
+            }
+          } catch { /* 일시적 네트워크 오류 무시 */ }
+        }, POLL_INTERVAL_MS)
         return
       }
 

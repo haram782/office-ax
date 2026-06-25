@@ -147,15 +147,32 @@ class ChatMessageCreateView(APIView):
             content=content,
         )
 
-        # ── 텍스트 전용 메시지 ───────────────────────────────────────────────────
+        # ── 텍스트 전용 메시지 → text_chat 태스크 dispatch ──────────────────────
         if not file:
-            ChatMessage.objects.create(
-                session=session,
-                role=ChatMessage.Role.ASSISTANT,
-                content="파일을 첨부하면 AI가 문서를 분석합니다.",
+            # 현재 메시지 직전까지의 대화 이력을 최신순으로 최대 10개 조회 후 정순 재정렬
+            history_qs = (
+                ChatMessage.objects
+                .filter(session=session)
+                .exclude(pk=user_message.pk)
+                .order_by("-created_at")[:10]
             )
+            session_history = [
+                {"role": msg.role, "content": msg.content}
+                for msg in reversed(list(history_qs))
+            ]
+
+            current_app.send_task(
+                "tasks.text_chat",
+                kwargs={
+                    "content":         content,
+                    "chat_message_id": user_message.pk,
+                    "session_history": session_history,
+                },
+                queue="ax",
+            )
+
             return Response(
-                {"message_id": user_message.pk, "session_id": session.pk, "status": "sent"},
+                {"message_id": user_message.pk, "session_id": session.pk, "status": "processing"},
                 status=status.HTTP_202_ACCEPTED,
             )
 

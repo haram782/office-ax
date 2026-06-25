@@ -3,13 +3,23 @@ from .base import BaseLLMClient, AnalysisResult
 from .openai_client import OpenAIClient
 from .anthropic_client import AnthropicClient
 from .mock_client import MockLLMClient
+from .gemini_client import GeminiClient
+from .ensemble_client import EnsembleClient
 
-__all__ = ["BaseLLMClient", "AnalysisResult", "get_llm_client"]
+__all__ = [
+    "BaseLLMClient",
+    "AnalysisResult",
+    "get_llm_client",
+    "GeminiClient",
+    "EnsembleClient",
+]
 
 _REGISTRY: dict[str, type[BaseLLMClient]] = {
     "openai": OpenAIClient,
     "anthropic": AnthropicClient,
     "mock": MockLLMClient,
+    "gemini": GeminiClient,
+    "ensemble": EnsembleClient,
 }
 
 

@@ -102,6 +102,7 @@ def analyze_document(
             DOCUMENT_ANALYSIS_PROMPT,
             source_type=source_type,
             upload_id=upload_id,
+            file_path=str(path),  # GeminiClient가 멀티모달 경로에서 활용, 기존 클라이언트는 무시
         )
 
         # ── 4. artifact_path → 서빙 URL 변환 ────────────────────────────────

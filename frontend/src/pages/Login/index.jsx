@@ -119,6 +119,33 @@ export default function Login() {
             ? 'Google 인증 팝업이 열렸습니다. 잠시만 기다려주세요.'
             : '로그인 또는 회원가입 — Google 계정으로 자동 생성됩니다'}
         </p>
+
+        {/* 테스트 모드 구분선 */}
+        <div className="flex items-center gap-3 mt-6">
+          <div className="flex-1 h-px bg-zinc-100 dark:bg-zinc-800" />
+          <span className="text-[11px] text-zinc-400 shrink-0">테스트 모드</span>
+          <div className="flex-1 h-px bg-zinc-100 dark:bg-zinc-800" />
+        </div>
+
+        {/* 게스트 계정 버튼 2개 */}
+        <div className="flex gap-2 mt-3">
+          {[
+            { label: '게스트1', token: 'guest-token-1', name: '게스트1', email: 'guest1@test.com' },
+            { label: '게스트2', token: 'guest-token-2', name: '게스트2', email: 'guest2@test.com' },
+          ].map(g => (
+            <button
+              key={g.label}
+              onClick={() => {
+                localStorage.setItem('auth_token', g.token)
+                localStorage.setItem('ax_user', JSON.stringify({ name: g.name, email: g.email }))
+                navigate('/workspace', { replace: true })
+              }}
+              className="flex-1 h-9 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/60 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-xs text-zinc-500 dark:text-zinc-400 transition-colors"
+            >
+              {g.label}로 시작
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   )

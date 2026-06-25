@@ -77,6 +77,10 @@ export function WorkspaceChat({
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isProcessing])
 
+  // 마지막 유저 메시지에 파일 첨부 여부로 TypingIndicator 모드 결정
+  const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')
+  const typingMode  = lastUserMsg?.upload_log ? 'file' : 'chat'
+
   // 빠른 칩 → 미리 정의된 텍스트 전송
   function handleChip(key) {
     const presets = {
@@ -117,7 +121,7 @@ export function WorkspaceChat({
             {messages.map(msg => (
               <MessageBubble key={msg.id} message={msg} onFileView={onFileView} />
             ))}
-            {isProcessing && <TypingIndicator />}
+            {isProcessing && <TypingIndicator mode={typingMode} />}
             {error && (
               <div className="flex justify-center">
                 <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3 max-w-sm text-center">

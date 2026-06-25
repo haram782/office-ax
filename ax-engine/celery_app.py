@@ -8,7 +8,7 @@ app = Celery(
     "ax_engine",
     broker=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
     backend=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
-    include=["tasks.analyze_document"],
+    include=["tasks.analyze_document", "tasks.text_chat"],
 )
 
 app.conf.update(

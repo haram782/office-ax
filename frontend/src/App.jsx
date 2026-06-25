@@ -23,10 +23,11 @@ export default function App() {
     <div className="min-h-screen bg-zinc-100 dark:bg-zinc-950 text-zinc-800 dark:text-zinc-300">
       <Routes>
         <Route path="/login" element={<Login />} />
+        {/* 대시보드만 인증 필수 */}
         <Route path="/"             element={<RequireAuth><Dashboard /></RequireAuth>} />
-        <Route path="/workspace"    element={<RequireAuth><Workspace /></RequireAuth>} />
-        <Route path="/pipeline/:id" element={<RequireAuth><Pipeline /></RequireAuth>} />
-        <Route path="/preview"      element={<RequireAuth><PreviewPage /></RequireAuth>} />
+        <Route path="/workspace"    element={<Workspace />} />
+        <Route path="/pipeline/:id" element={<Pipeline />} />
+        <Route path="/preview"      element={<PreviewPage />} />
       </Routes>
     </div>
   )
