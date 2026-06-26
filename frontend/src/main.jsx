@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom'
 import { GoogleOAuthProvider } from '@react-oauth/google'
 import App from './App'
 import { ThemeProvider } from './theme'
+import { AppModalProvider } from './components/AppModal'
 import './index.css'
 
 ReactDOM.createRoot(document.getElementById('root')).render(
@@ -14,7 +15,9 @@ ReactDOM.createRoot(document.getElementById('root')).render(
     <GoogleOAuthProvider clientId={import.meta.env.VITE_GOOGLE_CLIENT_ID || 'dev-placeholder'}>
       <BrowserRouter>
         <ThemeProvider>
-          <App />
+          <AppModalProvider>
+            <App />
+          </AppModalProvider>
         </ThemeProvider>
       </BrowserRouter>
     </GoogleOAuthProvider>
