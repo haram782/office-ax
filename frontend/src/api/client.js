@@ -90,20 +90,74 @@ export async function getDashboardStats() {
   }
 }
 
+// ── Pipeline CRUD ────────────────────────────────────────────────────────────
+
+/** 파이프라인 목록 조회 */
 export async function getPipelines() {
-  return [
-    { id: 1, name: '청약서 자동 검토 및 보정',  tags: ['C'],      meta: '매일 09:00 · 최근 실행 2시간 전' },
-    { id: 2, name: '견적서 수식 오류 검출',      tags: ['A'],      meta: '대화형 트리거 · 수동 실행' },
-    { id: 3, name: '계약서 수신 자동 분석',      tags: ['B', 'A'], meta: 'contract@office-ax.com 수신 시 · 대화 보정' },
-    { id: 4, name: '주간 보고서 어투 변환',      tags: ['C', 'A'], meta: '매주 월 08:00 · RAG 적용' },
-    { id: 5, name: '청구서 자동 발송',           tags: ['B', 'C'], meta: '수신 즉시 + 매월 25일' },
-    { id: 6, name: '개인정보 자동 마스킹',       tags: ['A'],      meta: '대화형 트리거' },
-  ]
+  const { data } = await api.get('/pipelines/')
+  return data
 }
 
+/** 파이프라인 단건 조회 */
 export async function getPipelineById(id) {
-  const list = await getPipelines()
-  return list.find(p => p.id === Number(id)) ?? null
+  const { data } = await api.get(`/pipelines/${id}/`)
+  return data
+}
+
+/** 파이프라인 생성 */
+export async function createPipeline(payload) {
+  const { data } = await api.post('/pipelines/', payload)
+  return data
+}
+
+/** 파이프라인 수정 */
+export async function updatePipeline(id, payload) {
+  const { data } = await api.patch(`/pipelines/${id}/`, payload)
+  return data
+}
+
+/** 파이프라인 삭제 */
+export async function deletePipeline(id) {
+  const { data } = await api.delete(`/pipelines/${id}/`)
+  return data
+}
+
+// ── Step CRUD ────────────────────────────────────────────────────────────────
+
+/** 파이프라인에 속한 스텝 목록 조회 */
+export async function getPipelineSteps(pipelineId) {
+  const { data } = await api.get(`/pipelines/${pipelineId}/steps/`)
+  return data
+}
+
+/** 스텝 생성 */
+export async function createStep(pipelineId, payload) {
+  const { data } = await api.post(`/pipelines/${pipelineId}/steps/`, payload)
+  return data
+}
+
+/** 스텝 수정 */
+export async function updateStep(pipelineId, stepId, payload) {
+  const { data } = await api.patch(`/pipelines/${pipelineId}/steps/${stepId}/`, payload)
+  return data
+}
+
+/** 스텝 삭제 */
+export async function deleteStep(pipelineId, stepId) {
+  const { data } = await api.delete(`/pipelines/${pipelineId}/steps/${stepId}/`)
+  return data
+}
+
+/** 스텝 순서 재정렬 — orders: [{ id, step_order }, ...] */
+export async function reorderSteps(pipelineId, orders) {
+  const { data } = await api.post(`/pipelines/${pipelineId}/steps/reorder/`, { orders })
+  return data
+}
+
+/** 파이프라인 실행기록 조회 */
+export async function getPipelineRuns(pipelineId) {
+  const { data } = await api.get(`/pipelines/${pipelineId}/runs/`)
+  return data
 }
 
 export async function getEmailInbox() {
