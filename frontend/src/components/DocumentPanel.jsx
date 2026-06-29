@@ -4,6 +4,11 @@ import initRhwp, { HwpDocument } from '@rhwp/core'
 // ?url — Vite가 해당 파일을 asset으로 복사하고 실제 경로(해시 포함)를 반환
 // node_modules 번들링 시 import.meta.url 기반 경로가 깨지는 문제를 우회
 import rhwpWasmUrl from '@rhwp/core/rhwp_bg.wasm?url'
+// pdfjs-dist v6 — ?url 패턴으로 Vite가 worker asset 경로(해시 포함)를 해결
+import * as pdfjsLib from 'pdfjs-dist'
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+// PDF.js worker 경로 설정 — 모듈 로드 시 한 번만 실행 (WASM 패턴과 동일)
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
 // WASM 초기화 — 앱 전체에서 단 한 번만 실행, 명시적 URL로 번들러 이슈 방지
 let _wasmReady = null
@@ -83,8 +88,115 @@ function FileCard({ id, filename, status, artifactUrl, isViewing, onClick }) {
   )
 }
 
-/** Excel snippet_data → 풀사이즈 테이블 */
-function ExcelViewer({ data, filename }) {
+// ── ExcelViewer 셀 하이라이트 헬퍼 ────────────────────────────────────────────
+
+/** "ABC" → 0-based 컬럼 인덱스 (A=0, B=1, ..., Z=25, AA=26, ...) */
+function colLetterToIndex(letters) {
+  let result = 0
+  for (const ch of letters.toUpperCase()) {
+    result = result * 26 + (ch.charCodeAt(0) - 64)
+  }
+  return result - 1
+}
+
+/** "D12" → { col: 3, row: 11 } (0-based). 파싱 실패 시 null 반환 */
+function parseCellAddress(cell) {
+  const m = String(cell).match(/^([A-Za-z]+)(\d+)$/)
+  if (!m) return null
+  return { col: colLetterToIndex(m[1]), row: parseInt(m[2], 10) - 1 }
+}
+
+/** highlight + selectedHighlightId → 테이블 td/행에 적용할 Tailwind 클래스 */
+function cellHighlightCls(h, selectedHighlightId) {
+  if (!h) return ''
+  if (h.id === selectedHighlightId) {
+    return 'ring-2 ring-inset ring-blue-500 bg-blue-50 dark:bg-blue-900/20'
+  }
+  switch (h.status ?? 'pending') {
+    case 'applied':  return 'bg-emerald-50/80 dark:bg-emerald-900/20 ring-1 ring-inset ring-emerald-300 dark:ring-emerald-700'
+    case 'rejected': return 'opacity-50 bg-red-50/40 dark:bg-red-900/10 ring-1 ring-inset ring-red-200 dark:ring-red-800'
+    case 'pending':  return 'bg-amber-50/80 dark:bg-amber-900/20 ring-1 ring-inset ring-amber-300 dark:ring-amber-700'
+    default:         return ''
+  }
+}
+
+/** highlight status → corrections 행 배경 클래스 */
+function correctionRowCls(h, selectedHighlightId) {
+  if (!h) return ''
+  if (h.id === selectedHighlightId) {
+    return 'bg-blue-50 dark:bg-blue-900/20 ring-1 ring-inset ring-blue-200 dark:ring-blue-800'
+  }
+  switch (h.status ?? 'pending') {
+    case 'applied':  return 'bg-emerald-50/40 dark:bg-emerald-900/10'
+    case 'rejected': return 'opacity-50 bg-red-50/20 dark:bg-red-900/10'
+    case 'pending':  return 'bg-amber-50/30 dark:bg-amber-900/10'
+    default:         return ''
+  }
+}
+
+/**
+ * 선택된 셀 anchor가 현재 preview_rows 범위 밖일 때 표시하는 compact notice.
+ * sheet가 있으면 "Sheet1!D12" 형태로, 없으면 "D12"만 표시한다.
+ */
+function ExcelOutOfRangeNotice({ notice }) {
+  const { anchor } = notice
+  const cellRef = anchor.sheet ? `${anchor.sheet}!${anchor.cell}` : anchor.cell
+  return (
+    <div className="flex items-start gap-2 rounded-lg border border-blue-100 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-950/30 px-3 py-2.5 text-xs text-blue-700 dark:text-blue-300">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="flex-shrink-0 mt-0.5 opacity-70">
+        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+      </svg>
+      <span>
+        <span className="font-mono font-semibold">{cellRef}</span>
+        {`는 현재 미리보기 범위 밖입니다. 아래 수정 목록에서 확인하세요.`}
+      </span>
+    </div>
+  )
+}
+
+function ExcelViewer({ previewData, highlights = [], selectedHighlightId = null, onSelectHighlight = null }) {
+  const { filename, snippetData: data } = previewData
+
+  // { "col:row" → highlight } — 미리보기 테이블 셀 하이라이트용
+  const cellMap = useMemo(() => {
+    const map = {}
+    for (const h of highlights) {
+      if (h.anchor?.type === 'cell' && h.anchor.cell) {
+        const pos = parseCellAddress(h.anchor.cell)
+        if (pos) map[`${pos.col}:${pos.row}`] = h
+      }
+    }
+    return map
+  }, [highlights])
+
+  // { "D12" → highlight } — corrections 목록 행 하이라이트용
+  const correctionCellMap = useMemo(() => {
+    const map = {}
+    for (const h of highlights) {
+      if (h.anchor?.type === 'cell' && h.anchor.cell) {
+        map[h.anchor.cell.toUpperCase()] = h
+      }
+    }
+    return map
+  }, [highlights])
+
+  // 선택된 제안이 cell anchor이지만 현재 preview_rows 범위 밖이면 notice 표시용으로 반환
+  const outOfRangeNotice = useMemo(() => {
+    if (!selectedHighlightId || !data) return null
+    const h = highlights.find(h => h.id === selectedHighlightId && h.anchor?.type === 'cell')
+    if (!h) return null
+    const pos = parseCellAddress(h.anchor.cell)
+    if (!pos) return null
+    const rows = data.preview_rows ?? []
+    // 열 개수: headers 또는 첫 행 길이 기준
+    const colCount = data.headers?.length ?? rows[0]?.length ?? 0
+    // 행 또는 열이 미리보기 범위 안이면 notice 불필요
+    const rowVisible = pos.row < rows.length
+    const colVisible = colCount === 0 || pos.col < colCount
+    if (rowVisible && colVisible) return null
+    return h
+  }, [selectedHighlightId, highlights, data])
+
   if (!data) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-3 text-zinc-400">
@@ -96,6 +208,11 @@ function ExcelViewer({ data, filename }) {
 
   return (
     <div className="flex-1 min-h-0 overflow-auto p-4 space-y-5">
+      {/* 선택된 셀이 미리보기 범위 밖일 때 compact notice */}
+      {outOfRangeNotice && (
+        <ExcelOutOfRangeNotice notice={outOfRangeNotice} />
+      )}
+
       {/* 원본 데이터 테이블 */}
       <div className="rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-hidden shadow-sm">
         <div className="px-4 py-2.5 bg-gradient-to-r from-zinc-50 dark:from-zinc-800 to-white dark:to-zinc-900 border-b border-zinc-200 dark:border-zinc-700 flex items-center gap-2">
@@ -115,13 +232,23 @@ function ExcelViewer({ data, filename }) {
               </tr>
             </thead>
             <tbody>
-              {(data.preview_rows || []).map((row, i) => (
-                <tr key={i} className="border-t border-zinc-100 dark:border-zinc-800 hover:bg-blue-50/30 transition-colors">
-                  {row.map((cell, j) => (
-                    <td key={j} className="px-3 py-2 text-zinc-700 dark:text-zinc-200 whitespace-nowrap">
-                      {typeof cell === 'number' ? cell.toLocaleString() : cell}
-                    </td>
-                  ))}
+              {(data.preview_rows || []).map((row, rowIdx) => (
+                <tr key={rowIdx} className="border-t border-zinc-100 dark:border-zinc-800 hover:bg-blue-50/30 transition-colors">
+                  {row.map((cell, colIdx) => {
+                    // preview_rows[rowIdx] = Excel의 rowIdx+1 행 (헤더가 row 0, 데이터가 row 1~)
+                    const matchH = cellMap[`${colIdx}:${rowIdx}`]
+                    return (
+                      <td
+                        key={colIdx}
+                        onClick={() => matchH && onSelectHighlight?.(matchH.id)}
+                        className={`px-3 py-2 text-zinc-700 dark:text-zinc-200 whitespace-nowrap transition-colors
+                          ${matchH ? 'cursor-pointer ' + cellHighlightCls(matchH, selectedHighlightId) : ''}
+                        `}
+                      >
+                        {typeof cell === 'number' ? cell.toLocaleString() : cell}
+                      </td>
+                    )
+                  })}
                 </tr>
               ))}
             </tbody>
@@ -139,20 +266,38 @@ function ExcelViewer({ data, filename }) {
             </span>
           </div>
           <div className="divide-y divide-orange-50">
-            {data.corrections.map((c, i) => (
-              <div key={i} className="px-4 py-3 flex items-center gap-3">
-                <span className="font-mono text-xs font-bold text-zinc-500 dark:text-zinc-400 w-10 flex-shrink-0 bg-zinc-100 dark:bg-zinc-800 rounded px-1.5 py-0.5 text-center">
-                  {c.cell}
-                </span>
-                <div className="flex-1 flex items-center gap-2 min-w-0 text-xs">
-                  <span className="text-red-400 line-through truncate">{c.original}</span>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="flex-shrink-0 text-zinc-400">
-                    <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
-                  </svg>
-                  <span className="text-emerald-600 font-semibold truncate">{c.corrected}</span>
+            {data.corrections.map((c, i) => {
+              // corrections 항목과 highlight 매칭 — 클릭으로 제안 선택 가능
+              const matchH = correctionCellMap[c.cell?.toUpperCase?.() ?? '']
+              return (
+                <div
+                  key={i}
+                  onClick={() => matchH && onSelectHighlight?.(matchH.id)}
+                  className={`px-4 py-3 flex items-center gap-3 transition-colors
+                    ${matchH ? 'cursor-pointer ' + correctionRowCls(matchH, selectedHighlightId) : ''}
+                  `}
+                >
+                  <span className="font-mono text-xs font-bold text-zinc-500 dark:text-zinc-400 w-10 flex-shrink-0 bg-zinc-100 dark:bg-zinc-800 rounded px-1.5 py-0.5 text-center">
+                    {c.cell}
+                  </span>
+                  <div className="flex-1 flex items-center gap-2 min-w-0 text-xs">
+                    <span className="text-red-400 line-through truncate">{c.original}</span>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="flex-shrink-0 text-zinc-400">
+                      <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+                    </svg>
+                    <span className="text-emerald-600 font-semibold truncate">{c.corrected}</span>
+                  </div>
+                  {/* 제안 상태 인디케이터 */}
+                  {matchH && matchH.status !== 'pending' && (
+                    <span className={`flex-shrink-0 text-[10px] font-semibold
+                      ${matchH.status === 'applied'  ? 'text-emerald-500' : 'text-red-400'}
+                    `}>
+                      {matchH.status === 'applied' ? '✓' : '✗'}
+                    </span>
+                  )}
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </div>
       )}
@@ -160,8 +305,132 @@ function ExcelViewer({ data, filename }) {
   )
 }
 
-/** PDF → 풀사이즈 iframe */
-function PdfViewer({ fileUrl, filename }) {
+/**
+ * 개별 PDF 페이지 canvas.
+ * pdfDoc · scale 변경 시 자동 재렌더링하고, 화면 진입 시 onVisible(pageNum)을 호출한다.
+ */
+function PdfPageCanvas({ pdfDoc, pageNum, scale, onVisible }) {
+  const wrapperRef = useRef(null)
+  const canvasRef  = useRef(null)
+  const taskRef    = useRef(null)
+
+  // 페이지 렌더링 — pdfDoc · scale 변경 시 재실행
+  useEffect(() => {
+    if (!pdfDoc) return
+    let cancelled = false
+
+    pdfDoc.getPage(pageNum).then(page => {
+      if (cancelled) return
+      // 이전 render task 취소
+      taskRef.current?.cancel()
+
+      const viewport = page.getViewport({ scale })
+      const canvas   = canvasRef.current
+      if (!canvas) return
+
+      // DPR 배율로 고해상도 렌더링 (최대 2배, canvas.width 재할당 시 transform 자동 초기화)
+      const dpr = Math.min(window.devicePixelRatio || 1, 2)
+      canvas.width  = Math.floor(viewport.width  * dpr)
+      canvas.height = Math.floor(viewport.height * dpr)
+      canvas.style.width  = Math.floor(viewport.width)  + 'px'
+      canvas.style.height = Math.floor(viewport.height) + 'px'
+
+      const ctx = canvas.getContext('2d')
+      ctx.scale(dpr, dpr)
+
+      taskRef.current = page.render({ canvasContext: ctx, viewport })
+      return taskRef.current.promise
+    }).catch(err => {
+      if (!cancelled && err?.name !== 'RenderingCancelledException') {
+        console.error('[PdfViewer] 페이지 렌더링 오류 (page', pageNum, '):', err)
+      }
+    })
+
+    return () => {
+      cancelled = true
+      taskRef.current?.cancel()
+    }
+  }, [pdfDoc, pageNum, scale])
+
+  // IntersectionObserver — 뷰포트 진입 시 onVisible 호출로 현재 페이지 갱신
+  useEffect(() => {
+    const el = wrapperRef.current
+    if (!el || !onVisible) return
+    const observer = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) onVisible(pageNum) },
+      { threshold: 0.3 },
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [onVisible, pageNum])
+
+  return (
+    // id로 goToPage의 scrollIntoView 타깃을 지정
+    <div id={`pdf-page-${pageNum}`} ref={wrapperRef} className="bg-white dark:bg-zinc-900 shadow-md rounded-sm overflow-hidden">
+      <canvas ref={canvasRef} className="block" />
+    </div>
+  )
+}
+
+/**
+ * PDF.js v6 기반 캔버스 뷰어.
+ * 전체 페이지를 세로 스크롤로 표시하고 페이지 이동·줌을 지원한다.
+ * 텍스트 레이어·하이라이트 오버레이는 2차 작업으로 별도 구현 예정.
+ */
+function PdfViewer({ previewData, highlights = [], selectedHighlightId = null, onSelectHighlight = null }) {
+  const { fileUrl } = previewData
+
+  const [pdfDoc,      setPdfDoc]      = useState(null)
+  const [numPages,    setNumPages]    = useState(0)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [scale,       setScale]       = useState(1.0)
+  const [status,      setStatus]      = useState('idle')  // idle | loading | done | error
+  const [errMsg,      setErrMsg]      = useState('')
+
+  // PDF 문서 로드 — fileUrl 변경 시 이전 문서 해제 후 재로드
+  useEffect(() => {
+    if (!fileUrl) return
+    let cancelled = false
+
+    setPdfDoc(prev => { prev?.destroy(); return null })
+    setNumPages(0)
+    setCurrentPage(1)
+    setErrMsg('')
+    setStatus('loading')
+
+    pdfjsLib.getDocument({ url: fileUrl }).promise
+      .then(doc => {
+        if (cancelled) { doc.destroy(); return }
+        setPdfDoc(doc)
+        setNumPages(doc.numPages)
+        setStatus('done')
+      })
+      .catch(err => {
+        if (!cancelled) {
+          console.error('[PdfViewer]', err)
+          setErrMsg(err?.message ?? String(err))
+          setStatus('error')
+        }
+      })
+
+    return () => { cancelled = true }
+  }, [fileUrl])
+
+  // 언마운트 시 PDF 문서 destroy — WASM 메모리 패턴과 동일한 정리 방식
+  useEffect(() => () => { pdfDoc?.destroy() }, [pdfDoc])
+
+  // 페이지 이동 — 대상 div로 스크롤 후 현재 페이지 상태 업데이트
+  const goToPage = useCallback((n) => {
+    const target = Math.max(1, Math.min(n, numPages))
+    document.getElementById(`pdf-page-${target}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    setCurrentPage(target)
+  }, [numPages])
+
+  const handleVisible = useCallback((pageNum) => {
+    setCurrentPage(pageNum)
+  }, [])
+
+  // ── fileUrl 없음 ──
   if (!fileUrl) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-3 text-zinc-400">
@@ -171,12 +440,97 @@ function PdfViewer({ fileUrl, filename }) {
     )
   }
 
+  // ── 로딩 ──
+  if (status === 'loading') {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-3 text-zinc-400">
+        <span className="h-6 w-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+        <span className="text-sm">PDF를 불러오는 중…</span>
+      </div>
+    )
+  }
+
+  // ── 에러 ──
+  if (status === 'error') {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-4 text-zinc-400 px-6">
+        <span className="text-4xl">⚠️</span>
+        <p className="text-sm font-medium text-red-400">PDF를 열지 못했습니다</p>
+        {errMsg && (
+          <p className="text-[11px] text-center max-w-xs bg-zinc-50 dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 rounded-lg px-3 py-2 font-mono break-all text-zinc-500 dark:text-zinc-400">
+            {errMsg}
+          </p>
+        )}
+      </div>
+    )
+  }
+
+  // ── 정상 렌더 ──
   return (
-    <iframe
-      src={fileUrl}
-      title={`PDF 미리보기: ${filename}`}
-      className="flex-1 min-h-0 w-full border-0"
-    />
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-zinc-100 dark:bg-zinc-800">
+      {/* 페이지 내비게이터 + 줌 바 */}
+      <div className="flex-shrink-0 flex items-center gap-3 px-4 py-2 bg-white dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-700">
+        {/* 이전 페이지 */}
+        <button
+          onClick={() => goToPage(currentPage - 1)}
+          disabled={currentPage <= 1}
+          className="w-7 h-7 flex items-center justify-center rounded-lg border border-zinc-200 dark:border-zinc-700 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+            <polyline points="15 18 9 12 15 6"/>
+          </svg>
+        </button>
+        <span className="text-xs text-zinc-600 dark:text-zinc-300 tabular-nums">
+          {currentPage} <span className="text-zinc-400">/ {numPages}</span>
+        </span>
+        {/* 다음 페이지 */}
+        <button
+          onClick={() => goToPage(currentPage + 1)}
+          disabled={currentPage >= numPages}
+          className="w-7 h-7 flex items-center justify-center rounded-lg border border-zinc-200 dark:border-zinc-700 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+            <polyline points="9 18 15 12 9 6"/>
+          </svg>
+        </button>
+
+        {/* 구분선 */}
+        <div className="h-4 w-px bg-zinc-200 dark:bg-zinc-700 mx-1" />
+
+        {/* 줌 아웃 */}
+        <button
+          onClick={() => setScale(s => Math.max(0.25, +(s - 0.25).toFixed(2)))}
+          disabled={scale <= 0.25}
+          className="w-7 h-7 flex items-center justify-center rounded-lg border border-zinc-200 dark:border-zinc-700 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors text-base font-medium leading-none"
+        >
+          −
+        </button>
+        <span className="text-xs w-10 text-center tabular-nums text-zinc-600 dark:text-zinc-300">
+          {Math.round(scale * 100)}%
+        </span>
+        {/* 줌 인 */}
+        <button
+          onClick={() => setScale(s => Math.min(3.0, +(s + 0.25).toFixed(2)))}
+          disabled={scale >= 3.0}
+          className="w-7 h-7 flex items-center justify-center rounded-lg border border-zinc-200 dark:border-zinc-700 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors text-base font-medium leading-none"
+        >
+          +
+        </button>
+      </div>
+
+      {/* 전체 페이지 세로 스크롤 영역 */}
+      <div className="flex-1 overflow-auto p-6 flex flex-col items-center gap-5">
+        {Array.from({ length: numPages }, (_, i) => (
+          <PdfPageCanvas
+            key={i + 1}
+            pdfDoc={pdfDoc}
+            pageNum={i + 1}
+            scale={scale}
+            onVisible={handleVisible}
+          />
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -201,12 +555,14 @@ function FormatComingSoon({ icon, format, note, badge = '준비 중' }) {
   )
 }
 
-function CsvViewer({ data, filename }) {
+function CsvViewer({ previewData, highlights = [], selectedHighlightId = null, onSelectHighlight = null }) {
   // snippet_data 구조가 ExcelViewer와 동일하므로 그대로 위임
-  return <ExcelViewer data={data} filename={filename} />
+  return <ExcelViewer previewData={previewData} highlights={highlights} selectedHighlightId={selectedHighlightId} onSelectHighlight={onSelectHighlight} />
 }
 
-function ImageViewer({ fileUrl, filename }) {
+function ImageViewer({ previewData, highlights = [], selectedHighlightId = null, onSelectHighlight = null }) {
+  const { filename, fileUrl } = previewData
+
   if (!fileUrl) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-3 text-zinc-400">
@@ -228,7 +584,8 @@ function ImageViewer({ fileUrl, filename }) {
 }
 
 // DocxViewer: LibreOffice+pdftoppm 변환 페이지 PNG → HWP 뷰어 동일 레이아웃
-function DocxViewer({ snippetData, filename }) {
+function DocxViewer({ previewData, highlights = [], selectedHighlightId = null, onSelectHighlight = null }) {
+  const { filename, snippetData } = previewData
   const ext      = filename.split('.').pop().toLowerCase()
   const pageUrls = snippetData?.page_urls ?? []
 
@@ -256,6 +613,11 @@ function DocxViewer({ snippetData, filename }) {
     )
   }
 
+  // 선택된 highlight 중 anchor.type이 text_match인 것만 notice로 표시
+  const activeNotice = selectedHighlightId
+    ? (highlights.find(h => h.id === selectedHighlightId && h.anchor?.type === 'text_match') ?? null)
+    : null
+
   /*
    * JS 측정(useEffect + clientWidth) 대신 CSS 박스 모델로 구현.
    * max-width + margin:auto 는 flex % 해석 불안정 문제가 없고,
@@ -269,6 +631,9 @@ function DocxViewer({ snippetData, filename }) {
           전체 <span className="font-semibold text-zinc-700 dark:text-zinc-200">{pageUrls.length}</span>페이지
         </span>
       </div>
+
+      {/* text_match 앵커 notice — 선택된 제안이 text_match일 때만 표시 */}
+      {activeNotice && <TextMatchNotice notice={activeNotice} />}
 
       {/*
        * HWP naturalW ≈ 595px (rhwp A4 72pt 기준).
@@ -298,7 +663,103 @@ function DocxViewer({ snippetData, filename }) {
   )
 }
 
-function HwpViewer({ fileUrl, filename }) {
+// status → notice 배경/테두리/텍스트 색상 클래스 (DOCX/HWP/PPTX 공용)
+const NOTICE_STATUS_CLS = {
+  pending:  'bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-700 text-amber-800 dark:text-amber-300',
+  applied:  'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-700 text-emerald-800 dark:text-emerald-300',
+  rejected: 'bg-zinc-100 dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 text-zinc-400 dark:text-zinc-500',
+}
+
+/**
+ * text_match 앵커 notice 바 — HWP · DOCX 공용.
+ * 좌표 하이라이트가 불가하므로 텍스트 컨텍스트와 교정 내용만 표시한다.
+ */
+function TextMatchNotice({ notice }) {
+  const { anchor, replacement, reason, status = 'pending' } = notice
+  const { target_text = '', context_before = '', context_after = '' } = anchor ?? {}
+  const cls = NOTICE_STATUS_CLS[status] ?? NOTICE_STATUS_CLS.pending
+
+  return (
+    <div className={`flex-shrink-0 flex flex-col gap-1 px-4 py-2.5 border-b text-xs ${cls}`}>
+      {/* 컨텍스트 미리보기 */}
+      <div className="flex items-baseline gap-1 flex-wrap leading-relaxed">
+        {context_before && (
+          <span className="opacity-60 truncate max-w-[120px]" title={context_before}>
+            …{context_before}
+          </span>
+        )}
+        <span className="font-semibold underline underline-offset-2 decoration-dotted">
+          {target_text}
+        </span>
+        {context_after && (
+          <span className="opacity-60 truncate max-w-[120px]" title={context_after}>
+            {context_after}…
+          </span>
+        )}
+      </div>
+
+      {/* 교정 내용 */}
+      {replacement && (
+        <div className="flex items-center gap-1.5">
+          <span className="opacity-50 line-through text-[11px]">{target_text}</span>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" className="opacity-50 flex-shrink-0">
+            <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+          </svg>
+          <span className="font-medium text-[11px]">{replacement}</span>
+        </div>
+      )}
+
+      {/* 이유 */}
+      {reason && (
+        <p className="opacity-60 text-[10px] leading-relaxed line-clamp-1">{reason}</p>
+      )}
+    </div>
+  )
+}
+
+/**
+ * slide_shape 앵커 notice 바 — PPTX 전용.
+ * 셰이프 좌표 하이라이트가 불가하므로 위치 라벨과 교정 내용만 표시한다.
+ */
+function SlideShapeNotice({ notice }) {
+  const { anchor, replacement, reason, status = 'pending' } = notice
+  const cls = NOTICE_STATUS_CLS[status] ?? NOTICE_STATUS_CLS.pending
+
+  // "슬라이드 N · 셰이프 M" 또는 "슬라이드 N · 셰이프 M · 행 R · 열 C"
+  const locationParts = []
+  if (anchor?.slide_index != null) locationParts.push(`슬라이드 ${anchor.slide_index + 1}`)
+  if (anchor?.shape_index != null) locationParts.push(`셰이프 ${anchor.shape_index + 1}`)
+  if (anchor?.row_index   != null) locationParts.push(`행 ${anchor.row_index + 1}`)
+  if (anchor?.col_index   != null) locationParts.push(`열 ${anchor.col_index + 1}`)
+  const location = locationParts.join(' · ')
+
+  return (
+    <div className={`flex-shrink-0 flex flex-col gap-1 px-4 py-2.5 border-b text-xs ${cls}`}>
+      {/* 위치 라벨 */}
+      {location && (
+        <span className="font-semibold opacity-80">{location}</span>
+      )}
+
+      {/* 교정 내용 */}
+      {replacement && (
+        <div className="flex items-center gap-1.5">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" className="opacity-50 flex-shrink-0">
+            <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+          </svg>
+          <span className="font-medium text-[11px]">{replacement}</span>
+        </div>
+      )}
+
+      {/* 이유 */}
+      {reason && (
+        <p className="opacity-60 text-[10px] leading-relaxed line-clamp-1">{reason}</p>
+      )}
+    </div>
+  )
+}
+
+function HwpViewer({ previewData, highlights = [], selectedHighlightId = null, onSelectHighlight = null }) {
+  const { filename, fileUrl } = previewData
   const [status, setStatus]         = useState('idle')  // idle | loading | done | error
   const [totalPages, setTotalPages] = useState(0)
   const [pageNum, setPageNum]       = useState(0)
@@ -421,6 +882,11 @@ function HwpViewer({ fileUrl, filename }) {
     )
   }
 
+  // 선택된 highlight 중 anchor.type이 text_match인 것만 notice로 표시
+  const activeNotice = selectedHighlightId
+    ? (highlights.find(h => h.id === selectedHighlightId && h.anchor?.type === 'text_match') ?? null)
+    : null
+
   // — 정상 렌더 —
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-zinc-100 dark:bg-zinc-800">
@@ -455,6 +921,9 @@ function HwpViewer({ fileUrl, filename }) {
         </span>
       </div>
 
+      {/* text_match 앵커 notice 바 — 선택된 제안이 text_match일 때만 표시 */}
+      {activeNotice && <TextMatchNotice notice={activeNotice} />}
+
       {/* Canvas 렌더링 영역 */}
       <div ref={containerRef} className="flex-1 overflow-auto p-6 flex justify-center items-start">
         <div className="bg-white dark:bg-zinc-900 shadow-md rounded-sm overflow-hidden">
@@ -465,7 +934,8 @@ function HwpViewer({ fileUrl, filename }) {
   )
 }
 
-function PptxViewer({ snippetData, filename }) {
+function PptxViewer({ previewData, highlights = [], selectedHighlightId = null, onSelectHighlight = null }) {
+  const { filename, snippetData } = previewData
   const slideUrls  = snippetData?.slide_urls  ?? []
   const slideCount = snippetData?.slide_count ?? slideUrls.length
   const hasRender  = snippetData?.render_available ?? slideUrls.length > 0
@@ -513,13 +983,23 @@ function PptxViewer({ snippetData, filename }) {
   // ── 슬라이드쇼 ──
   const currentUrl = getSlideUrl(current)
 
+  // 선택된 highlight 중 anchor.type이 slide_shape인 것만 notice로 표시
+  const activeNotice = selectedHighlightId
+    ? (highlights.find(h => h.id === selectedHighlightId && h.anchor?.type === 'slide_shape') ?? null)
+    : null
+
   // 컨테이너 maxWidth: 뷰포트 높이에서 오버헤드(헤더·네비·썸네일·여백 ≈ 15rem)를
   // 빼고 16:9 역산한 너비와 80rem 중 작은 값 → 항상 화면 내에 맞음
   const containerMaxWidth = 'min(80rem, calc((100vh - 15rem) * 16 / 9))'
 
   return (
-    // aspect-video로 카드 높이가 자연스럽게 결정되므로 overflow-auto로 스크롤 가능
-    <div className="flex-1 min-h-0 overflow-auto bg-zinc-100 dark:bg-zinc-800">
+    // notice를 스크롤 영역 밖 상단에 고정하기 위해 flex-col wrapper 사용
+    <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-zinc-100 dark:bg-zinc-800">
+      {/* slide_shape 앵커 notice — 선택된 제안이 slide_shape일 때만 표시 */}
+      {activeNotice && <SlideShapeNotice notice={activeNotice} />}
+
+      {/* aspect-video로 카드 높이가 자연스럽게 결정되므로 overflow-auto로 스크롤 가능 */}
+      <div className="flex-1 min-h-0 overflow-auto">
       <div
         className="mx-auto w-full px-5 py-5 flex flex-col gap-3"
         style={{ maxWidth: containerMaxWidth }}
@@ -609,27 +1089,38 @@ function PptxViewer({ snippetData, filename }) {
 
       </div>
     </div>
+    </div>
   )
 }
 
 /**
  * 확장자 → 뷰어 컴포넌트 라우터.
  * 신규 포맷 추가 시 이 함수만 수정하면 DocViewer·PreviewPage 양쪽에 반영됩니다.
+ *
+ * @param {object} previewData            - { filename, fileUrl, snippetData, ... }
+ * @param {object} [opts]                 - 하이라이트 계약 (v0: 시그니처 준비, 동작 미적용)
+ * @param {Array}  [opts.highlights]      - 하이라이트 목록
+ * @param {string} [opts.selectedHighlightId] - 선택된 하이라이트 ID
+ * @param {Function} [opts.onSelectHighlight] - 하이라이트 선택 콜백
  */
-export function resolveViewer({ filename, fileUrl, snippetData }) {
+export function resolveViewer(previewData, { highlights = [], selectedHighlightId = null, onSelectHighlight = null } = {}) {
+  const { filename } = previewData
   const ext = filename.split('.').pop().toLowerCase()
+
+  // 모든 뷰어에 공통으로 전달하는 props
+  const viewerProps = { previewData, highlights, selectedHighlightId, onSelectHighlight }
 
   switch (ext) {
     // ── 표 형식 (AI 교정 데이터 뷰) ─────────────────────────────────────────
     case 'xlsx':
     case 'xls':
-      return <ExcelViewer data={snippetData} filename={filename} />
+      return <ExcelViewer {...viewerProps} />
     case 'csv':
-      return <CsvViewer data={snippetData} filename={filename} />
+      return <CsvViewer {...viewerProps} />
 
     // ── 페이지 문서 (iframe) ─────────────────────────────────────────────────
     case 'pdf':
-      return <PdfViewer fileUrl={fileUrl} filename={filename} />
+      return <PdfViewer {...viewerProps} />
 
     // ── 이미지 (직접 렌더) ───────────────────────────────────────────────────
     case 'png':
@@ -637,18 +1128,18 @@ export function resolveViewer({ filename, fileUrl, snippetData }) {
     case 'jpeg':
     case 'webp':
     case 'gif':
-      return <ImageViewer fileUrl={fileUrl} filename={filename} />
+      return <ImageViewer {...viewerProps} />
 
     // ── 스텁 (로드맵 명시, 컴포넌트 단위로 관리) ──────────────────────────────
     case 'pptx':
     case 'ppt':
-      return <PptxViewer snippetData={snippetData} filename={filename} />
+      return <PptxViewer {...viewerProps} />
     case 'docx':
     case 'doc':
-      return <DocxViewer snippetData={snippetData} filename={filename} />
+      return <DocxViewer {...viewerProps} />
     case 'hwp':
     case 'hwpx':
-      return <HwpViewer fileUrl={fileUrl} filename={filename} />
+      return <HwpViewer {...viewerProps} />
 
     default:
       return (

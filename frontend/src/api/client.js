@@ -1,6 +1,8 @@
 import axios from 'axios'
 
 const api = axios.create({ baseURL: '/api/v1' })
+// documentChanges.js 등 하위 모듈에서 인증 인터셉터를 공유하기 위해 export
+export { api }
 
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('auth_token')
