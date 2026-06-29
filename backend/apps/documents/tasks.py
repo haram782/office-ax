@@ -7,7 +7,7 @@ from celery import shared_task
 from celery.utils.log import get_task_logger
 from django.utils import timezone
 
-from .models import IngestionWorkflow, UploadLog
+from .models import DocumentVersion, IngestionWorkflow, UploadLog
 
 logger = get_task_logger(__name__)
 
@@ -94,6 +94,17 @@ def notify_analysis_complete(upload_id: int, result: dict) -> None:
     upload_log.status = UploadLog.Status.DONE
     upload_log.save(update_fields=["result", "status"])
 
+    # ── 1-b. 원본 DocumentVersion 자동 생성 (idempotent — 중복 생성 방지) ──
+    DocumentVersion.objects.get_or_create(
+        upload_log=upload_log,
+        version_number=1,
+        defaults={
+            "status": DocumentVersion.Status.ORIGINAL,
+            "label": "원본",
+            "created_by": upload_log.user,
+        },
+    )
+
     # ── 2. 알림톡 발송 (자동화 워크플로우 + 전화번호 있을 때만) ─────────────
     workflow = (
         IngestionWorkflow.objects
@@ -158,6 +169,349 @@ def notify_analysis_complete(upload_id: int, result: dict) -> None:
         logger.exception("알림톡 예기치 않은 오류 | upload_id=%s", upload_id)
         upload_log.result = {**result, "_notification_error": f"예기치 않은 오류: {exc}"}
         upload_log.save(update_fields=["result"])
+
+
+@shared_task(name="documents.patch_document_version")
+def patch_document_version(version_id: int) -> None:
+    """
+    draft 상태 DocumentVersion의 applied DocumentChange를 파일에 반영한다.
+
+    포맷 디스패치:
+      - excel  → _patch_xlsx  (replace_cell, openpyxl)
+      - docx   → _patch_docx  (replace_text, python-docx)
+      - pptx   → _patch_pptx  (replace_text, python-pptx)
+      - 그 외  → version.status=failed
+    """
+    from .models import DocumentVersion
+
+    try:
+        version = (
+            DocumentVersion.objects
+            .select_related("upload_log", "upload_log__file_structure")
+            .get(pk=version_id)
+        )
+    except DocumentVersion.DoesNotExist:
+        logger.error("patch_document_version: DocumentVersion pk=%s 없음", version_id)
+        return
+
+    upload_log = version.upload_log
+
+    # ── 원본 파일 존재 확인 ────────────────────────────────────────────────
+    if not upload_log.file or not upload_log.file.storage.exists(upload_log.file.name):
+        _set_failed(version, "원본 파일(upload_log.file)이 존재하지 않습니다.")
+        logger.error("patch_document_version: 원본 파일 없음 | version_id=%s", version_id)
+        return
+
+    # ── 포맷별 패처 디스패치 ──────────────────────────────────────────────
+    source_type = upload_log.file_structure.source_type if upload_log.file_structure else ""
+
+    if source_type == "excel":
+        _patch_xlsx(version, upload_log)
+    elif source_type == "docx":
+        _patch_docx(version, upload_log)
+    elif source_type == "pptx":
+        _patch_pptx(version, upload_log)
+    else:
+        _set_failed(version, f"지원하지 않는 포맷: {source_type}")
+
+
+def _set_failed(version: "DocumentVersion", error_message: str) -> None:
+    """version 상태를 FAILED로 설정하고 에러 메시지를 저장한다."""
+    from .models import DocumentVersion as _DV
+    version.status = _DV.Status.FAILED
+    version.error_message = error_message
+    version.save(update_fields=["status", "error_message", "updated_at"])
+
+
+def _patch_xlsx(version: "DocumentVersion", upload_log: "UploadLog") -> None:
+    """
+    XLSX 파일에 replace_cell 변경 항목을 반영한다.
+
+    처리 흐름:
+      1. openpyxl로 원본 로드 (data_only=False — 수식 보존)
+      2. replace_cell + status=applied 변경 순회
+         - 시트/셀 값 불일치 → change.status=failed
+         - 일치 → 셀 값 교체
+      3. 성공 항목이 하나라도 있으면 artifact 저장 + version.status=ready
+    """
+    import io
+
+    import openpyxl
+    from django.core.files.base import ContentFile
+
+    from .models import DocumentChange, DocumentVersion
+
+    try:
+        with upload_log.file.open("rb") as f:
+            wb = openpyxl.load_workbook(f, data_only=False)
+    except Exception as exc:
+        _set_failed(version, f"XLSX 로드 실패: {exc}")
+        logger.error("patch_document_version: XLSX 로드 실패 | version_id=%s | %s", version.pk, exc)
+        return
+
+    changes = DocumentChange.objects.filter(
+        version=version,
+        operation="replace_cell",
+        status=DocumentChange.Status.APPLIED,
+    )
+
+    applied_ids: list[str] = []
+    for change in changes:
+        sheet_name = change.anchor.get("sheet", "")
+        cell_ref = change.anchor.get("cell", "")
+
+        if sheet_name not in wb.sheetnames:
+            change.status = DocumentChange.Status.FAILED
+            change.save(update_fields=["status", "updated_at"])
+            logger.warning("patch_document_version: 시트 없음 | sheet=%s | op=%s", sheet_name, change.operation_id)
+            continue
+
+        ws = wb[sheet_name]
+        current_value = str(ws[cell_ref].value) if ws[cell_ref].value is not None else ""
+
+        if current_value != change.original:
+            change.status = DocumentChange.Status.FAILED
+            change.save(update_fields=["status", "updated_at"])
+            logger.warning(
+                "patch_document_version: 원본 값 불일치 | op=%s | expected=%r actual=%r",
+                change.operation_id, change.original, current_value,
+            )
+            continue
+
+        ws[cell_ref] = change.replacement
+        applied_ids.append(change.operation_id)
+
+    if not applied_ids:
+        _set_failed(version, "적용 가능한 replace_cell 변경 항목이 없습니다.")
+        return
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    artifact_name = f"artifact_{version.upload_log_id}_v{version.version_number}.xlsx"
+    version.artifact_file.save(artifact_name, ContentFile(output.read()), save=False)
+    version.applied_change_ids = applied_ids
+    version.status = DocumentVersion.Status.READY
+    version.save(update_fields=["artifact_file", "applied_change_ids", "status", "updated_at"])
+
+
+def _patch_docx(version: "DocumentVersion", upload_log: "UploadLog") -> None:
+    """
+    DOCX 파일에 replace_text 변경 항목을 반영한다.
+
+    처리 흐름:
+      1. python-docx로 원본 로드
+      2. replace_text + status=applied 변경 순회
+         - anchor.text_match 문자열을 포함하는 단락을 찾아 run 재구성으로 교체
+         - 일치 단락 없으면 change.status=failed
+      3. 성공 항목이 하나라도 있으면 artifact 저장 + version.status=ready
+
+    주의: run 경계를 재구성하는 방식으로 텍스트를 교체하므로
+          폰트·색상·크기 서식은 첫 번째 run의 서식을 유지한다.
+    """
+    import io
+
+    from django.core.files.base import ContentFile
+
+    from .models import DocumentChange, DocumentVersion
+
+    try:
+        from docx import Document
+    except ImportError:
+        _set_failed(version, "python-docx 라이브러리가 설치되지 않았습니다.")
+        return
+
+    try:
+        with upload_log.file.open("rb") as f:
+            doc = Document(f)
+    except Exception as exc:
+        _set_failed(version, f"DOCX 로드 실패: {exc}")
+        logger.error("patch_document_version: DOCX 로드 실패 | version_id=%s | %s", version.pk, exc)
+        return
+
+    changes = DocumentChange.objects.filter(
+        version=version,
+        operation="replace_text",
+        status=DocumentChange.Status.APPLIED,
+    )
+
+    applied_ids: list[str] = []
+    for change in changes:
+        target_text = change.anchor.get("text_match", "")
+        replaced = False
+
+        for para in doc.paragraphs:
+            full_text = "".join(run.text for run in para.runs)
+            if target_text not in full_text:
+                continue
+            # run 경계를 재구성해 target_text를 replacement로 치환
+            new_text = full_text.replace(target_text, change.replacement, 1)
+            # 첫 번째 run에 전체 텍스트를 쓰고 나머지 run은 비운다
+            if para.runs:
+                para.runs[0].text = new_text
+                for run in para.runs[1:]:
+                    run.text = ""
+            replaced = True
+            break
+
+        if not replaced:
+            change.status = DocumentChange.Status.FAILED
+            change.save(update_fields=["status", "updated_at"])
+            logger.warning(
+                "patch_document_version: 대상 텍스트 없음 | op=%s | text_match=%r",
+                change.operation_id, target_text,
+            )
+            continue
+
+        applied_ids.append(change.operation_id)
+
+    if not applied_ids:
+        _set_failed(version, "적용 가능한 replace_text 변경 항목이 없습니다.")
+        return
+
+    output = io.BytesIO()
+    doc.save(output)
+    output.seek(0)
+
+    artifact_name = f"artifact_{version.upload_log_id}_v{version.version_number}.docx"
+    version.artifact_file.save(artifact_name, ContentFile(output.read()), save=False)
+    version.applied_change_ids = applied_ids
+    version.status = DocumentVersion.Status.READY
+    version.save(update_fields=["artifact_file", "applied_change_ids", "status", "updated_at"])
+
+
+def _patch_pptx(version: "DocumentVersion", upload_log: "UploadLog") -> None:
+    """
+    PPTX 파일에 replace_text 변경 항목을 반영한다.
+
+    처리 흐름:
+      1. python-pptx로 원본 로드
+      2. replace_text + status=applied 변경 순회
+         - anchor.slide_index (0-based), anchor.shape_index (0-based) 로 셰이프 특정
+         - shape_index가 슬라이드 범위를 벗어나면 change.status=failed
+         - text_frame 단락 또는 표 셀에서 target_text를 replacement로 치환
+      3. 성공 항목이 하나라도 있으면 artifact 저장 + version.status=ready
+    """
+    import io
+
+    from django.core.files.base import ContentFile
+
+    from .models import DocumentChange, DocumentVersion
+
+    try:
+        from pptx import Presentation
+    except ImportError:
+        _set_failed(version, "python-pptx 라이브러리가 설치되지 않았습니다.")
+        return
+
+    try:
+        with upload_log.file.open("rb") as f:
+            prs = Presentation(f)
+    except Exception as exc:
+        _set_failed(version, f"PPTX 로드 실패: {exc}")
+        logger.error("patch_document_version: PPTX 로드 실패 | version_id=%s | %s", version.pk, exc)
+        return
+
+    changes = DocumentChange.objects.filter(
+        version=version,
+        operation="replace_text",
+        status=DocumentChange.Status.APPLIED,
+    )
+
+    applied_ids: list[str] = []
+    for change in changes:
+        slide_index = change.anchor.get("slide_index", 0)
+        shape_index = change.anchor.get("shape_index")
+        target_text = change.anchor.get("text_match", "")
+
+        if slide_index >= len(prs.slides):
+            change.status = DocumentChange.Status.FAILED
+            change.save(update_fields=["status", "updated_at"])
+            logger.warning(
+                "patch_document_version: 슬라이드 인덱스 초과 | slide=%s | op=%s",
+                slide_index, change.operation_id,
+            )
+            continue
+
+        slide = prs.slides[slide_index]
+
+        if shape_index is not None and shape_index >= len(slide.shapes):
+            change.status = DocumentChange.Status.FAILED
+            change.save(update_fields=["status", "updated_at"])
+            logger.warning(
+                "patch_document_version: 셰이프 인덱스 초과 | shape=%s | op=%s",
+                shape_index, change.operation_id,
+            )
+            continue
+
+        # 대상 셰이프 목록 결정 (shape_index 지정 시 단일, 없으면 전체 순회)
+        shapes = [slide.shapes[shape_index]] if shape_index is not None else list(slide.shapes)
+
+        replaced = False
+        for shape in shapes:
+            if shape.has_text_frame:
+                for para in shape.text_frame.paragraphs:
+                    full_text = "".join(run.text for run in para.runs)
+                    if target_text not in full_text:
+                        continue
+                    new_text = full_text.replace(target_text, change.replacement, 1)
+                    if para.runs:
+                        para.runs[0].text = new_text
+                        for run in para.runs[1:]:
+                            run.text = ""
+                    replaced = True
+                    break
+
+            if replaced:
+                break
+
+            if shape.has_table:
+                for row in shape.table.rows:
+                    for cell in row.cells:
+                        if target_text in cell.text:
+                            # 테이블 셀 텍스트 교체 — 첫 단락 첫 run에 합쳐 쓴다
+                            tf = cell.text_frame
+                            for para in tf.paragraphs:
+                                full_text = "".join(run.text for run in para.runs)
+                                if target_text not in full_text:
+                                    continue
+                                new_text = full_text.replace(target_text, change.replacement, 1)
+                                if para.runs:
+                                    para.runs[0].text = new_text
+                                    for run in para.runs[1:]:
+                                        run.text = ""
+                                replaced = True
+                                break
+                        if replaced:
+                            break
+                    if replaced:
+                        break
+
+        if not replaced:
+            change.status = DocumentChange.Status.FAILED
+            change.save(update_fields=["status", "updated_at"])
+            logger.warning(
+                "patch_document_version: 대상 텍스트 없음 | op=%s | text_match=%r",
+                change.operation_id, target_text,
+            )
+            continue
+
+        applied_ids.append(change.operation_id)
+
+    if not applied_ids:
+        _set_failed(version, "적용 가능한 replace_text 변경 항목이 없습니다.")
+        return
+
+    output = io.BytesIO()
+    prs.save(output)
+    output.seek(0)
+
+    artifact_name = f"artifact_{version.upload_log_id}_v{version.version_number}.pptx"
+    version.artifact_file.save(artifact_name, ContentFile(output.read()), save=False)
+    version.applied_change_ids = applied_ids
+    version.status = DocumentVersion.Status.READY
+    version.save(update_fields=["artifact_file", "applied_change_ids", "status", "updated_at"])
 
 
 # ── 핵심 알고리즘 ─────────────────────────────────────────────────────────────
