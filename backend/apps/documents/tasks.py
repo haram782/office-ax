@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
+import json
 import os
+import subprocess
 from datetime import date, timedelta
 
 from celery import shared_task
@@ -213,6 +216,8 @@ def patch_document_version(version_id: int) -> None:
         _patch_pptx(version, upload_log)
     elif source_type == "pdf":
         _patch_pdf(version, upload_log)
+    elif source_type in ("hwp", "hwpx"):
+        _patch_hwp(version, upload_log)
     else:
         _set_failed(version, f"지원하지 않는 포맷: {source_type}")
 
@@ -511,6 +516,130 @@ def _patch_pptx(version: "DocumentVersion", upload_log: "UploadLog") -> None:
 
     artifact_name = f"artifact_{version.upload_log_id}_v{version.version_number}.pptx"
     version.artifact_file.save(artifact_name, ContentFile(output.read()), save=False)
+    version.applied_change_ids = applied_ids
+    version.status = DocumentVersion.Status.READY
+    version.save(update_fields=["artifact_file", "applied_change_ids", "status", "updated_at"])
+
+
+def _patch_hwp(version: "DocumentVersion", upload_log: "UploadLog") -> None:
+    """
+    HWP 파일에 replace_text 변경 항목을 반영한다.
+
+    처리 흐름:
+      1. replace_text + status=applied DocumentChange 조회
+      2. 원본 파일 읽기 → base64 인코딩
+      3. changes를 worker 입력 형식으로 변환
+      4. subprocess로 hwp_worker.mjs 호출 (stdin JSON → stdout JSON)
+         - 타임아웃 30초
+         - returncode != 0 이면 _set_failed (stderr 내용 포함)
+      5. worker 결과 파싱
+         - failed 항목 → DocumentChange.status = failed
+         - applied 비어 있으면 _set_failed
+         - output_b64 → bytes → artifact_file 저장
+      6. version.status = ready
+    """
+    from django.conf import settings
+    from django.core.files.base import ContentFile
+
+    from .models import DocumentChange, DocumentVersion
+
+    changes = list(DocumentChange.objects.filter(
+        version=version,
+        operation="replace_text",
+        status=DocumentChange.Status.APPLIED,
+    ))
+
+    if not changes:
+        _set_failed(version, "적용 가능한 replace_text 변경 항목이 없습니다.")
+        return
+
+    # 원본 파일 읽기 → base64
+    try:
+        with upload_log.file.open("rb") as f:
+            input_b64 = base64.b64encode(f.read()).decode()
+    except Exception as exc:
+        _set_failed(version, f"HWP 파일 읽기 실패: {exc}")
+        logger.error("patch_document_version: HWP 파일 읽기 실패 | version_id=%s | %s", version.pk, exc)
+        return
+
+    # worker 입력 payload 구성
+    payload = {
+        "input_b64": input_b64,
+        "changes": [
+            {
+                "operation_id": c.operation_id,
+                "original": c.original,
+                "replacement": c.replacement,
+                "anchor": c.anchor,
+            }
+            for c in changes
+        ],
+    }
+
+    # Node 실행 경로 — 환경변수 NODE_PATH 오버라이드 허용
+    node_bin = os.environ.get("NODE_PATH", "node")
+    # settings.BASE_DIR은 backend/ 디렉터리 → 부모가 프로젝트 루트
+    project_root = settings.BASE_DIR.parent
+    worker_path = "backend/workers/hwp_worker.mjs"
+
+    try:
+        result = subprocess.run(
+            [node_bin, worker_path],
+            input=json.dumps(payload).encode(),
+            capture_output=True,
+            timeout=30,
+            cwd=str(project_root),
+        )
+    except subprocess.TimeoutExpired:
+        _set_failed(version, "HWP worker 타임아웃 (30초 초과)")
+        logger.error("patch_document_version: HWP worker 타임아웃 | version_id=%s", version.pk)
+        return
+    except Exception as exc:
+        _set_failed(version, f"HWP worker 실행 실패: {exc}")
+        logger.error("patch_document_version: HWP worker 실행 실패 | version_id=%s | %s", version.pk, exc)
+        return
+
+    # returncode 검사
+    if result.returncode != 0:
+        stderr_msg = result.stderr.decode(errors="replace").strip()
+        _set_failed(version, f"HWP worker 오류: {stderr_msg}")
+        logger.error(
+            "patch_document_version: HWP worker 비정상 종료 | version_id=%s | returncode=%s | stderr=%s",
+            version.pk, result.returncode, stderr_msg,
+        )
+        return
+
+    # worker stdout 파싱
+    try:
+        output = json.loads(result.stdout.decode())
+    except Exception as exc:
+        _set_failed(version, f"HWP worker 출력 파싱 실패: {exc}")
+        logger.error("patch_document_version: HWP worker 출력 파싱 실패 | version_id=%s", version.pk)
+        return
+
+    applied_ids: list[str] = output.get("applied", [])
+    failed_items: list[dict] = output.get("failed", [])
+
+    # 실패 항목 → DocumentChange.status 갱신
+    failed_ids = {item["operation_id"] for item in failed_items}
+    for change in changes:
+        if change.operation_id in failed_ids:
+            change.status = DocumentChange.Status.FAILED
+            change.save(update_fields=["status", "updated_at"])
+
+    if not applied_ids:
+        _set_failed(version, "HWP worker: 적용된 변경 항목이 없습니다.")
+        return
+
+    # output_b64 → artifact_file 저장
+    try:
+        hwp_bytes = base64.b64decode(output["output_b64"])
+    except Exception as exc:
+        _set_failed(version, f"HWP worker output_b64 디코딩 실패: {exc}")
+        return
+
+    artifact_name = f"artifact_{version.upload_log_id}_v{version.version_number}.hwp"
+    version.artifact_file.save(artifact_name, ContentFile(hwp_bytes), save=False)
     version.applied_change_ids = applied_ids
     version.status = DocumentVersion.Status.READY
     version.save(update_fields=["artifact_file", "applied_change_ids", "status", "updated_at"])

@@ -299,20 +299,25 @@ class UnsupportedFormatTest(TestCase):
     def setUp(self):
         self.user = _make_user("unsupported_user")
 
-    def test_hwp_source_type_sets_version_failed(self):
-        """source_type=hwp이면 version.status=failed가 되고 error_message에 포맷명이 포함된다."""
+    def test_image_source_type_sets_version_failed(self):
+        """
+        source_type=image(미지원 포맷) → version.status=failed이고
+        error_message에 포맷명이 포함된다.
+
+        HWP는 별도 patcher가 구현되어 지원 포맷이므로 image로 대체한다.
+        """
         fs, _ = FileStructure.objects.get_or_create(
-            hash="hwp_test_hash",
-            defaults={"source_type": "hwp", "column_schema": []},
+            hash="image_test_hash",
+            defaults={"source_type": "image", "column_schema": []},
         )
         upload = UploadLog.objects.create(
             user=self.user,
             file_structure=fs,
-            original_filename="sample.hwp",
+            original_filename="sample.png",
             status=UploadLog.Status.DONE,
         )
         # 최소 크기의 더미 파일 저장 (파일 존재 확인 통과용)
-        upload.file.save("sample.hwp", ContentFile(b"dummy"), save=True)
+        upload.file.save("sample.png", ContentFile(b"dummy"), save=True)
 
         version = _make_version(upload, self.user)
         patch_document_version(version.pk)
@@ -324,7 +329,7 @@ class UnsupportedFormatTest(TestCase):
             "지원하지 않는 포맷은 version.status=FAILED여야 한다",
         )
         self.assertIn(
-            "hwp",
+            "image",
             version.error_message,
             "error_message에 지원하지 않는 포맷 이름이 포함되어야 한다",
         )
