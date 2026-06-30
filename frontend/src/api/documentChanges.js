@@ -42,7 +42,7 @@ export async function triggerPatch(uploadId, versionId) {
  */
 export async function generatePatchPlan(uploadId, prompt) {
   const { data } = await api.post(
-    `/documents/uploads/${uploadId}/patch-plan/`,
+    `/documents/uploads/${uploadId}/generate-patch-plan/`,
     { prompt },
   )
   return data

@@ -22,7 +22,7 @@ describe('generatePatchPlan', () => {
     await generatePatchPlan(10, '표 헤더를 굵게 바꿔주세요')
 
     expect(mockPost).toHaveBeenCalledWith(
-      '/documents/uploads/10/patch-plan/',
+      '/documents/uploads/10/generate-patch-plan/',
       { prompt: '표 헤더를 굵게 바꿔주세요' },
     )
   })
