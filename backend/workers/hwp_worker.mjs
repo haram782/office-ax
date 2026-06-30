@@ -17,6 +17,7 @@
 
 // frontend 설치본 재사용 — 별도 npm install 불필요
 import initRhwp, { HwpDocument } from '../../frontend/node_modules/@rhwp/core/rhwp.js';
+import { readFileSync } from 'node:fs';
 
 // ── stdin 읽기 헬퍼 ────────────────────────────────────────────────────────────
 
@@ -49,13 +50,15 @@ async function main() {
   // base64 → Uint8Array
   const hwpBytes = new Uint8Array(Buffer.from(input_b64, 'base64'));
 
-  // WASM 초기화 — rhwp.js 옆의 .wasm 파일 경로를 직접 지정
+  // WASM 초기화 — Node의 기본 fetch는 file:// URL을 지원하지 않아
+  // URL을 그대로 넘기면 내부 fetch()가 실패한다. 바이트를 직접 읽어 전달해 우회한다.
   const wasmPath = new URL(
     '../../frontend/node_modules/@rhwp/core/rhwp_bg.wasm',
     import.meta.url
   );
   try {
-    await initRhwp({ module_or_path: wasmPath });
+    const wasmBytes = readFileSync(wasmPath);
+    await initRhwp({ module_or_path: wasmBytes });
   } catch (err) {
     process.stderr.write(`[hwp_worker] WASM 초기화 실패: ${err.message}\n`);
     process.exit(1);
