@@ -13,6 +13,9 @@ import { ChangeSuggestionCard } from './ChangeSuggestionCard'
  *   pendingIds:           Set<string>,
  *   onSetStatus:          (id: string, next: string) => void,
  *   onAcceptAll:          () => void,
+ *   isAcceptingAll:       boolean,
+ *   acceptAllError:       string|null,
+ *   autoRejectedIds:      Set<string>,
  *   selectedSuggestionId: string | null,
  *   onSelectSuggestion:   (id: string | null) => void,
  *   uploadId:             number|string|null,
@@ -24,9 +27,12 @@ import { ChangeSuggestionCard } from './ChangeSuggestionCard'
 export function ChangeSuggestionPanel({
   suggestions,
   statuses,
-  pendingIds   = new Set(),
+  pendingIds      = new Set(),
   onSetStatus,
   onAcceptAll,
+  isAcceptingAll  = false,
+  acceptAllError  = null,
+  autoRejectedIds = new Set(),
   selectedSuggestionId,
   onSelectSuggestion,
   uploadId     = null,
@@ -46,6 +52,8 @@ export function ChangeSuggestionPanel({
         suggestions={suggestions}
         statuses={statuses}
         onAcceptAll={onAcceptAll}
+        isAcceptingAll={isAcceptingAll}
+        acceptAllError={acceptAllError}
         uploadId={uploadId}
         versionId={versionId}
         patchStatus={patchStatus}
@@ -70,6 +78,7 @@ export function ChangeSuggestionPanel({
               status={statuses[s.id] ?? 'pending'}
               isSelected={selectedSuggestionId === s.id}
               isPending={pendingIds.has(s.id)}
+              isAutoRejected={autoRejectedIds.has(s.id)}
               onSelect={() => handleSelect(s.id)}
               onAccept={() => onSetStatus(s.id, 'applied')}
               onReject={() => onSetStatus(s.id, 'rejected')}

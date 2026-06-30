@@ -15,7 +15,9 @@ const PATCH_BTN = {
  * @param {{
  *   suggestions:  Array,
  *   statuses:     { [id]: string },
- *   onAcceptAll:  () => void,
+ *   onAcceptAll:    () => void,
+ *   isAcceptingAll: boolean,
+ *   acceptAllError: string|null,
  *   uploadId:     number|string|null,
  *   versionId:    number|string|null,
  *   patchStatus:  null|'generating'|'ready'|'failed',
@@ -26,6 +28,8 @@ export function ChangeSummaryBar({
   suggestions,
   statuses,
   onAcceptAll,
+  isAcceptingAll = false,
+  acceptAllError = null,
   uploadId    = null,
   versionId   = null,
   patchStatus = null,
@@ -75,16 +79,27 @@ export function ChangeSummaryBar({
           )}
         </div>
 
-        {/* 모두 적용 — 대기 항목이 있을 때만 활성 */}
+        {/* 모두 적용 — 대기 항목이 있을 때만 활성, 호출 중에는 비활성화 + 스피너 */}
         {pending > 0 && (
           <button
             onClick={onAcceptAll}
-            className="flex-shrink-0 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 border border-emerald-200 dark:border-emerald-700 hover:border-emerald-300 rounded-md px-2 py-1 transition-colors"
+            disabled={isAcceptingAll}
+            className="flex-shrink-0 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 border border-emerald-200 dark:border-emerald-700 hover:border-emerald-300 rounded-md px-2 py-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
+            {isAcceptingAll && (
+              <span className="inline-block w-2.5 h-2.5 border border-current border-t-transparent rounded-full animate-spin mr-1 align-middle" />
+            )}
             모두 적용
           </button>
         )}
       </div>
+
+      {/* 전체 적용 실패 시 오류 메시지 */}
+      {acceptAllError && (
+        <div className="px-3 pb-2 text-[10px] text-red-500">
+          {acceptAllError}
+        </div>
+      )}
 
       {/* 수정본 생성 버튼 행 — 조건 충족 시만 표시 */}
       {canShowPatchBtn && (

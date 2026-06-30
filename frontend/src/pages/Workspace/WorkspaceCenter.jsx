@@ -39,6 +39,11 @@ export function WorkspaceCenter({
     return { ...base, patch_changes: localPatchData.patch_changes, version_id: localPatchData.version_id }
   }, [previewData?.snippetData, localPatchData])
 
+  // uploadId: previewData.id (upload_log.id)
+  // versionId: localPatchData.version_id 우선, 없으면 snippetData.version_id — BE 제공 시 활성화
+  const uploadId  = previewData?.id                                                         ?? null
+  const versionId = localPatchData?.version_id ?? previewData?.snippetData?.version_id     ?? null
+
   const {
     suggestions,
     statuses,
@@ -46,15 +51,14 @@ export function WorkspaceCenter({
     setSelectedSuggestionId,
     highlights,
     pendingIds,
+    isAcceptingAll,
+    acceptAllError,
+    autoRejectedIds,
     handleSetStatus,
     handleAcceptAll,
     handleSelectHighlight,
-  } = useChangeSuggestions(effectiveSnippetData)
+  } = useChangeSuggestions(effectiveSnippetData, uploadId, versionId)
 
-  // uploadId: previewData.id (upload_log.id)
-  // versionId: localPatchData.version_id 우선, 없으면 snippetData.version_id — BE 제공 시 활성화
-  const uploadId  = previewData?.id                                                         ?? null
-  const versionId = localPatchData?.version_id ?? previewData?.snippetData?.version_id     ?? null
   const { patchStatus, trigger } = usePatchTrigger(uploadId, versionId)
 
   const { generate, isGenerating, error: generateError } = useGeneratePatchPlan(uploadId, handlePatchPlanSuccess)
@@ -147,6 +151,9 @@ export function WorkspaceCenter({
             pendingIds={pendingIds}
             onSetStatus={handleSetStatus}
             onAcceptAll={handleAcceptAll}
+            isAcceptingAll={isAcceptingAll}
+            acceptAllError={acceptAllError}
+            autoRejectedIds={autoRejectedIds}
             selectedSuggestionId={selectedSuggestionId}
             onSelectSuggestion={setSelectedSuggestionId}
             uploadId={uploadId}

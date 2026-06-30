@@ -49,6 +49,22 @@ export async function generatePatchPlan(uploadId, prompt) {
 }
 
 /**
+ * pending 상태 변경 전체를 적용한다.
+ * 같은 위치(anchor) 충돌은 서버가 confidence 기준으로 자동 해소한다
+ * (가장 높은 confidence만 applied, 나머지는 rejected로 자동 반려).
+ *
+ * @param {number|string} uploadId
+ * @param {number|string} versionId
+ * @returns {Promise<{ applied: Array, rejected: Array }>}
+ */
+export async function acceptAllChanges(uploadId, versionId) {
+  const { data } = await api.post(
+    `/documents/uploads/${uploadId}/versions/${versionId}/changes/accept-all/`,
+  )
+  return data
+}
+
+/**
  * 업로드에 속한 DocumentVersion 목록을 조회한다.
  *
  * @param {number|string} uploadId

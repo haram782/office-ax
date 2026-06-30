@@ -52,10 +52,11 @@ function anchorLabel(anchor) {
 /**
  * 개별 변경 제안 카드.
  *
- * @param {{ suggestion, status, isSelected, isPending, onSelect, onAccept, onReject, onReset }} props
+ * @param {{ suggestion, status, isSelected, isPending, isAutoRejected, onSelect, onAccept, onReject, onReset }} props
  * @param {boolean} [isPending=false] - API 호출 중 여부. true이면 버튼을 비활성화한다.
+ * @param {boolean} [isAutoRejected=false] - 서버가 confidence 충돌로 자동 반려한 항목인지 여부.
  */
-export function ChangeSuggestionCard({ suggestion, status, isSelected, isPending = false, onSelect, onAccept, onReject, onReset }) {
+export function ChangeSuggestionCard({ suggestion, status, isSelected, isPending = false, isAutoRejected = false, onSelect, onAccept, onReject, onReset }) {
   const { title, original, replacement, reason, anchor, changeType, severity } = suggestion
 
   const effectiveStatus = status ?? 'pending'
@@ -86,6 +87,13 @@ export function ChangeSuggestionCard({ suggestion, status, isSelected, isPending
           {badge.label}
         </span>
       </div>
+
+      {/* 충돌 자동 반려 배지 — 전체 적용 시 confidence 비교로 서버가 자동 반려한 경우, 사유 전문 대신 요약만 표시 */}
+      {isAutoRejected && effectiveStatus === 'rejected' && (
+        <span className="inline-block text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-zinc-100 dark:bg-zinc-800 text-zinc-400 dark:text-zinc-500 mb-1.5">
+          충돌로 자동 반려됨
+        </span>
+      )}
 
       {/* 2행: 제목 */}
       {title && (
