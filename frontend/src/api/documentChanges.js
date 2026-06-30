@@ -47,3 +47,30 @@ export async function generatePatchPlan(uploadId, prompt) {
   )
   return data
 }
+
+/**
+ * 업로드에 속한 DocumentVersion 목록을 조회한다.
+ *
+ * @param {number|string} uploadId
+ * @returns {Promise<Array<{ id, version_number, status, label, summary, applied_change_ids, created_at }>>}
+ */
+export async function fetchDocumentVersions(uploadId) {
+  const { data } = await api.get(`/documents/uploads/${uploadId}/versions/`)
+  return data
+}
+
+/**
+ * 수정본 파일을 on-demand로 내려받아 Blob URL을 반환한다.
+ * 뷰어 표시용 — 원본(original) 버전에는 사용하지 않는다.
+ *
+ * @param {number|string} uploadId
+ * @param {number|string} versionId
+ * @returns {Promise<string>} Blob URL (blob:...)
+ */
+export async function fetchVersionFileBlob(uploadId, versionId) {
+  const response = await api.get(
+    `/documents/uploads/${uploadId}/versions/${versionId}/file/`,
+    { responseType: 'blob' },
+  )
+  return URL.createObjectURL(response.data)
+}
