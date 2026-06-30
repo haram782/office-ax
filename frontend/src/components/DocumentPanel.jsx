@@ -308,11 +308,15 @@ function ExcelViewer({ previewData, highlights = [], selectedHighlightId = null,
 /**
  * 개별 PDF 페이지 canvas.
  * pdfDoc · scale 변경 시 자동 재렌더링하고, 화면 진입 시 onVisible(pageNum)을 호출한다.
+ * pdf_bbox 타입 highlights가 있으면 canvas 위에 반투명 오버레이 rect를 렌더한다.
  */
-function PdfPageCanvas({ pdfDoc, pageNum, scale, onVisible }) {
+function PdfPageCanvas({ pdfDoc, pageNum, scale, onVisible, highlights = [], selectedHighlightId = null, onSelectHighlight = null }) {
   const wrapperRef = useRef(null)
   const canvasRef  = useRef(null)
   const taskRef    = useRef(null)
+
+  // 렌더 완료 후 canvas의 CSS px 크기 — overlay div 크기 맞춤 및 y축 변환에 사용
+  const [viewportSize, setViewportSize] = useState(null)
 
   // 페이지 렌더링 — pdfDoc · scale 변경 시 재실행
   useEffect(() => {
@@ -337,6 +341,9 @@ function PdfPageCanvas({ pdfDoc, pageNum, scale, onVisible }) {
 
       const ctx = canvas.getContext('2d')
       ctx.scale(dpr, dpr)
+
+      // 렌더 완료 후 overlay 크기 동기화 — PDF CSS px 기준
+      if (!cancelled) setViewportSize({ width: Math.floor(viewport.width), height: Math.floor(viewport.height) })
 
       taskRef.current = page.render({ canvasContext: ctx, viewport })
       return taskRef.current.promise
@@ -364,10 +371,44 @@ function PdfPageCanvas({ pdfDoc, pageNum, scale, onVisible }) {
     return () => observer.disconnect()
   }, [onVisible, pageNum])
 
+  // 이 페이지에 속한 pdf_bbox 타입 highlights만 필터링
+  const pageHighlights = highlights.filter(
+    h => h.anchor?.type === 'pdf_bbox' && h.anchor?.page === pageNum,
+  )
+
   return (
     // id로 goToPage의 scrollIntoView 타깃을 지정
-    <div id={`pdf-page-${pageNum}`} ref={wrapperRef} className="bg-white dark:bg-zinc-900 shadow-md rounded-sm overflow-hidden">
+    // overflow-hidden 제거 → overlay absolute div가 잘리지 않도록 relative로 변경
+    <div id={`pdf-page-${pageNum}`} ref={wrapperRef} className="relative bg-white dark:bg-zinc-900 shadow-md rounded-sm">
       <canvas ref={canvasRef} className="block" />
+
+      {/* pdf_bbox 오버레이 — canvas 크기 확정(viewportSize) 후에만 렌더 */}
+      {viewportSize && pageHighlights.length > 0 && (
+        <div
+          style={{ position: 'absolute', top: 0, left: 0, width: viewportSize.width, height: viewportSize.height, pointerEvents: 'none' }}
+        >
+          {pageHighlights.map(h => {
+            const { x0, y0, x1, y1 } = h.anchor.rect ?? {}
+            if (x0 == null) return null
+            // PDF 좌표계(좌하단 원점, y 위로 증가) → CSS 좌표계(좌상단 원점) 변환
+            const cssLeft   = x0 * scale
+            const cssTop    = viewportSize.height - y1 * scale
+            const cssWidth  = (x1 - x0) * scale
+            const cssHeight = (y1 - y0) * scale
+            const isSelected = h.id === selectedHighlightId
+            return (
+              <div
+                key={h.id}
+                style={{ position: 'absolute', left: cssLeft, top: cssTop, width: cssWidth, height: cssHeight, borderRadius: 2, pointerEvents: 'auto', cursor: 'pointer' }}
+                className={isSelected
+                  ? 'bg-yellow-300/60 border-2 border-yellow-500'
+                  : 'bg-yellow-300/30 border border-yellow-400/50'}
+                onClick={() => onSelectHighlight?.(h.id)}
+              />
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -375,7 +416,8 @@ function PdfPageCanvas({ pdfDoc, pageNum, scale, onVisible }) {
 /**
  * PDF.js v6 기반 캔버스 뷰어.
  * 전체 페이지를 세로 스크롤로 표시하고 페이지 이동·줌을 지원한다.
- * 텍스트 레이어·하이라이트 오버레이는 2차 작업으로 별도 구현 예정.
+ * pdf_bbox 앵커 → 페이지 자동 스크롤 + 노란 rect 오버레이.
+ * text_match 앵커 → 페이지 자동 스크롤 + TextMatchNotice 바.
  */
 function PdfViewer({ previewData, highlights = [], selectedHighlightId = null, onSelectHighlight = null }) {
   const { fileUrl } = previewData
@@ -430,6 +472,20 @@ function PdfViewer({ previewData, highlights = [], selectedHighlightId = null, o
     setCurrentPage(pageNum)
   }, [])
 
+  // selectedHighlightId 변경 시 해당 페이지로 자동 스크롤
+  useEffect(() => {
+    if (!selectedHighlightId || !pdfDoc) return
+    const h = highlights.find(h => h.id === selectedHighlightId)
+    if (!h) return
+    const page = h.anchor?.page ?? 1
+    goToPage(page)
+  }, [selectedHighlightId, highlights, pdfDoc, goToPage])
+
+  // 선택된 highlight가 text_match 타입이면 notice 바로 표시
+  const activeNotice = selectedHighlightId
+    ? (highlights.find(h => h.id === selectedHighlightId && h.anchor?.type === 'text_match') ?? null)
+    : null
+
   // ── fileUrl 없음 ──
   if (!fileUrl) {
     return (
@@ -468,6 +524,9 @@ function PdfViewer({ previewData, highlights = [], selectedHighlightId = null, o
   // ── 정상 렌더 ──
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-zinc-100 dark:bg-zinc-800">
+      {/* text_match 앵커 notice 바 — DocxViewer 패턴과 동일 */}
+      {activeNotice && <TextMatchNotice notice={activeNotice} />}
+
       {/* 페이지 내비게이터 + 줌 바 */}
       <div className="flex-shrink-0 flex items-center gap-3 px-4 py-2 bg-white dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-700">
         {/* 이전 페이지 */}
@@ -527,6 +586,9 @@ function PdfViewer({ previewData, highlights = [], selectedHighlightId = null, o
             pageNum={i + 1}
             scale={scale}
             onVisible={handleVisible}
+            highlights={highlights}
+            selectedHighlightId={selectedHighlightId}
+            onSelectHighlight={onSelectHighlight}
           />
         ))}
       </div>
