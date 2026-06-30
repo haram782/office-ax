@@ -211,6 +211,8 @@ def patch_document_version(version_id: int) -> None:
         _patch_docx(version, upload_log)
     elif source_type == "pptx":
         _patch_pptx(version, upload_log)
+    elif source_type == "pdf":
+        _patch_pdf(version, upload_log)
     else:
         _set_failed(version, f"지원하지 않는 포맷: {source_type}")
 
@@ -512,6 +514,203 @@ def _patch_pptx(version: "DocumentVersion", upload_log: "UploadLog") -> None:
     version.applied_change_ids = applied_ids
     version.status = DocumentVersion.Status.READY
     version.save(update_fields=["artifact_file", "applied_change_ids", "status", "updated_at"])
+
+
+def _patch_pdf(version: "DocumentVersion", upload_log: "UploadLog") -> None:
+    """
+    PDF 파일에 annotate / redact_overlay 변경 항목을 반영한다.
+
+    처리 흐름:
+      1. fitz.open()으로 원본 PDF 로드
+      2. annotate + redact_overlay operation, status=applied 변경 순회
+         - anchor.type = pdf_bbox  → page/rect 직접 사용 (page는 1-based → 0-based 변환)
+         - anchor.type = text_match → search_for()로 rect 탐색, occurrence 번째 사용
+         - rect를 못 찾으면 change.status=failed
+      3. annotate: add_highlight_annot + set_info(content)
+         redact_overlay: add_redact_annot → apply_redactions → insert_text
+      4. 성공 항목이 하나라도 있으면 artifact 저장 + version.status=ready
+    """
+    import io
+
+    from django.core.files.base import ContentFile
+
+    from .models import DocumentChange, DocumentVersion
+
+    try:
+        import fitz
+    except ImportError:
+        _set_failed(version, "PyMuPDF(fitz) 라이브러리가 설치되지 않았습니다.")
+        return
+
+    try:
+        with upload_log.file.open("rb") as f:
+            pdf_bytes = f.read()
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception as exc:
+        _set_failed(version, f"PDF 로드 실패: {exc}")
+        logger.error("patch_document_version: PDF 로드 실패 | version_id=%s | %s", version.pk, exc)
+        return
+
+    changes = DocumentChange.objects.filter(
+        version=version,
+        operation__in=["annotate", "redact_overlay"],
+        status=DocumentChange.Status.APPLIED,
+    )
+
+    applied_ids: list[str] = []
+
+    for change in changes:
+        rect = _resolve_pdf_rect(doc, change.anchor)
+
+        if rect is None:
+            # anchor 해석 실패 — 텍스트 없음 또는 범위 초과
+            change.status = DocumentChange.Status.FAILED
+            change.save(update_fields=["status", "updated_at"])
+            logger.warning(
+                "patch_document_version: PDF anchor 해석 실패 | op=%s | anchor=%s",
+                change.operation_id, change.anchor,
+            )
+            continue
+
+        page_idx, fitz_rect = rect
+        page = doc[page_idx]
+
+        if change.operation == "annotate":
+            _apply_pdf_annotate(page, fitz_rect, change)
+        else:
+            # redact_overlay
+            _apply_pdf_redact_overlay(page, fitz_rect, change)
+
+        applied_ids.append(change.operation_id)
+
+    if not applied_ids:
+        doc.close()
+        _set_failed(version, "적용 가능한 PDF 변경 항목이 없습니다.")
+        return
+
+    output = io.BytesIO()
+    doc.save(output)
+    doc.close()
+    output.seek(0)
+
+    artifact_name = f"artifact_{version.upload_log_id}_v{version.version_number}.pdf"
+    version.artifact_file.save(artifact_name, ContentFile(output.read()), save=False)
+    version.applied_change_ids = applied_ids
+    version.status = DocumentVersion.Status.READY
+    version.save(update_fields=["artifact_file", "applied_change_ids", "status", "updated_at"])
+
+
+def _resolve_pdf_rect(
+    doc: "fitz.Document",
+    anchor: dict,
+) -> "tuple[int, fitz.Rect] | None":
+    """
+    anchor 딕셔너리에서 (0-based 페이지 인덱스, fitz.Rect)를 반환한다.
+
+    pdf_bbox anchor: page(1-based) → 0-based 변환, rect 딕셔너리 → fitz.Rect
+    text_match anchor: search_for()로 텍스트 위치 탐색, occurrence 번째 결과 반환
+                       page 지정 시 해당 페이지만, 없으면 전체 페이지 순서대로 첫 번째
+
+    반환 None: 텍스트 없음, 페이지 범위 초과, rect 정보 누락
+    """
+    import fitz
+
+    anchor_type = anchor.get("type", "")
+
+    if anchor_type == "pdf_bbox":
+        # page는 1-based
+        page_num = anchor.get("page", 1)
+        page_idx = page_num - 1
+        if page_idx < 0 or page_idx >= len(doc):
+            return None
+        r = anchor.get("rect", {})
+        if not r:
+            return None
+        try:
+            rect = fitz.Rect(r["x0"], r["y0"], r["x1"], r["y1"])
+        except (KeyError, TypeError):
+            return None
+        return (page_idx, rect)
+
+    if anchor_type == "text_match":
+        target = anchor.get("target_text", "")
+        if not target:
+            return None
+        # page 지정 시 해당 페이지만 탐색, 없으면 전체 순회
+        page_hint = anchor.get("page")
+        occurrence = max(1, anchor.get("occurrence", 1))
+
+        if page_hint is not None:
+            page_idx = int(page_hint) - 1  # 1-based → 0-based
+            pages_to_search = [(page_idx, doc[page_idx])] if 0 <= page_idx < len(doc) else []
+        else:
+            pages_to_search = [(i, doc[i]) for i in range(len(doc))]
+
+        hit_count = 0
+        for idx, page in pages_to_search:
+            rects = page.search_for(target)
+            for r in rects:
+                hit_count += 1
+                if hit_count == occurrence:
+                    return (idx, r)
+
+        return None  # 텍스트 없음
+
+    # 알 수 없는 anchor 타입 — 실패로 처리
+    return None
+
+
+def _apply_pdf_annotate(page: "fitz.Page", rect: "fitz.Rect", change: "DocumentChange") -> None:
+    """
+    지정 rect에 하이라이트 주석을 추가한다.
+
+    comment 내용: change.replacement 우선, 비어 있으면 change.reason 사용
+    """
+    comment = change.replacement or getattr(change, "reason", "") or ""
+    annot = page.add_highlight_annot(rect)
+    annot.set_info(content=comment)
+    annot.update()
+
+
+def _apply_pdf_redact_overlay(
+    page: "fitz.Page", rect: "fitz.Rect", change: "DocumentChange"
+) -> None:
+    """
+    지정 rect 영역을 흰색으로 가린 뒤 replacement 텍스트를 overlay로 삽입한다.
+
+    CJK 텍스트: fitz.Font("cjk") 시도, 실패하면 기본 폰트(Helvetica) fallback
+    """
+    import fitz
+
+    # 1. 기존 텍스트 가림 (흰 배경)
+    page.add_redact_annot(rect, fill=(1, 1, 1))
+    page.apply_redactions()
+
+    # 2. 새 텍스트 overlay
+    font_size = change.patch.get("font_size", 11) if change.patch else 11
+    replacement = change.replacement or ""
+
+    # CJK 폰트 시도 — 실패 시 기본 폰트로 fallback
+    try:
+        font = fitz.Font("cjk")
+        page.insert_text(
+            (rect.x0, rect.y1 - 2),
+            replacement,
+            fontsize=font_size,
+            font=font,
+            color=(0, 0, 0),
+        )
+    except Exception:
+        # CJK 폰트 로드 실패 — 기본 내장 폰트(Helvetica)로 대체
+        logger.warning(
+            "patch_document_version: CJK 폰트 로드 실패, Helvetica로 대체 | rect=%s", rect
+        )
+        page.insert_text(
+            (rect.x0, rect.y1 - 2),
+            replacement,
+            fontsize=font_size,
+            color=(0, 0, 0),
+        )
 
 
 # ── 핵심 알고리즘 ─────────────────────────────────────────────────────────────
