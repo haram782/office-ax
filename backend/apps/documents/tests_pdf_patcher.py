@@ -251,6 +251,45 @@ class PdfRedactOverlayTest(TestCase):
             "반환 bytes PDF에 replacement 텍스트가 포함되어야 한다",
         )
 
+    def test_redact_overlay_cjk_replacement_is_not_garbled(self):
+        """
+        한글 replacement 텍스트가 깨지지 않고 그대로 추출되어야 한다.
+
+        PyMuPDF 1.24.5에서 fitz.Font("cjk")를 insert_text(font=...)로 넘기면
+        TypeError가 발생해 Helvetica로 fallback되는데, Helvetica는 한글 글리프가
+        없어 텍스트가 "····"처럼 완전히 깨진다. fontname="korea-s"를 써야 한다.
+        """
+        from apps.documents.tasks import _patch_pdf
+
+        _make_change(
+            self.version,
+            operation_id="op_redact_cjk_01",
+            operation="redact_overlay",
+            anchor={
+                "type": "pdf_bbox",
+                "page": 1,
+                "rect": {"x0": 72, "y0": 88, "x1": 300, "y1": 104},
+                "target_text": "2025 08 11",
+            },
+            original="2025 08 11",
+            replacement="계약일자 변경",
+        )
+        result_bytes = _patch_pdf(self.version, self.upload)
+
+        self.version.refresh_from_db()
+        self.assertEqual(self.version.status, DocumentVersion.Status.READY)
+
+        import fitz
+        doc = fitz.open(stream=result_bytes, filetype="pdf")
+        full_text = "".join(page.get_text() for page in doc)
+        doc.close()
+
+        self.assertIn(
+            "계약일자",
+            full_text,
+            "한글 replacement 텍스트가 Helvetica fallback으로 깨지지 않고 추출돼야 한다",
+        )
+
 
 @override_settings(MEDIA_ROOT=TEMP_MEDIA)
 class PdfFailureTest(TestCase):

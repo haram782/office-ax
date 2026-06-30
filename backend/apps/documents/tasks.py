@@ -836,10 +836,14 @@ def _apply_pdf_redact_overlay(
     """
     지정 rect 영역을 흰색으로 가린 뒤 replacement 텍스트를 overlay로 삽입한다.
 
-    CJK 텍스트: fitz.Font("cjk") 시도, 실패하면 기본 폰트(Helvetica) fallback
+    CJK 문자가 포함된 텍스트는 PyMuPDF 내장 CJK 폰트("korea-s")를 사용한다.
+    (fitz.Font("cjk") 객체를 insert_text(font=...)로 넘기면 PyMuPDF 1.24.5에서
+    TypeError가 발생해 Helvetica로 fallback되며 한글 글리프가 없어 텍스트가
+    깨지는 문제가 있었음)
+    순수 ASCII 텍스트는 기존처럼 기본 내장 폰트("helv")를 사용한다 —
+    korea-s 폰트로 ASCII 문자를 그리면 글자 사이에 불필요한 폭이 생겨
+    텍스트 추출 시 문자마다 공백이 끼는 부작용이 있기 때문이다.
     """
-    import fitz
-
     # 1. 기존 텍스트 가림 (흰 배경)
     page.add_redact_annot(rect, fill=(1, 1, 1))
     page.apply_redactions()
@@ -847,28 +851,15 @@ def _apply_pdf_redact_overlay(
     # 2. 새 텍스트 overlay
     font_size = change.patch.get("font_size", 11) if change.patch else 11
     replacement = change.replacement or ""
+    fontname = "korea-s" if any(ord(ch) > 127 for ch in replacement) else "helv"
 
-    # CJK 폰트 시도 — 실패 시 기본 폰트로 fallback
-    try:
-        font = fitz.Font("cjk")
-        page.insert_text(
-            (rect.x0, rect.y1 - 2),
-            replacement,
-            fontsize=font_size,
-            font=font,
-            color=(0, 0, 0),
-        )
-    except Exception:
-        # CJK 폰트 로드 실패 — 기본 내장 폰트(Helvetica)로 대체
-        logger.warning(
-            "patch_document_version: CJK 폰트 로드 실패, Helvetica로 대체 | rect=%s", rect
-        )
-        page.insert_text(
-            (rect.x0, rect.y1 - 2),
-            replacement,
-            fontsize=font_size,
-            color=(0, 0, 0),
-        )
+    page.insert_text(
+        (rect.x0, rect.y1 - 2),
+        replacement,
+        fontsize=font_size,
+        fontname=fontname,
+        color=(0, 0, 0),
+    )
 
 
 # ── 핵심 알고리즘 ─────────────────────────────────────────────────────────────
