@@ -140,8 +140,8 @@ class PdfAnnotateTest(TestCase):
         )
 
     def test_pdf_bbox_annotate_returns_bytes(self):
-        """pdf_bbox anchor + annotate → _patch_pdf가 bytes를 반환한다."""
-        from apps.documents.tasks import _patch_pdf
+        """pdf_bbox anchor + annotate → render_pdf가 bytes를 반환한다."""
+        from apps.documents.patcher import collect_applied_changes, render_pdf
 
         _make_change(
             self.version,
@@ -155,9 +155,12 @@ class PdfAnnotateTest(TestCase):
             },
             replacement="검토 완료",
         )
-        result = _patch_pdf(self.version, self.upload)
+        changes = collect_applied_changes(self.version, operations=["annotate", "redact_overlay"])
+        with self.upload.file.open("rb") as f:
+            original_bytes = f.read()
+        result = render_pdf(original_bytes, changes)
 
-        self.assertIsInstance(result, (bytes, bytearray), "annotate 후 _patch_pdf는 bytes를 반환해야 한다")
+        self.assertIsInstance(result.output_bytes, (bytes, bytearray), "annotate 후 render_pdf는 bytes를 반환해야 한다")
 
     def test_text_match_annotate_sets_version_ready(self):
         """text_match anchor + annotate → search_for로 rect를 찾아 version.status=ready."""
@@ -218,9 +221,9 @@ class PdfRedactOverlayTest(TestCase):
         )
 
     def test_redact_overlay_artifact_contains_replacement(self):
-        """redact_overlay 후 _patch_pdf 반환 bytes를 열면 replacement 텍스트가 포함된다."""
+        """redact_overlay 후 render_pdf 반환 bytes를 열면 replacement 텍스트가 포함된다."""
         import fitz
-        from apps.documents.tasks import _patch_pdf
+        from apps.documents.patcher import collect_applied_changes, persist_patch_result, render_pdf
 
         _make_change(
             self.version,
@@ -235,11 +238,16 @@ class PdfRedactOverlayTest(TestCase):
             original="2025 08 11",
             replacement="2025-08-11",
         )
-        result_bytes = _patch_pdf(self.version, self.upload)
+        changes = collect_applied_changes(self.version, operations=["annotate", "redact_overlay"])
+        with self.upload.file.open("rb") as f:
+            original_bytes = f.read()
+        patch_result = render_pdf(original_bytes, changes)
+        persist_patch_result(self.version, patch_result, "pdf", changes)
 
         self.version.refresh_from_db()
         self.assertEqual(self.version.status, DocumentVersion.Status.READY)
-        self.assertIsNotNone(result_bytes, "_patch_pdf는 bytes를 반환해야 한다")
+        result_bytes = patch_result.output_bytes
+        self.assertGreater(len(result_bytes), 0, "render_pdf는 bytes를 반환해야 한다")
 
         doc = fitz.open(stream=result_bytes, filetype="pdf")
         full_text = "".join(page.get_text() for page in doc)
@@ -259,7 +267,7 @@ class PdfRedactOverlayTest(TestCase):
         TypeError가 발생해 Helvetica로 fallback되는데, Helvetica는 한글 글리프가
         없어 텍스트가 "····"처럼 완전히 깨진다. fontname="korea-s"를 써야 한다.
         """
-        from apps.documents.tasks import _patch_pdf
+        from apps.documents.patcher import collect_applied_changes, persist_patch_result, render_pdf
 
         _make_change(
             self.version,
@@ -274,11 +282,16 @@ class PdfRedactOverlayTest(TestCase):
             original="2025 08 11",
             replacement="계약일자 변경",
         )
-        result_bytes = _patch_pdf(self.version, self.upload)
+        changes = collect_applied_changes(self.version, operations=["annotate", "redact_overlay"])
+        with self.upload.file.open("rb") as f:
+            original_bytes = f.read()
+        patch_result = render_pdf(original_bytes, changes)
+        persist_patch_result(self.version, patch_result, "pdf", changes)
 
         self.version.refresh_from_db()
         self.assertEqual(self.version.status, DocumentVersion.Status.READY)
 
+        result_bytes = patch_result.output_bytes
         import fitz
         doc = fitz.open(stream=result_bytes, filetype="pdf")
         full_text = "".join(page.get_text() for page in doc)

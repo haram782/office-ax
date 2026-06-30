@@ -347,7 +347,8 @@ class DocumentVersionFileDoesNotCallPatcherTest(TestCase):
         self.upload = upload
 
     def test_get_does_not_invoke_patch_pdf(self):
-        with mock_patch("apps.documents.tasks._patch_pdf") as mocked_patcher:
+        # GET /file/은 저장된 artifact_file을 그대로 반환하며 render_pdf를 호출하지 않는다
+        with mock_patch("apps.documents.patcher.render_pdf") as mocked_patcher:
             resp = self.client.get(
                 f"/api/v1/uploads/{self.upload.pk}/versions/{self.version.pk}/file/"
             )
@@ -384,12 +385,12 @@ class PatchDocumentVersionSavesArtifactTest(TestCase):
         self.assertEqual(version.artifact_format, "xlsx")
 
 
-# ── _patch_* 순수 함수 bytes 반환 테스트 ─────────────────────────────────────
+# ── render_* 순수 함수 bytes 반환 테스트 ─────────────────────────────────────
 
 
 @override_settings(MEDIA_ROOT=TEMP_MEDIA)
 class PatchFunctionReturnsBytesTest(TestCase):
-    """각 _patch_* 함수가 bytes를 반환하는지 검증한다."""
+    """각 render_* 함수가 bytes를 반환하는지 검증한다."""
 
     def setUp(self):
         self.user = _make_user("patch_bytes_user")
@@ -398,8 +399,8 @@ class PatchFunctionReturnsBytesTest(TestCase):
         return _make_upload(self.user, source_type, filename, file_bytes, hash_val)
 
     def test_patch_xlsx_returns_bytes(self):
-        """_patch_xlsx가 apply 성공 시 bytes를 반환한다."""
-        from apps.documents.tasks import _patch_xlsx
+        """render_xlsx가 apply 성공 시 bytes를 반환한다."""
+        from apps.documents.patcher import collect_applied_changes, render_xlsx
 
         file_bytes = _xlsx_bytes_with_value("Sheet1", "B2", "old")
         upload = self._make_full_upload("excel", "t.xlsx", file_bytes, "bytes_xlsx")
@@ -410,12 +411,15 @@ class PatchFunctionReturnsBytesTest(TestCase):
             original="old", replacement="new",
         )
 
-        result = _patch_xlsx(version, upload)
-        self.assertIsInstance(result, (bytes, bytearray), "_patch_xlsx는 bytes를 반환해야 한다")
+        changes = collect_applied_changes(version, operations=["replace_cell"])
+        with upload.file.open("rb") as f:
+            original_bytes = f.read()
+        result = render_xlsx(original_bytes, changes)
+        self.assertIsInstance(result.output_bytes, (bytes, bytearray), "render_xlsx는 bytes를 반환해야 한다")
 
     def test_patch_docx_returns_bytes(self):
-        """_patch_docx가 apply 성공 시 bytes를 반환한다."""
-        from apps.documents.tasks import _patch_docx
+        """render_docx가 apply 성공 시 bytes를 반환한다."""
+        from apps.documents.patcher import collect_applied_changes, render_docx
 
         file_bytes = _docx_bytes_with_text("원본 텍스트")
         upload = self._make_full_upload("docx", "t.docx", file_bytes, "bytes_docx")
@@ -426,12 +430,15 @@ class PatchFunctionReturnsBytesTest(TestCase):
             original="원본 텍스트", replacement="수정 텍스트",
         )
 
-        result = _patch_docx(version, upload)
-        self.assertIsInstance(result, (bytes, bytearray), "_patch_docx는 bytes를 반환해야 한다")
+        changes = collect_applied_changes(version, operations=["replace_text"])
+        with upload.file.open("rb") as f:
+            original_bytes = f.read()
+        result = render_docx(original_bytes, changes)
+        self.assertIsInstance(result.output_bytes, (bytes, bytearray), "render_docx는 bytes를 반환해야 한다")
 
     def test_patch_pptx_returns_bytes(self):
-        """_patch_pptx가 apply 성공 시 bytes를 반환한다."""
-        from apps.documents.tasks import _patch_pptx
+        """render_pptx가 apply 성공 시 bytes를 반환한다."""
+        from apps.documents.patcher import collect_applied_changes, render_pptx
 
         file_bytes = _pptx_bytes_with_text("슬라이드 텍스트")
         upload = self._make_full_upload("pptx", "t.pptx", file_bytes, "bytes_pptx")
@@ -443,5 +450,8 @@ class PatchFunctionReturnsBytesTest(TestCase):
             original="슬라이드 텍스트", replacement="수정된 텍스트",
         )
 
-        result = _patch_pptx(version, upload)
-        self.assertIsInstance(result, (bytes, bytearray), "_patch_pptx는 bytes를 반환해야 한다")
+        changes = collect_applied_changes(version, operations=["replace_text"])
+        with upload.file.open("rb") as f:
+            original_bytes = f.read()
+        result = render_pptx(original_bytes, changes)
+        self.assertIsInstance(result.output_bytes, (bytes, bytearray), "render_pptx는 bytes를 반환해야 한다")

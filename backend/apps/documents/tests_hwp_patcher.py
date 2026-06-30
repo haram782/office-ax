@@ -147,7 +147,7 @@ class HwpPatcherMockTest(TestCase):
         )
         self.version = _make_version(self.upload, self.user)
 
-    @patch("apps.documents.tasks.subprocess")
+    @patch("apps.documents.patcher.subprocess")
     def test_success_sets_version_ready(self, mock_subprocess):
         """worker가 applied=[op_001] 반환 → version.status=ready."""
         change = _make_change(
@@ -171,7 +171,7 @@ class HwpPatcherMockTest(TestCase):
         )
         self.assertIn("op_001", self.version.applied_change_ids)
 
-    @patch("apps.documents.tasks.subprocess")
+    @patch("apps.documents.patcher.subprocess")
     def test_worker_returncode_nonzero_sets_failed(self, mock_subprocess):
         """worker returncode != 0 → version.status=failed, error_message에 stderr 내용."""
         _make_change(
@@ -195,7 +195,7 @@ class HwpPatcherMockTest(TestCase):
         )
         self.assertIn("Node 실행 오류", self.version.error_message)
 
-    @patch("apps.documents.tasks.subprocess")
+    @patch("apps.documents.patcher.subprocess")
     def test_worker_timeout_sets_failed(self, mock_subprocess):
         """subprocess timeout → version.status=failed, error_message에 '타임아웃' 포함."""
         import subprocess as real_subprocess
@@ -223,7 +223,7 @@ class HwpPatcherMockTest(TestCase):
         )
         self.assertIn("타임아웃", self.version.error_message)
 
-    @patch("apps.documents.tasks.subprocess")
+    @patch("apps.documents.patcher.subprocess")
     def test_all_failed_from_worker_sets_version_failed(self, mock_subprocess):
         """worker가 failed만 반환(applied=[]) → version.status=failed."""
         _make_change(

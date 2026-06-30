@@ -178,9 +178,9 @@ class DocxPatcherTest(TestCase):
         )
 
     def test_artifact_contains_replacement_text(self):
-        """패치 후 _patch_docx 반환 bytes를 열면 replacement 텍스트가 포함된다."""
+        """패치 후 render_docx 반환 bytes를 열면 replacement 텍스트가 포함된다."""
         from docx import Document
-        from apps.documents.tasks import _patch_docx
+        from apps.documents.patcher import collect_applied_changes, persist_patch_result, render_docx
 
         _make_change(
             self.version,
@@ -190,12 +190,17 @@ class DocxPatcherTest(TestCase):
             original="2026년 1월 계약서입니다.",
             replacement="2026년 2월 수정 계약서입니다.",
         )
-        result_bytes = _patch_docx(self.version, self.upload)
+        changes = collect_applied_changes(self.version, operations=["replace_text"])
+        with self.upload.file.open("rb") as f:
+            original_bytes = f.read()
+        patch_result = render_docx(original_bytes, changes)
+        persist_patch_result(self.version, patch_result, "docx", changes)
 
         self.version.refresh_from_db()
         self.assertEqual(self.version.status, DocumentVersion.Status.READY)
 
-        self.assertIsNotNone(result_bytes, "_patch_docx는 bytes를 반환해야 한다")
+        result_bytes = patch_result.output_bytes
+        self.assertGreater(len(result_bytes), 0, "render_docx는 bytes를 반환해야 한다")
         doc = Document(io.BytesIO(result_bytes))
         full_text = "\n".join(p.text for p in doc.paragraphs)
         self.assertIn(
@@ -263,9 +268,9 @@ class PptxPatcherTest(TestCase):
         )
 
     def test_artifact_contains_replacement_text(self):
-        """패치 후 _patch_pptx 반환 bytes를 열면 replacement 텍스트가 포함된다."""
+        """패치 후 render_pptx 반환 bytes를 열면 replacement 텍스트가 포함된다."""
         from pptx import Presentation
-        from apps.documents.tasks import _patch_pptx
+        from apps.documents.patcher import collect_applied_changes, persist_patch_result, render_pptx
 
         _make_change(
             self.version,
@@ -275,12 +280,17 @@ class PptxPatcherTest(TestCase):
             original="2026년 1분기 실적 보고",
             replacement="2026년 2분기 실적 보고",
         )
-        result_bytes = _patch_pptx(self.version, self.upload)
+        changes = collect_applied_changes(self.version, operations=["replace_text"])
+        with self.upload.file.open("rb") as f:
+            original_bytes = f.read()
+        patch_result = render_pptx(original_bytes, changes)
+        persist_patch_result(self.version, patch_result, "pptx", changes)
 
         self.version.refresh_from_db()
         self.assertEqual(self.version.status, DocumentVersion.Status.READY)
 
-        self.assertIsNotNone(result_bytes, "_patch_pptx는 bytes를 반환해야 한다")
+        result_bytes = patch_result.output_bytes
+        self.assertGreater(len(result_bytes), 0, "render_pptx는 bytes를 반환해야 한다")
         prs = Presentation(io.BytesIO(result_bytes))
         texts = []
         for slide in prs.slides:

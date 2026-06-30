@@ -198,11 +198,15 @@ class XlsxPatcherTaskTest(TestCase):
 
     def test_patcher_applies_replace_cell(self):
         """applied replace_cell DocumentChange가 XLSX 셀에 반영된다."""
-        from apps.documents.tasks import _patch_xlsx
+        from apps.documents.patcher import collect_applied_changes, render_xlsx
 
-        result_bytes = _patch_xlsx(self.version, self.upload)
+        changes = collect_applied_changes(self.version, operations=["replace_cell"])
+        with self.upload.file.open("rb") as f:
+            original_bytes = f.read()
+        result = render_xlsx(original_bytes, changes)
 
-        self.assertIsInstance(result_bytes, (bytes, bytearray), "_patch_xlsx는 bytes를 반환해야 한다")
+        result_bytes = result.output_bytes
+        self.assertIsInstance(result_bytes, (bytes, bytearray), "render_xlsx는 bytes를 반환해야 한다")
         wb = openpyxl.load_workbook(io.BytesIO(result_bytes), data_only=False)
         ws = wb["정산내역"]
         self.assertEqual(
@@ -212,11 +216,14 @@ class XlsxPatcherTaskTest(TestCase):
         )
 
     def test_patcher_returns_bytes(self):
-        """_patch_xlsx가 bytes를 반환한다."""
-        from apps.documents.tasks import _patch_xlsx
+        """render_xlsx가 bytes를 반환한다."""
+        from apps.documents.patcher import collect_applied_changes, render_xlsx
 
-        result = _patch_xlsx(self.version, self.upload)
-        self.assertIsInstance(result, (bytes, bytearray), "_patch_xlsx는 bytes를 반환해야 한다")
+        changes = collect_applied_changes(self.version, operations=["replace_cell"])
+        with self.upload.file.open("rb") as f:
+            original_bytes = f.read()
+        result = render_xlsx(original_bytes, changes)
+        self.assertIsInstance(result.output_bytes, (bytes, bytearray), "render_xlsx는 bytes를 반환해야 한다")
 
     def test_patcher_sets_status_ready(self):
         """version.status가 'ready'가 된다."""
