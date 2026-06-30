@@ -131,6 +131,23 @@ class NotifyChatResponseOriginalVersionTest(TestCase):
             "채팅 업로드 경로에서도 원본 DocumentVersion이 생성되어야 한다",
         )
 
+    def test_notify_chat_response_is_idempotent_on_repeat_call(self):
+        # 경계 케이스: 같은 채팅 메시지에 대해 콜백이 두 번 호출돼도
+        # (예: 메시지 브로커 재시도) 원본 버전이 중복 생성되면 안 된다.
+        result = {"summary": "분석 완료", "source_type": "excel", "errors": []}
+
+        notify_chat_response(self.user_msg.pk, result)
+        notify_chat_response(self.user_msg.pk, result)
+
+        self.assertEqual(
+            DocumentVersion.objects.filter(
+                upload_log=self.upload_log,
+                version_number=1,
+            ).count(),
+            1,
+            "원본 DocumentVersion은 중복 호출에도 1개만 존재해야 한다",
+        )
+
 
 # ── 2. duplicate 경로: views.py ─────────────────────────────────────────────────
 
