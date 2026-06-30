@@ -1,0 +1,532 @@
+# Office-AX Patch Plan JSON 스키마 v0
+
+## 1. 목적
+
+이 문서는 프롬프트 기반 문서 수정에서 LLM, 백엔드, 문서 patcher, 뷰어가 공유할 중간 계약을 정의한다.
+
+핵심 원칙:
+
+- 사용자는 뷰어에서 직접 편집하지 않는다.
+- 사용자는 프롬프트로 문서 수정을 요청한다.
+- LLM은 실제 파일을 수정하지 않고 구조화된 `PatchPlan`을 생성한다.
+- 서버는 `PatchPlan`을 검증하고 `DocumentChange`로 저장한다.
+- 문서 patcher는 승인된 변경만 실제 문서 버전에 반영한다.
+- 결과 파일은 새 `DocumentVersion`과 artifact로 저장한다.
+
+## 2. 용어
+
+### PatchPlan
+
+하나의 사용자 수정 요청에 대해 생성된 변경 계획 묶음.
+
+예:
+
+```text
+"날짜 형식 통일하고 누락된 전화번호 표시해줘"
+```
+
+이 요청은 여러 개의 `PatchOperation`으로 분해될 수 있다.
+
+### PatchOperation
+
+실제 문서에 적용 가능한 최소 변경 단위.
+
+예:
+
+- 셀 값 변경
+- 텍스트 치환
+- PDF 주석 추가
+- PDF redaction + overlay
+- 문서 전체 재생성
+
+### DocumentChange
+
+`PatchOperation`을 서버 DB에 저장한 상태 객체.
+
+프론트의 `suggestion`과 1:1 또는 1:N으로 연결될 수 있다.
+
+### DocumentVersion
+
+원본 또는 수정 결과 문서 버전.
+
+예:
+
+- v0 원본
+- v1 날짜 형식 통일
+- v2 개인정보 마스킹
+
+### Artifact
+
+문서 처리 결과 파일.
+
+예:
+
+- 수정본 `.xlsx`
+- 수정본 `.hwp`
+- 검토본 `.pdf`
+- 재작성본 `.pdf`
+
+## 3. 전체 흐름
+
+```text
+User prompt
+  -> LLM generates PatchPlan
+  -> Backend validates PatchPlan
+  -> Backend stores DocumentChange rows
+  -> Viewer shows suggestions
+  -> User applies / rejects changes
+  -> Patch job collects applied changes
+  -> Patcher creates new file
+  -> Backend stores DocumentVersion + artifact
+  -> Viewer shows version history
+```
+
+## 4. Top-level PatchPlan
+
+```json
+{
+  "schema": "office_ax.patch_plan.v0",
+  "plan_id": "plan_20260628_001",
+  "request": {
+    "prompt": "날짜 형식 통일하고 누락된 전화번호 표시해줘",
+    "mode": "edit_document"
+  },
+  "document": {
+    "upload_id": 87,
+    "base_version_id": "ver_000",
+    "filename": "청약신청서 접수증.pdf",
+    "format": "pdf",
+    "source_type": "pdf_digital"
+  },
+  "strategy": {
+    "kind": "patch",
+    "requires_regeneration": false,
+    "artifact_format": "pdf"
+  },
+  "summary": "날짜 표기와 누락 항목에 대한 수정 제안을 생성했습니다.",
+  "operations": [],
+  "warnings": [],
+  "model": {
+    "provider": "google",
+    "model": "gemini-2.0-flash",
+    "latency_ms": 0
+  }
+}
+```
+
+## 5. PatchOperation 공통 필드
+
+```json
+{
+  "operation_id": "op_001",
+  "suggestion_id": "sug_001",
+  "format": "pdf",
+  "operation": "annotate",
+  "status": "pending",
+  "severity": "warning",
+  "title": "유선 전화번호 누락",
+  "original": "",
+  "replacement": "유선 전화번호 확인 필요",
+  "reason": "신청자 인적사항에 유선 전화번호가 비어 있습니다.",
+  "confidence": 0.91,
+  "anchor": {},
+  "patch": {},
+  "risk": {
+    "level": "low",
+    "requires_user_confirmation": false,
+    "notes": []
+  }
+}
+```
+
+### operation
+
+초기 v0에서 허용하는 값:
+
+```text
+replace_text
+replace_cell
+annotate
+redact_overlay
+regenerate
+```
+
+향후 후보:
+
+```text
+insert_text
+delete_text
+replace_shape_text
+replace_table_cell
+mask_pii
+```
+
+## 6. 포맷별 operation 의미
+
+| operation | XLSX | HWP/HWPX | DOCX | PPTX | PDF readable | PDF scanned |
+| --- | --- | --- | --- | --- | --- | --- |
+| `replace_cell` | 셀 값 변경 | 해당 없음 | 해당 없음 | 표 셀 확장 가능 | 해당 없음 | 해당 없음 |
+| `replace_text` | 제한적 | 텍스트 치환 | 문단/run 치환 | shape 텍스트 치환 | 짧은 overlay 치환 | OCR anchor 필요 |
+| `annotate` | 메모 가능 | notice/주석 후보 | comment 후보 | comment 후보 | highlight/comment | OCR bbox 필요 |
+| `redact_overlay` | 해당 없음 | 해당 없음 | 해당 없음 | 해당 없음 | 영역 가림 + 대체 텍스트 | 이미지 위 가림 |
+| `regenerate` | 새 통합 문서 생성 | 새 HWP/HWPX 생성 후보 | 새 DOCX/PDF 생성 | 새 PPTX/PDF 생성 | HTML/PDF 재작성 | OCR 기반 재작성 |
+
+주의:
+
+- 같은 `replace_text`라도 포맷별 구현은 다르다.
+- PDF의 `replace_text`는 원본 텍스트 재흐름이 아니라 redaction/overlay 계열로 취급한다.
+- 큰 PDF 수정은 `replace_text`가 아니라 `regenerate`로 분류한다.
+
+## 7. Anchor 스키마
+
+### 7.1 cell anchor
+
+XLSX/CSV 우선.
+
+```json
+{
+  "type": "cell",
+  "sheet": "Sheet1",
+  "cell": "D12",
+  "row_index": 11,
+  "col_index": 3
+}
+```
+
+### 7.2 text_match anchor
+
+HWP/HWPX/DOCX/PDF 공통 fallback.
+
+```json
+{
+  "type": "text_match",
+  "target_text": "2025년 08월 11일",
+  "context_before": "신청일시",
+  "context_after": "무주택기간",
+  "occurrence": 1,
+  "page": 1
+}
+```
+
+### 7.3 hwp_text anchor
+
+`@rhwp/core` 기반 patcher가 사용할 수 있는 정밀 anchor.
+
+```json
+{
+  "type": "hwp_text",
+  "sec": 0,
+  "para": 0,
+  "char_offset": 12,
+  "length": 3,
+  "cell_context": {
+    "parent_para": 0,
+    "ctrl_idx": 3,
+    "cell_idx": 2,
+    "cell_para": 0
+  },
+  "fallback_text": "11월"
+}
+```
+
+v0에서는 LLM이 이 anchor를 직접 만들지 않는다.
+
+생성 주체:
+
+```text
+LLM text_match
+  -> HWP patch worker searchAllText()
+  -> hwp_text anchor 확정
+```
+
+### 7.4 pdf_bbox anchor
+
+PyMuPDF 기반 PDF viewer/patcher용.
+
+```json
+{
+  "type": "pdf_bbox",
+  "page": 1,
+  "rect": {
+    "x0": 159.31,
+    "y0": 679.18,
+    "x1": 237.83,
+    "y1": 692.18
+  },
+  "target_text": "성남여수(06)(A-2)"
+}
+```
+
+v0에서는 readable PDF에서 `search_for()` 또는 텍스트 조각 병합으로 생성한다.
+
+### 7.5 slide_shape anchor
+
+PPTX용.
+
+```json
+{
+  "type": "slide_shape",
+  "slide_index": 0,
+  "shape_index": 4,
+  "row_index": null,
+  "col_index": null
+}
+```
+
+## 8. Patch payload 예시
+
+### 8.1 XLSX 셀 변경
+
+```json
+{
+  "operation_id": "op_xlsx_001",
+  "format": "xlsx",
+  "operation": "replace_cell",
+  "title": "금액 오류 수정",
+  "original": "1500",
+  "replacement": "15000",
+  "anchor": {
+    "type": "cell",
+    "sheet": "Sheet1",
+    "cell": "D12"
+  },
+  "patch": {
+    "method": "openpyxl_set_value",
+    "value": "15000"
+  }
+}
+```
+
+### 8.2 HWP 텍스트 변경
+
+```json
+{
+  "operation_id": "op_hwp_001",
+  "format": "hwp",
+  "operation": "replace_text",
+  "title": "월 표기 수정",
+  "original": "11월",
+  "replacement": "12월",
+  "anchor": {
+    "type": "text_match",
+    "target_text": "11월",
+    "occurrence": 1
+  },
+  "patch": {
+    "method": "rhwp_replace_text",
+    "fallback_method": "rhwp_replace_all"
+  }
+}
+```
+
+### 8.3 PDF 검토 주석
+
+```json
+{
+  "operation_id": "op_pdf_001",
+  "format": "pdf",
+  "operation": "annotate",
+  "title": "누락 항목 표시",
+  "original": "",
+  "replacement": "유선 전화번호 확인 필요",
+  "anchor": {
+    "type": "text_match",
+    "target_text": "전화번호가 없습니다.",
+    "page": 1
+  },
+  "patch": {
+    "method": "pymupdf_highlight_comment",
+    "comment": "신청자 인적사항에 유선 전화번호가 누락되었습니다."
+  }
+}
+```
+
+### 8.4 PDF 짧은 텍스트 overlay 수정
+
+```json
+{
+  "operation_id": "op_pdf_002",
+  "format": "pdf",
+  "operation": "redact_overlay",
+  "title": "날짜 형식 통일",
+  "original": "2025년 08월 11일",
+  "replacement": "2025-08-11",
+  "anchor": {
+    "type": "pdf_bbox",
+    "page": 1,
+    "rect": {
+      "x0": 414.43,
+      "y0": 735.87,
+      "x1": 484.44,
+      "y1": 748.87
+    },
+    "target_text": "2025년 08월 11일"
+  },
+  "patch": {
+    "method": "pymupdf_redact_overlay",
+    "font": "auto",
+    "font_size": "fit",
+    "fill": "white"
+  },
+  "risk": {
+    "level": "medium",
+    "requires_user_confirmation": true,
+    "notes": ["PDF는 원본 레이아웃 재흐름을 지원하지 않습니다."]
+  }
+}
+```
+
+### 8.5 PDF 재생성
+
+```json
+{
+  "operation_id": "op_pdf_003",
+  "format": "pdf",
+  "operation": "regenerate",
+  "title": "검토 의견서 재작성본 생성",
+  "original": null,
+  "replacement": null,
+  "anchor": {
+    "type": "document"
+  },
+  "patch": {
+    "method": "html_to_pdf",
+    "template": "review_report_v1",
+    "structured_document": {
+      "title": "계약서 검토 의견서",
+      "sections": []
+    }
+  },
+  "risk": {
+    "level": "high",
+    "requires_user_confirmation": true,
+    "notes": ["원본 PDF를 직접 수정하지 않고 새 PDF를 생성합니다."]
+  }
+}
+```
+
+## 9. strategy.kind
+
+`PatchPlan.strategy.kind`는 결과물 생성 방식을 요약한다.
+
+```text
+patch
+review_copy
+regenerate
+mixed
+```
+
+### patch
+
+원본 파일 구조를 유지하고 직접 수정한다.
+
+예:
+
+- XLSX 셀 변경
+- HWP 텍스트 치환
+- PPTX shape 텍스트 치환
+
+### review_copy
+
+원본 위에 하이라이트/주석/마스킹을 얹은 검토본을 만든다.
+
+예:
+
+- PDF highlight annotation
+- PDF comment
+- PDF redaction preview
+
+### regenerate
+
+원본 내용을 바탕으로 새 문서를 생성한다.
+
+예:
+
+- PDF 내용을 보고 보고서형 PDF 재작성
+- 스캔 PDF OCR 결과를 구조화 문서로 재생성
+
+### mixed
+
+일부는 직접 patch, 일부는 검토 주석 또는 재생성을 함께 수행한다.
+
+## 10. DocumentChange 매핑
+
+권장 필드:
+
+```text
+DocumentChange
+  id
+  owner
+  upload_log
+  source_message
+  plan_id
+  operation_id
+  format
+  operation
+  title
+  original
+  replacement
+  reason
+  confidence
+  anchor JSON
+  patch JSON
+  status: pending | applied | rejected
+  risk_level
+  created_at
+  updated_at
+```
+
+초기에는 `DocumentChange.status`를 프론트의 적용/거절 상태 원천으로 삼는다.
+
+## 11. DocumentVersion 매핑
+
+권장 필드:
+
+```text
+DocumentVersion
+  id
+  owner
+  upload_log
+  parent_version
+  version_number
+  label
+  summary
+  artifact_file
+  artifact_format
+  status: original | draft | generating | ready | failed
+  applied_change_ids JSON
+  created_at
+  updated_at
+```
+
+뷰어 상단의 수정 내역/버전 탭은 `DocumentVersion` 목록을 사용한다.
+
+## 12. Patcher 책임
+
+patcher는 다음을 보장해야 한다.
+
+- 지원하지 않는 operation은 실패로 반환한다.
+- anchor를 다시 검증한다.
+- original 값이 실제 문서 내용과 다르면 충돌로 처리한다.
+- patch 결과를 새 파일로 저장한다.
+- 원본 파일은 덮어쓰지 않는다.
+- 결과 파일을 다시 열어 최소 검증한다.
+
+## 13. 초기 구현 우선순위
+
+1. XLSX `replace_cell`
+2. HWP `replace_text` using `@rhwp/core` Node worker
+3. PDF `annotate` using PyMuPDF
+4. PDF `redact_overlay` using PyMuPDF
+5. PDF `regenerate` using HTML to PDF
+6. DOCX/PPTX patch
+
+## 14. 미해결 질문
+
+- `apply` 버튼 클릭 시 즉시 `DocumentChange.status`를 저장할지, 로컬 draft 후 “수정본 생성”에서 저장할지
+- `PatchPlan`을 DB에 원본 JSON으로 보존할지
+- LLM 응답 실패/부분 성공 시 사용자에게 어떤 상태로 보여줄지
+- PDF overlay 결과를 제품에서 “수정본”이라 부를지 “검토본”이라 부를지
+- HWP patch worker를 `ax-engine`에 둘지 `backend`에 둘지
+- `@rhwp/core` 서버 사용 시 Node 프로세스 타임아웃/메모리 제한 기준
+
