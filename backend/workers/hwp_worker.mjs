@@ -10,7 +10,10 @@
  *   2. input_b64 → Buffer → Uint8Array
  *   3. @rhwp/core initRhwp() WASM 초기화 (파일시스템 경로 직접 사용)
  *   4. new HwpDocument(bytes) 로 HWP 로드
- *   5. changes 순회 → searchAllText로 존재 확인 후 replaceAll 치환
+ *   5. changes 순회 → searchAllText로 매치 목록 조회 →
+ *      change.anchor.occurrence(1-based, 기본값 1)번째 매치를
+ *      replaceText(sec, para, charOffset, length, replacement)로 정밀 치환
+ *      (replaceAll은 동일 텍스트 전체를 바꿔버려 단일 매치 교체가 불가능하므로 사용하지 않는다)
  *   6. exportHwpVerify() 검증 → exportHwp() → base64 인코딩
  *   7. JSON 출력 후 종료
  */
@@ -76,36 +79,59 @@ async function main() {
   const applied = [];
   const failed = [];
 
-  // changes 순회 — v0: occurrence 무관하게 replaceAll 사용
+  // changes 순회 — searchAllText로 매치 목록을 구한 뒤 occurrence번째 매치만
+  // replaceText로 정밀 치환한다 (replaceAll 미사용)
   for (const change of (changes || [])) {
-    const { operation_id, original, replacement } = change;
+    const { operation_id, original, replacement, anchor } = change;
+    // anchor.occurrence: 1-based. 없으면 첫 번째 매치(occurrence=1)를 기본값으로 사용해
+    // anchor 정보가 없는 기존 change와도 호환되게 한다.
+    const occurrence = (anchor && Number.isInteger(anchor.occurrence) && anchor.occurrence > 0)
+      ? anchor.occurrence
+      : 1;
 
-    // 대상 텍스트 존재 여부 확인
-    let searchResult;
+    // 매치 목록 조회
+    let matches;
     try {
       const resultJson = doc.searchAllText(original, false, true);
-      searchResult = JSON.parse(resultJson);
+      matches = JSON.parse(resultJson);
     } catch (err) {
       process.stderr.write(`[hwp_worker] searchAllText 실패 op=${operation_id}: ${err.message}\n`);
       failed.push({ operation_id, reason: `searchAllText 오류: ${err.message}` });
       continue;
     }
 
-    // 검색 결과가 없으면 실패로 마킹
-    if (!searchResult || (Array.isArray(searchResult) && searchResult.length === 0)) {
+    if (!Array.isArray(matches) || matches.length === 0) {
       process.stderr.write(`[hwp_worker] 텍스트 없음 op=${operation_id}: "${original}"\n`);
       failed.push({ operation_id, reason: '텍스트를 찾을 수 없습니다.' });
       continue;
     }
 
-    // replaceAll로 전체 치환 (v0 단순화 — occurrence별 부분 치환 미구현)
+    // occurrence가 매치 수를 초과하면 실패로 마킹
+    if (occurrence > matches.length) {
+      process.stderr.write(
+        `[hwp_worker] occurrence 범위 초과 op=${operation_id}: occurrence=${occurrence}, 매치=${matches.length}건\n`
+      );
+      failed.push({ operation_id, reason: `occurrence(${occurrence})가 매치 수(${matches.length})를 초과했습니다.` });
+      continue;
+    }
+
+    // occurrence번째 매치 1건만 정밀 치환
+    const m = matches[occurrence - 1];
     try {
-      doc.replaceAll(original, replacement, false);
+      const replaceResultJson = doc.replaceText(m.sec, m.para, m.charOffset, m.length, replacement);
+      const replaceResult = JSON.parse(replaceResultJson);
+      if (!replaceResult || replaceResult.ok !== true) {
+        process.stderr.write(`[hwp_worker] replaceText 실패 op=${operation_id}\n`);
+        failed.push({ operation_id, reason: 'replaceText가 실패를 반환했습니다.' });
+        continue;
+      }
       applied.push(operation_id);
-      process.stderr.write(`[hwp_worker] 치환 성공 op=${operation_id}: "${original}" → "${replacement}"\n`);
+      process.stderr.write(
+        `[hwp_worker] 치환 성공 op=${operation_id}: "${original}"(${occurrence}번째) → "${replacement}"\n`
+      );
     } catch (err) {
-      process.stderr.write(`[hwp_worker] replaceAll 실패 op=${operation_id}: ${err.message}\n`);
-      failed.push({ operation_id, reason: `replaceAll 오류: ${err.message}` });
+      process.stderr.write(`[hwp_worker] replaceText 오류 op=${operation_id}: ${err.message}\n`);
+      failed.push({ operation_id, reason: `replaceText 오류: ${err.message}` });
     }
   }
 
