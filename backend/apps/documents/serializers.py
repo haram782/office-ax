@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import InboundEmail, UploadLog, IngestionWorkflow
+from .models import DocumentChange, DocumentVersion, InboundEmail, UploadLog, IngestionWorkflow
 
 
 class UploadLogSerializer(serializers.ModelSerializer):
@@ -70,4 +70,53 @@ class IngestionWorkflowSerializer(serializers.ModelSerializer):
             "phone_number",
             "inbound_email",
         ]
+        read_only_fields = fields
+
+
+class DocumentChangeSerializer(serializers.ModelSerializer):
+    """DocumentChange 읽기 전용 직렬화."""
+
+    class Meta:
+        model = DocumentChange
+        fields = [
+            "id",
+            "operation_id",
+            "plan_id",
+            "format",
+            "operation",
+            "title",
+            "original",
+            "replacement",
+            "reason",
+            "confidence",
+            "anchor",
+            "patch",
+            "risk_level",
+            "status",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class DocumentVersionCreateSerializer(serializers.ModelSerializer):
+    """DocumentVersion 생성 요청용 — label/summary/patch_plan만 입력받는다."""
+
+    class Meta:
+        model = DocumentVersion
+        fields = ["label", "summary", "patch_plan"]
+
+    def validate_patch_plan(self, value):
+        # patch_plan은 반드시 리스트여야 한다
+        if not isinstance(value, list):
+            raise serializers.ValidationError("patch_plan은 리스트이어야 합니다.")
+        return value
+
+
+class DocumentVersionSummarySerializer(serializers.ModelSerializer):
+    """DocumentVersion 생성/목록 응답용 요약 직렬화."""
+
+    class Meta:
+        model = DocumentVersion
+        fields = ["id", "version_number", "status", "label", "summary", "applied_change_ids", "created_at"]
         read_only_fields = fields

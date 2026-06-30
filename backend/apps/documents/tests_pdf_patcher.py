@@ -139,8 +139,10 @@ class PdfAnnotateTest(TestCase):
             "pdf_bbox annotate 성공 후 version.status는 READY여야 한다",
         )
 
-    def test_pdf_bbox_annotate_saves_artifact_file(self):
-        """pdf_bbox anchor + annotate → artifact_file이 저장된다."""
+    def test_pdf_bbox_annotate_returns_bytes(self):
+        """pdf_bbox anchor + annotate → _patch_pdf가 bytes를 반환한다."""
+        from apps.documents.tasks import _patch_pdf
+
         _make_change(
             self.version,
             operation_id="op_ann_02",
@@ -153,13 +155,9 @@ class PdfAnnotateTest(TestCase):
             },
             replacement="검토 완료",
         )
-        patch_document_version(self.version.pk)
+        result = _patch_pdf(self.version, self.upload)
 
-        self.version.refresh_from_db()
-        self.assertTrue(
-            bool(self.version.artifact_file),
-            "annotate 후 artifact_file이 저장되어야 한다",
-        )
+        self.assertIsInstance(result, (bytes, bytearray), "annotate 후 _patch_pdf는 bytes를 반환해야 한다")
 
     def test_text_match_annotate_sets_version_ready(self):
         """text_match anchor + annotate → search_for로 rect를 찾아 version.status=ready."""
@@ -220,8 +218,9 @@ class PdfRedactOverlayTest(TestCase):
         )
 
     def test_redact_overlay_artifact_contains_replacement(self):
-        """redact_overlay 후 artifact PDF를 열면 replacement 텍스트가 포함된다."""
+        """redact_overlay 후 _patch_pdf 반환 bytes를 열면 replacement 텍스트가 포함된다."""
         import fitz
+        from apps.documents.tasks import _patch_pdf
 
         _make_change(
             self.version,
@@ -236,20 +235,20 @@ class PdfRedactOverlayTest(TestCase):
             original="2025 08 11",
             replacement="2025-08-11",
         )
-        patch_document_version(self.version.pk)
+        result_bytes = _patch_pdf(self.version, self.upload)
 
         self.version.refresh_from_db()
         self.assertEqual(self.version.status, DocumentVersion.Status.READY)
+        self.assertIsNotNone(result_bytes, "_patch_pdf는 bytes를 반환해야 한다")
 
-        with self.version.artifact_file.open("rb") as f:
-            doc = fitz.open(stream=f.read(), filetype="pdf")
+        doc = fitz.open(stream=result_bytes, filetype="pdf")
         full_text = "".join(page.get_text() for page in doc)
         doc.close()
 
         self.assertIn(
             "2025-08-11",
             full_text,
-            "artifact PDF에 replacement 텍스트가 포함되어야 한다",
+            "반환 bytes PDF에 replacement 텍스트가 포함되어야 한다",
         )
 
 
@@ -336,8 +335,4 @@ class PdfFailureTest(TestCase):
             self.version.status,
             DocumentVersion.Status.READY,
             "하나라도 성공하면 version.status는 READY여야 한다",
-        )
-        self.assertTrue(
-            bool(self.version.artifact_file),
-            "부분 성공 시 artifact_file이 저장되어야 한다",
         )

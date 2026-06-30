@@ -282,4 +282,3 @@ class HwpPatcherIntegrationTest(TestCase):
             DocumentVersion.Status.READY,
             "실제 worker 치환 성공 후 version.status는 READY여야 한다",
         )
-        self.assertTrue(bool(self.version.artifact_file), "artifact_file이 저장되어야 한다")

@@ -177,13 +177,18 @@ def notify_analysis_complete(upload_id: int, result: dict) -> None:
 @shared_task(name="documents.patch_document_version")
 def patch_document_version(version_id: int) -> None:
     """
-    draft 상태 DocumentVersion의 applied DocumentChange를 파일에 반영한다.
+    draft 상태 DocumentVersion의 applied DocumentChange를 검증하고
+    applied_change_ids를 기록 후 version.status = ready로 전환한다.
+
+    파일 저장 없음 — 실제 파일은 조회 시 on-demand로 재생성한다.
 
     포맷 디스패치:
-      - excel  → _patch_xlsx  (replace_cell, openpyxl)
-      - docx   → _patch_docx  (replace_text, python-docx)
-      - pptx   → _patch_pptx  (replace_text, python-pptx)
-      - 그 외  → version.status=failed
+      - excel       → _patch_xlsx  (bytes 반환 여부 확인)
+      - docx        → _patch_docx
+      - pptx        → _patch_pptx
+      - pdf         → _patch_pdf
+      - hwp/hwpx    → _patch_hwp
+      - 그 외       → version.status=failed
     """
     from .models import DocumentVersion
 
@@ -208,18 +213,22 @@ def patch_document_version(version_id: int) -> None:
     # ── 포맷별 패처 디스패치 ──────────────────────────────────────────────
     source_type = upload_log.file_structure.source_type if upload_log.file_structure else ""
 
-    if source_type == "excel":
-        _patch_xlsx(version, upload_log)
-    elif source_type == "docx":
-        _patch_docx(version, upload_log)
-    elif source_type == "pptx":
-        _patch_pptx(version, upload_log)
-    elif source_type == "pdf":
-        _patch_pdf(version, upload_log)
-    elif source_type in ("hwp", "hwpx"):
-        _patch_hwp(version, upload_log)
-    else:
+    dispatchers = {
+        "excel": _patch_xlsx,
+        "docx":  _patch_docx,
+        "pptx":  _patch_pptx,
+        "pdf":   _patch_pdf,
+        "hwp":   _patch_hwp,
+        "hwpx":  _patch_hwp,
+    }
+    patcher = dispatchers.get(source_type)
+    if patcher is None:
         _set_failed(version, f"지원하지 않는 포맷: {source_type}")
+        return
+
+    # _patch_* 함수는 bytes를 반환하거나 None(실패) 반환
+    # 실패 처리는 각 함수 내부에서 _set_failed로 수행한다
+    patcher(version, upload_log)
 
 
 def _set_failed(version: "DocumentVersion", error_message: str) -> None:
@@ -230,21 +239,21 @@ def _set_failed(version: "DocumentVersion", error_message: str) -> None:
     version.save(update_fields=["status", "error_message", "updated_at"])
 
 
-def _patch_xlsx(version: "DocumentVersion", upload_log: "UploadLog") -> None:
+def _patch_xlsx(version: "DocumentVersion", upload_log: "UploadLog") -> bytes | None:
     """
-    XLSX 파일에 replace_cell 변경 항목을 반영한다.
+    XLSX 파일에 replace_cell 변경 항목을 반영한 bytes를 반환한다.
 
     처리 흐름:
       1. openpyxl로 원본 로드 (data_only=False — 수식 보존)
       2. replace_cell + status=applied 변경 순회
          - 시트/셀 값 불일치 → change.status=failed
          - 일치 → 셀 값 교체
-      3. 성공 항목이 하나라도 있으면 artifact 저장 + version.status=ready
+      3. 성공 항목이 하나라도 있으면 수정된 XLSX bytes 반환
+         하나도 없으면 version.status=failed, None 반환
     """
     import io
 
     import openpyxl
-    from django.core.files.base import ContentFile
 
     from .models import DocumentChange, DocumentVersion
 
@@ -254,7 +263,7 @@ def _patch_xlsx(version: "DocumentVersion", upload_log: "UploadLog") -> None:
     except Exception as exc:
         _set_failed(version, f"XLSX 로드 실패: {exc}")
         logger.error("patch_document_version: XLSX 로드 실패 | version_id=%s | %s", version.pk, exc)
-        return
+        return None
 
     changes = DocumentChange.objects.filter(
         version=version,
@@ -290,36 +299,34 @@ def _patch_xlsx(version: "DocumentVersion", upload_log: "UploadLog") -> None:
 
     if not applied_ids:
         _set_failed(version, "적용 가능한 replace_cell 변경 항목이 없습니다.")
-        return
+        return None
 
     output = io.BytesIO()
     wb.save(output)
-    output.seek(0)
 
-    artifact_name = f"artifact_{version.upload_log_id}_v{version.version_number}.xlsx"
-    version.artifact_file.save(artifact_name, ContentFile(output.read()), save=False)
+    # version 상태만 갱신 — 파일 저장 없음 (on-demand 재생성)
     version.applied_change_ids = applied_ids
     version.status = DocumentVersion.Status.READY
-    version.save(update_fields=["artifact_file", "applied_change_ids", "status", "updated_at"])
+    version.save(update_fields=["applied_change_ids", "status", "updated_at"])
+
+    return output.getvalue()
 
 
-def _patch_docx(version: "DocumentVersion", upload_log: "UploadLog") -> None:
+def _patch_docx(version: "DocumentVersion", upload_log: "UploadLog") -> bytes | None:
     """
-    DOCX 파일에 replace_text 변경 항목을 반영한다.
+    DOCX 파일에 replace_text 변경 항목을 반영한 bytes를 반환한다.
 
     처리 흐름:
       1. python-docx로 원본 로드
       2. replace_text + status=applied 변경 순회
          - anchor.text_match 문자열을 포함하는 단락을 찾아 run 재구성으로 교체
          - 일치 단락 없으면 change.status=failed
-      3. 성공 항목이 하나라도 있으면 artifact 저장 + version.status=ready
+      3. 성공 항목이 하나라도 있으면 수정된 DOCX bytes 반환
 
     주의: run 경계를 재구성하는 방식으로 텍스트를 교체하므로
           폰트·색상·크기 서식은 첫 번째 run의 서식을 유지한다.
     """
     import io
-
-    from django.core.files.base import ContentFile
 
     from .models import DocumentChange, DocumentVersion
 
@@ -327,7 +334,7 @@ def _patch_docx(version: "DocumentVersion", upload_log: "UploadLog") -> None:
         from docx import Document
     except ImportError:
         _set_failed(version, "python-docx 라이브러리가 설치되지 않았습니다.")
-        return
+        return None
 
     try:
         with upload_log.file.open("rb") as f:
@@ -335,7 +342,7 @@ def _patch_docx(version: "DocumentVersion", upload_log: "UploadLog") -> None:
     except Exception as exc:
         _set_failed(version, f"DOCX 로드 실패: {exc}")
         logger.error("patch_document_version: DOCX 로드 실패 | version_id=%s | %s", version.pk, exc)
-        return
+        return None
 
     changes = DocumentChange.objects.filter(
         version=version,
@@ -375,22 +382,22 @@ def _patch_docx(version: "DocumentVersion", upload_log: "UploadLog") -> None:
 
     if not applied_ids:
         _set_failed(version, "적용 가능한 replace_text 변경 항목이 없습니다.")
-        return
+        return None
 
     output = io.BytesIO()
     doc.save(output)
-    output.seek(0)
 
-    artifact_name = f"artifact_{version.upload_log_id}_v{version.version_number}.docx"
-    version.artifact_file.save(artifact_name, ContentFile(output.read()), save=False)
+    # version 상태만 갱신 — 파일 저장 없음 (on-demand 재생성)
     version.applied_change_ids = applied_ids
     version.status = DocumentVersion.Status.READY
-    version.save(update_fields=["artifact_file", "applied_change_ids", "status", "updated_at"])
+    version.save(update_fields=["applied_change_ids", "status", "updated_at"])
+
+    return output.getvalue()
 
 
-def _patch_pptx(version: "DocumentVersion", upload_log: "UploadLog") -> None:
+def _patch_pptx(version: "DocumentVersion", upload_log: "UploadLog") -> bytes | None:
     """
-    PPTX 파일에 replace_text 변경 항목을 반영한다.
+    PPTX 파일에 replace_text 변경 항목을 반영한 bytes를 반환한다.
 
     처리 흐름:
       1. python-pptx로 원본 로드
@@ -398,11 +405,9 @@ def _patch_pptx(version: "DocumentVersion", upload_log: "UploadLog") -> None:
          - anchor.slide_index (0-based), anchor.shape_index (0-based) 로 셰이프 특정
          - shape_index가 슬라이드 범위를 벗어나면 change.status=failed
          - text_frame 단락 또는 표 셀에서 target_text를 replacement로 치환
-      3. 성공 항목이 하나라도 있으면 artifact 저장 + version.status=ready
+      3. 성공 항목이 하나라도 있으면 수정된 PPTX bytes 반환
     """
     import io
-
-    from django.core.files.base import ContentFile
 
     from .models import DocumentChange, DocumentVersion
 
@@ -410,7 +415,7 @@ def _patch_pptx(version: "DocumentVersion", upload_log: "UploadLog") -> None:
         from pptx import Presentation
     except ImportError:
         _set_failed(version, "python-pptx 라이브러리가 설치되지 않았습니다.")
-        return
+        return None
 
     try:
         with upload_log.file.open("rb") as f:
@@ -418,7 +423,7 @@ def _patch_pptx(version: "DocumentVersion", upload_log: "UploadLog") -> None:
     except Exception as exc:
         _set_failed(version, f"PPTX 로드 실패: {exc}")
         logger.error("patch_document_version: PPTX 로드 실패 | version_id=%s | %s", version.pk, exc)
-        return
+        return None
 
     changes = DocumentChange.objects.filter(
         version=version,
@@ -508,20 +513,20 @@ def _patch_pptx(version: "DocumentVersion", upload_log: "UploadLog") -> None:
 
     if not applied_ids:
         _set_failed(version, "적용 가능한 replace_text 변경 항목이 없습니다.")
-        return
+        return None
 
     output = io.BytesIO()
     prs.save(output)
-    output.seek(0)
 
-    artifact_name = f"artifact_{version.upload_log_id}_v{version.version_number}.pptx"
-    version.artifact_file.save(artifact_name, ContentFile(output.read()), save=False)
+    # version 상태만 갱신 — 파일 저장 없음 (on-demand 재생성)
     version.applied_change_ids = applied_ids
     version.status = DocumentVersion.Status.READY
-    version.save(update_fields=["artifact_file", "applied_change_ids", "status", "updated_at"])
+    version.save(update_fields=["applied_change_ids", "status", "updated_at"])
+
+    return output.getvalue()
 
 
-def _patch_hwp(version: "DocumentVersion", upload_log: "UploadLog") -> None:
+def _patch_hwp(version: "DocumentVersion", upload_log: "UploadLog") -> bytes | None:
     """
     HWP 파일에 replace_text 변경 항목을 반영한다.
 
@@ -615,7 +620,7 @@ def _patch_hwp(version: "DocumentVersion", upload_log: "UploadLog") -> None:
     except Exception as exc:
         _set_failed(version, f"HWP worker 출력 파싱 실패: {exc}")
         logger.error("patch_document_version: HWP worker 출력 파싱 실패 | version_id=%s", version.pk)
-        return
+        return None
 
     applied_ids: list[str] = output.get("applied", [])
     failed_items: list[dict] = output.get("failed", [])
@@ -629,23 +634,23 @@ def _patch_hwp(version: "DocumentVersion", upload_log: "UploadLog") -> None:
 
     if not applied_ids:
         _set_failed(version, "HWP worker: 적용된 변경 항목이 없습니다.")
-        return
+        return None
 
-    # output_b64 → artifact_file 저장
+    # output_b64 → bytes 디코딩 — 파일 저장 없음 (on-demand 재생성)
     try:
         hwp_bytes = base64.b64decode(output["output_b64"])
     except Exception as exc:
         _set_failed(version, f"HWP worker output_b64 디코딩 실패: {exc}")
-        return
+        return None
 
-    artifact_name = f"artifact_{version.upload_log_id}_v{version.version_number}.hwp"
-    version.artifact_file.save(artifact_name, ContentFile(hwp_bytes), save=False)
     version.applied_change_ids = applied_ids
     version.status = DocumentVersion.Status.READY
-    version.save(update_fields=["artifact_file", "applied_change_ids", "status", "updated_at"])
+    version.save(update_fields=["applied_change_ids", "status", "updated_at"])
+
+    return hwp_bytes
 
 
-def _patch_pdf(version: "DocumentVersion", upload_log: "UploadLog") -> None:
+def _patch_pdf(version: "DocumentVersion", upload_log: "UploadLog") -> bytes | None:
     """
     PDF 파일에 annotate / redact_overlay 변경 항목을 반영한다.
 
@@ -661,15 +666,13 @@ def _patch_pdf(version: "DocumentVersion", upload_log: "UploadLog") -> None:
     """
     import io
 
-    from django.core.files.base import ContentFile
-
     from .models import DocumentChange, DocumentVersion
 
     try:
         import fitz
     except ImportError:
         _set_failed(version, "PyMuPDF(fitz) 라이브러리가 설치되지 않았습니다.")
-        return
+        return None
 
     try:
         with upload_log.file.open("rb") as f:
@@ -678,7 +681,7 @@ def _patch_pdf(version: "DocumentVersion", upload_log: "UploadLog") -> None:
     except Exception as exc:
         _set_failed(version, f"PDF 로드 실패: {exc}")
         logger.error("patch_document_version: PDF 로드 실패 | version_id=%s | %s", version.pk, exc)
-        return
+        return None
 
     changes = DocumentChange.objects.filter(
         version=version,
@@ -715,18 +718,20 @@ def _patch_pdf(version: "DocumentVersion", upload_log: "UploadLog") -> None:
     if not applied_ids:
         doc.close()
         _set_failed(version, "적용 가능한 PDF 변경 항목이 없습니다.")
-        return
+        return None
 
     output = io.BytesIO()
     doc.save(output)
     doc.close()
     output.seek(0)
 
-    artifact_name = f"artifact_{version.upload_log_id}_v{version.version_number}.pdf"
-    version.artifact_file.save(artifact_name, ContentFile(output.read()), save=False)
+    # 파일 저장 없음 — on-demand 재생성 방식
+    pdf_output = output.read()
     version.applied_change_ids = applied_ids
     version.status = DocumentVersion.Status.READY
-    version.save(update_fields=["artifact_file", "applied_change_ids", "status", "updated_at"])
+    version.save(update_fields=["applied_change_ids", "status", "updated_at"])
+
+    return pdf_output
 
 
 def _resolve_pdf_rect(

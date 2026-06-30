@@ -178,8 +178,9 @@ class DocxPatcherTest(TestCase):
         )
 
     def test_artifact_contains_replacement_text(self):
-        """패치 후 artifact 파일을 열면 replacement 텍스트가 포함된다."""
+        """패치 후 _patch_docx 반환 bytes를 열면 replacement 텍스트가 포함된다."""
         from docx import Document
+        from apps.documents.tasks import _patch_docx
 
         _make_change(
             self.version,
@@ -189,18 +190,18 @@ class DocxPatcherTest(TestCase):
             original="2026년 1월 계약서입니다.",
             replacement="2026년 2월 수정 계약서입니다.",
         )
-        patch_document_version(self.version.pk)
+        result_bytes = _patch_docx(self.version, self.upload)
 
         self.version.refresh_from_db()
         self.assertEqual(self.version.status, DocumentVersion.Status.READY)
 
-        with self.version.artifact_file.open("rb") as f:
-            doc = Document(f)
+        self.assertIsNotNone(result_bytes, "_patch_docx는 bytes를 반환해야 한다")
+        doc = Document(io.BytesIO(result_bytes))
         full_text = "\n".join(p.text for p in doc.paragraphs)
         self.assertIn(
             "2026년 2월 수정 계약서입니다.",
             full_text,
-            "artifact 파일에 replacement 텍스트가 포함되어야 한다",
+            "반환 bytes에 replacement 텍스트가 포함되어야 한다",
         )
 
 
@@ -262,8 +263,9 @@ class PptxPatcherTest(TestCase):
         )
 
     def test_artifact_contains_replacement_text(self):
-        """패치 후 artifact 파일을 열면 replacement 텍스트가 포함된다."""
+        """패치 후 _patch_pptx 반환 bytes를 열면 replacement 텍스트가 포함된다."""
         from pptx import Presentation
+        from apps.documents.tasks import _patch_pptx
 
         _make_change(
             self.version,
@@ -273,13 +275,13 @@ class PptxPatcherTest(TestCase):
             original="2026년 1분기 실적 보고",
             replacement="2026년 2분기 실적 보고",
         )
-        patch_document_version(self.version.pk)
+        result_bytes = _patch_pptx(self.version, self.upload)
 
         self.version.refresh_from_db()
         self.assertEqual(self.version.status, DocumentVersion.Status.READY)
 
-        with self.version.artifact_file.open("rb") as f:
-            prs = Presentation(f)
+        self.assertIsNotNone(result_bytes, "_patch_pptx는 bytes를 반환해야 한다")
+        prs = Presentation(io.BytesIO(result_bytes))
         texts = []
         for slide in prs.slides:
             for shape in slide.shapes:
@@ -288,7 +290,7 @@ class PptxPatcherTest(TestCase):
         self.assertIn(
             "2026년 2분기 실적 보고",
             " ".join(texts),
-            "artifact 파일에 replacement 텍스트가 포함되어야 한다",
+            "반환 bytes에 replacement 텍스트가 포함되어야 한다",
         )
 
 

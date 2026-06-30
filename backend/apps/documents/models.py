@@ -200,3 +200,143 @@ class IngestionWorkflow(models.Model):
     def __str__(self) -> str:
         state = "활성" if self.is_active else ("제안됨" if self.is_suggested else "비활성")
         return f"{self.user} | {self.file_structure.hash[:8]} | {state}"
+
+
+class DocumentVersion(models.Model):
+    """
+    원본 또는 수정 결과 문서 버전.
+    version_number는 같은 upload_log 내에서 1부터 자동 채번된다.
+
+    Status 흐름:
+      original → (사용자가 수정 요청) → draft → generating → ready
+                                                            ↘ failed
+    """
+
+    class Status(models.TextChoices):
+        # patch-plan-schema-v0-ko.md 11절 기준 status 값
+        ORIGINAL   = "original",   "원본"       # 업로드 직후 원본 버전
+        DRAFT      = "draft",      "초안"       # 사용자가 apply/reject 중 (수정본 미생성)
+        GENERATING = "generating", "생성 중"    # patcher 실행 중
+        READY      = "ready",      "완료"       # 수정본 생성 완료
+        FAILED     = "failed",     "실패"       # patcher 실패
+
+    upload_log = models.ForeignKey(
+        UploadLog,
+        on_delete=models.CASCADE,
+        related_name="versions",
+    )
+    # v1의 parent는 v0 원본 — 체인 추적용 (원본 버전은 null)
+    parent_version = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="child_versions",
+    )
+    # 같은 upload_log 내 1-based 자동 채번 — save()에서 처리
+    version_number = models.PositiveIntegerField()
+    # 사용자에게 노출되는 버전 이름 (예: "날짜 형식 통일")
+    label = models.CharField(max_length=100, blank=True, default="")
+    # LLM이 생성한 변경 요약
+    summary = models.TextField(blank=True, default="")
+    # LLM이 생성한 patch plan 원본 JSON (raw 보존용)
+    patch_plan = models.JSONField(default=list)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.DRAFT,
+    )
+    # patcher가 실제 파일에 반영한 operation_id 목록
+    applied_change_ids = models.JSONField(default=list, blank=True)
+    # patcher 실패 시 사유 기록 (정상 완료 시 빈 문자열)
+    error_message = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="document_versions",
+    )
+
+    class Meta:
+        verbose_name = "문서 버전"
+        unique_together = [("upload_log", "version_number")]
+        ordering = ["upload_log", "version_number"]
+
+    def save(self, *args, **kwargs):
+        # 최초 저장(pk 없음)이고 외부에서 version_number를 지정하지 않은 경우에만 채번
+        if not self.pk and not self.version_number:
+            last = (
+                DocumentVersion.objects.filter(upload_log=self.upload_log)
+                .order_by("-version_number")
+                .values_list("version_number", flat=True)
+                .first()
+            )
+            self.version_number = (last or 0) + 1
+            # 주의: SELECT → INSERT 사이 동시 요청 시 같은 번호를 채번할 수 있다.
+            # unique_together("upload_log", "version_number")가 DB 수준에서 중복을 막으며
+            # 충돌 시 IntegrityError가 발생한다. 현재 1인 메이커 규모에서는 허용 가능.
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"{self.upload_log_id} v{self.version_number} [{self.status}]"
+
+
+class DocumentChange(models.Model):
+    """
+    PatchOperation을 DB에 저장한 상태 객체.
+    operation_id는 patch plan JSON의 operation_id와 1:1 매핑된다.
+
+    change_id → operation_id로 rename한 이유:
+      patch-plan-schema-v0-ko.md가 operation_id를 식별자로 정의하며,
+      patcher/API 양쪽에서 동일한 이름을 쓰지 않으면 매핑 오류가 생긴다.
+      현재 이 필드를 참조하는 외부 코드가 없으므로 rename을 선택했다.
+    """
+
+    class Status(models.TextChoices):
+        # patch-plan-schema-v0-ko.md 10절 기준 — accepted 제거
+        PENDING  = "pending",  "대기"
+        APPLIED  = "applied",  "적용됨"
+        REJECTED = "rejected", "거부"
+        FAILED   = "failed",   "실패"   # patcher 실패 대비 유지
+
+    version = models.ForeignKey(
+        DocumentVersion,
+        on_delete=models.CASCADE,
+        related_name="changes",
+    )
+    # patch plan JSON의 operation_id와 1:1 (예: "op_001", UUID v4 모두 허용)
+    # default=""는 스텁 마이그레이션의 기존 빈 row 처리용 — 실운영에서는 항상 값이 채워진다
+    operation_id = models.CharField(max_length=100, db_index=True, default="")
+    # 어떤 PatchPlan에서 왔는지 (예: "plan_20260628_001")
+    plan_id = models.CharField(max_length=100, blank=True, default="")
+    format = models.CharField(max_length=20)
+    operation = models.CharField(max_length=30)
+    # 카드 헤더에 표시되는 변경 제목 (예: "금액 오류 수정")
+    title = models.CharField(max_length=200, blank=True, default="")
+    original = models.TextField()
+    replacement = models.TextField()
+    reason = models.TextField()
+    confidence = models.FloatField()
+    # 포맷별 위치 정보 (patch-plan-schema-v0-ko.md 7절 anchor 기준)
+    anchor = models.JSONField(default=dict)
+    # patcher 지시 필드 (예: {"method": "pymupdf_redact_overlay", "font": "auto"})
+    patch = models.JSONField(default=dict, blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+    )
+    # low | medium | high (스키마 risk.level에 대응)
+    risk_level = models.CharField(max_length=20, blank=True, default="")
+    # null=True는 스텁(0005) 기존 row에 값을 채울 수 없는 제약을 우회하기 위함.
+    # auto_now_add 특성상 새 row는 항상 타임스탬프가 채워진다.
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True)
+
+    class Meta:
+        verbose_name = "문서 변경 항목"
+        unique_together = [("version", "operation_id")]
+
+    def __str__(self) -> str:
+        return f"{self.operation_id[:12]}… [{self.operation}] {self.status}"

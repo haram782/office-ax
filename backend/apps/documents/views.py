@@ -2,6 +2,8 @@ import json
 import logging
 import os
 import re
+import uuid
+from datetime import datetime
 from pathlib import Path
 
 from celery import current_app
@@ -9,14 +11,24 @@ from celery.result import AsyncResult
 from drf_spectacular.utils import extend_schema, OpenApiResponse, OpenApiExample
 from rest_framework import status
 from rest_framework.authentication import TokenAuthentication
+from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.parsers import MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import FileStructure, InboundEmail, IngestionWorkflow, UploadLog, compute_file_structure_hash, pdf_structure_hash
-from .serializers import InboundEmailSerializer, IngestionWorkflowSerializer, UploadLogSerializer, WorkflowActivateSerializer
+from .models import DocumentChange, DocumentVersion, FileStructure, InboundEmail, IngestionWorkflow, UploadLog, compute_file_structure_hash, pdf_structure_hash
+from .tasks import patch_document_version
+from .serializers import (
+    DocumentChangeSerializer,
+    DocumentVersionCreateSerializer,
+    DocumentVersionSummarySerializer,
+    InboundEmailSerializer,
+    IngestionWorkflowSerializer,
+    UploadLogSerializer,
+    WorkflowActivateSerializer,
+)
 from .utils import extract_excel_columns, save_temp_file
 
 logger = logging.getLogger(__name__)
@@ -52,11 +64,14 @@ class DocumentUploadView(APIView):
 
         file_structure = self._get_or_create_file_structure(tmp_path, suffix, uploaded_file.name)
 
+        # save_temp_file이 파일 포인터를 끝까지 읽으므로 seek(0) 후 원본 저장
+        uploaded_file.seek(0)
         upload_log = UploadLog.objects.create(
             user=request.user,
             file_structure=file_structure,
             original_filename=uploaded_file.name,
             status=UploadLog.Status.PENDING,
+            file=uploaded_file,
         )
 
         # 문자열 기반 send_task로 ax-engine 패키지를 직접 import하지 않는다.
@@ -404,6 +419,278 @@ class EmailInboxView(ListAPIView):
         return InboundEmail.objects.filter(user=self.request.user)
 
 
+# ── 상태 전이 허용 집합 ───────────────────────────────────────────────────────
+# pending ↔ applied / pending ↔ rejected 만 허용.
+# applied ↔ rejected 직접 전이, failed 전이는 금지.
+_ALLOWED_TRANSITIONS: dict[str, set[str]] = {
+    "pending":  {"applied", "rejected"},
+    "applied":  {"pending"},
+    "rejected": {"pending"},
+}
+
+
+class DocumentChangeListView(ListAPIView):
+    """
+    GET /api/v1/uploads/{upload_id}/changes/
+    해당 UploadLog의 DocumentChange 목록 반환.
+    본인 소유 upload만 허용 (타인 소유면 404).
+    ?version_id= 로 특정 버전 필터링 가능.
+    """
+
+    serializer_class = DocumentChangeSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        # 본인 소유 UploadLog인지 확인 — 아니면 404
+        upload_log = self._get_upload_or_404()
+        qs = DocumentChange.objects.filter(
+            version__upload_log=upload_log
+        ).select_related("version")
+
+        # 특정 버전 필터 옵션
+        version_id = self.request.query_params.get("version_id")
+        if version_id:
+            qs = qs.filter(version_id=version_id)
+
+        return qs
+
+    def _get_upload_or_404(self) -> UploadLog:
+        try:
+            return UploadLog.objects.get(
+                pk=self.kwargs["upload_id"],
+                user=self.request.user,
+            )
+        except UploadLog.DoesNotExist:
+            raise NotFound()
+
+
+class DocumentChangePatchView(APIView):
+    """
+    PATCH /api/v1/changes/{id}/
+    DocumentChange 단건 status 변경.
+    허용 전이: pending ↔ applied, pending ↔ rejected.
+    그 외 전이는 400 반환.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk: int):
+        change = self._get_change_or_403(pk)
+
+        new_status = request.data.get("status")
+        if new_status not in _ALLOWED_TRANSITIONS.get(change.status, set()):
+            return Response(
+                {"detail": "허용되지 않는 상태 전이입니다."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        change.status = new_status
+        change.save(update_fields=["status", "updated_at"])
+
+        return Response(DocumentChangeSerializer(change).data, status=status.HTTP_200_OK)
+
+    def _get_change_or_403(self, pk: int) -> DocumentChange:
+        """change 조회. 존재하지 않으면 404, 타인 소유면 403."""
+        try:
+            change = DocumentChange.objects.select_related(
+                "version__upload_log"
+            ).get(pk=pk)
+        except DocumentChange.DoesNotExist:
+            raise NotFound()
+
+        if change.version.upload_log.user_id != self.request.user.pk:
+            raise PermissionDenied()
+
+        return change
+
+
+class DocumentVersionCreateView(APIView):
+    """
+    GET  /api/v1/uploads/{upload_id}/versions/ — 버전 목록 반환
+    POST /api/v1/uploads/{upload_id}/versions/ — 새 DocumentVersion 생성 (draft 상태 고정)
+
+    version_number는 모델 save()에서 자동 채번.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, upload_id: int):
+        """소유자의 업로드에 속한 버전 목록을 반환한다."""
+        upload_log = self._get_upload_or_403(upload_id)
+        versions = DocumentVersion.objects.filter(upload_log=upload_log).order_by("version_number")
+        return Response(DocumentVersionSummarySerializer(versions, many=True).data)
+
+    def post(self, request, upload_id: int):
+        upload_log = self._get_upload_or_403(upload_id)
+
+        serializer = DocumentVersionCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        version = DocumentVersion.objects.create(
+            upload_log=upload_log,
+            created_by=request.user,
+            **serializer.validated_data,
+        )
+
+        return Response(
+            DocumentVersionSummarySerializer(version).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    def _get_upload_or_403(self, upload_id: int) -> UploadLog:
+        """upload 조회. 존재하지 않으면 404, 타인 소유면 403."""
+        try:
+            upload_log = UploadLog.objects.get(pk=upload_id)
+        except UploadLog.DoesNotExist:
+            raise NotFound()
+
+        if upload_log.user_id != self.request.user.pk:
+            raise PermissionDenied()
+
+        return upload_log
+
+
+# on-demand 파일 반환 시 source_type → MIME 타입 매핑
+_MIME_BY_SOURCE_TYPE: dict[str, str] = {
+    "excel": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "docx":  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "pptx":  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "pdf":   "application/pdf",
+    "hwp":   "application/x-hwp",
+    "hwpx":  "application/x-hwp",
+}
+
+# source_type → 파일 확장자 매핑
+_EXT_BY_SOURCE_TYPE: dict[str, str] = {
+    "excel": ".xlsx",
+    "docx":  ".docx",
+    "pptx":  ".pptx",
+    "pdf":   ".pdf",
+    "hwp":   ".hwp",
+    "hwpx":  ".hwpx",
+}
+
+
+class DocumentVersionFileView(APIView):
+    """
+    GET /api/v1/uploads/{upload_id}/versions/{version_id}/file/
+
+    ready 상태 버전에 대해 on-demand로 파일을 생성하고 bytes를 반환한다.
+    status != ready → 409 Conflict
+    타인 소유 → 403 Forbidden
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, upload_id: int, version_id: int):
+        version, upload_log = self._get_version_or_raise(upload_id, version_id)
+
+        if version.status != DocumentVersion.Status.READY:
+            return Response(
+                {"detail": "ready 상태 버전만 파일을 반환할 수 있습니다."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        source_type = upload_log.file_structure.source_type if upload_log.file_structure else ""
+        file_bytes = self._generate_file(source_type, version, upload_log)
+        if file_bytes is None:
+            return Response(
+                {"detail": "파일 생성에 실패했습니다."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        mime = _MIME_BY_SOURCE_TYPE.get(source_type, "application/octet-stream")
+        ext = _EXT_BY_SOURCE_TYPE.get(source_type, "")
+        filename = f"version_{version_id}{ext}"
+
+        from django.http import HttpResponse
+        response = HttpResponse(file_bytes, content_type=mime)
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
+    @staticmethod
+    def _generate_file(source_type: str, version: "DocumentVersion", upload_log: "UploadLog"):
+        """source_type에 맞는 patcher를 호출해 bytes를 반환한다."""
+        from .tasks import _patch_docx, _patch_hwp, _patch_pdf, _patch_pptx, _patch_xlsx
+
+        dispatchers = {
+            "excel": _patch_xlsx,
+            "docx":  _patch_docx,
+            "pptx":  _patch_pptx,
+            "pdf":   _patch_pdf,
+            "hwp":   _patch_hwp,
+            "hwpx":  _patch_hwp,
+        }
+        patcher = dispatchers.get(source_type)
+        if patcher is None:
+            return None
+        return patcher(version, upload_log)
+
+    def _get_version_or_raise(self, upload_id: int, version_id: int):
+        """소유권 검증. 없으면 404, 타인 소유면 403을 raise한다."""
+        try:
+            version = (
+                DocumentVersion.objects
+                .select_related("upload_log", "upload_log__file_structure")
+                .get(pk=version_id, upload_log_id=upload_id)
+            )
+        except DocumentVersion.DoesNotExist:
+            raise NotFound()
+
+        if version.upload_log.user_id != self.request.user.pk:
+            raise PermissionDenied()
+
+        return version, version.upload_log
+
+
+class DocumentVersionPatchTriggerView(APIView):
+    """
+    POST /api/v1/uploads/{upload_id}/versions/{version_id}/patch/
+    draft 버전에 대해 XLSX 패치 태스크를 트리거한다.
+
+    소유권: version.upload_log.user != request.user → 403
+    상태 제약: version.status != 'draft' → 400
+    성공: status=generating으로 전이 후 Celery 태스크 예약 → 202
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, upload_id: int, version_id: int):
+        version = self._get_version_or_raise(upload_id, version_id)
+
+        if version.status != DocumentVersion.Status.DRAFT:
+            return Response(
+                {"detail": "draft 상태의 버전만 패치 트리거가 가능합니다."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        version.status = DocumentVersion.Status.GENERATING
+        version.save(update_fields=["status", "updated_at"])
+
+        patch_document_version.delay(version.pk)
+
+        return Response(
+            DocumentVersionSummarySerializer(version).data,
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    def _get_version_or_raise(self, upload_id: int, version_id: int) -> DocumentVersion:
+        """소유권 검증. 없으면 404, 타인 소유면 403을 raise한다."""
+        try:
+            version = (
+                DocumentVersion.objects
+                .select_related("upload_log")
+                .get(pk=version_id, upload_log_id=upload_id)
+            )
+        except DocumentVersion.DoesNotExist:
+            raise NotFound()
+
+        if version.upload_log.user_id != self.request.user.pk:
+            raise PermissionDenied()
+
+        return version
+
+
 def _sync_task_result(upload_log: UploadLog) -> None:
     """Celery 결과 백엔드에서 태스크 상태를 DB로 동기화."""
     result = AsyncResult(upload_log.ax_task_id)
@@ -414,3 +701,229 @@ def _sync_task_result(upload_log: UploadLog) -> None:
     elif result.failed():
         upload_log.status = UploadLog.Status.FAILED
         upload_log.save(update_fields=["status"])
+
+
+# ── LLM 오류 타입 ─────────────────────────────────────────────────────────────
+
+
+class LLMParseError(Exception):
+    """LLM 응답이 유효한 JSON이 아니거나 PatchPlan 스키마와 맞지 않을 때 발생."""
+
+
+# ── LLM 시스템 프롬프트 ───────────────────────────────────────────────────────
+
+_PATCH_PLAN_SYSTEM_PROMPT = """You are a document correction AI. Given a file's context and a user's edit request, generate a structured PatchPlan JSON.
+
+Rules:
+- Return ONLY valid JSON. No explanation text, no markdown code blocks.
+- The JSON must have: schema, plan_id, summary, operations (array).
+- operation_id: numbered "op_001", "op_002", ...
+- Allowed operations: replace_cell, replace_text, annotate (NOT redact_overlay or regenerate)
+- Each operation must include: operation_id, format, operation, title, original, replacement, reason, confidence (0.0-1.0), anchor, patch
+- anchor for XLSX: {"type": "cell", "sheet": "...", "cell": "A1"}
+- anchor for text-based: {"type": "text_match", "target_text": "...", "occurrence": 1}
+- risk: {"level": "low"|"medium"|"high"}
+- If no changes are needed, return operations as empty array []
+
+Return only JSON, starting with {"""
+
+
+# ── LLM 헬퍼 ──────────────────────────────────────────────────────────────────
+
+
+def _generate_patch_plan(prompt: str, file_context: dict) -> dict:
+    """
+    Anthropic Claude를 호출해 PatchPlan JSON을 생성한다.
+
+    :param prompt: 사용자 수정 요청 문자열
+    :param file_context: filename, source_type, corrections, summary 등 파일 컨텍스트
+    :raises LLMParseError: JSON 파싱 실패 또는 operations 필드 누락 시
+    """
+    import anthropic  # lazy import — LLM 호출 시에만 의존
+
+    client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+    model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+
+    # 유저 메시지: 파일 컨텍스트 + 수정 요청
+    context_json = json.dumps(
+        file_context.get("corrections") or file_context.get("snippet_data") or {},
+        ensure_ascii=False,
+        indent=2,
+    )
+    user_message = (
+        f"파일명: {file_context.get('filename', '알 수 없음')}\n"
+        f"형식: {file_context.get('source_type', '알 수 없음')}\n"
+        f"컨텍스트:\n{context_json}\n"
+        f"수정 요청: {prompt}"
+    )
+
+    response = client.messages.create(
+        model=model,
+        max_tokens=2048,
+        system=_PATCH_PLAN_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_message}],
+    )
+
+    raw = response.content[0].text.strip()
+
+    # LLM이 실수로 마크다운 코드블록을 붙이는 경우 방어적 제거
+    if raw.startswith("```"):
+        lines = raw.split("\n")
+        raw = "\n".join(lines[1:-1]) if len(lines) > 2 else raw
+
+    try:
+        plan = json.loads(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise LLMParseError(f"JSON 파싱 실패: {exc}") from exc
+
+    if "operations" not in plan:
+        raise LLMParseError("PatchPlan에 operations 필드가 없습니다.")
+
+    # plan_id 누락 시 자동 생성
+    if not plan.get("plan_id"):
+        plan["plan_id"] = (
+            f"plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        )
+
+    return plan
+
+
+# ── Patch Plan 생성 API ───────────────────────────────────────────────────────
+
+
+class GeneratePatchPlanView(APIView):
+    """
+    POST /api/v1/uploads/{upload_id}/generate-patch-plan/
+
+    LLM을 호출해 PatchPlan JSON을 생성하고 DocumentVersion(draft) +
+    DocumentChange 행들을 저장한다.
+
+    소유권: upload_log.user != request.user → 403
+    상태 제약: upload_log.status != DONE → 400
+    LLM 실패: JSON 파싱 오류 → 400
+    빈 operations: 200 + {"changes": [], "version_id": null}
+    성공: 201 + {"version_id": int, "plan_id": str, "changes": [...]}
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, upload_id: int):
+        upload_log = self._get_upload_or_raise(upload_id)
+
+        if upload_log.status != UploadLog.Status.DONE:
+            return Response(
+                {"detail": "분석이 완료된 문서만 수정 요청이 가능합니다."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        prompt = (request.data.get("prompt") or "").strip()
+        if not prompt:
+            return Response(
+                {"detail": "prompt 필드가 필요합니다."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            patch_plan = _generate_patch_plan(
+                prompt, self._build_file_context(upload_log)
+            )
+        except LLMParseError:
+            return Response(
+                {"detail": "LLM이 유효한 patch plan을 생성하지 못했습니다."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        operations = patch_plan.get("operations", [])
+        plan_id = patch_plan.get("plan_id", "")
+
+        # operations가 빈 배열이면 버전 생성 없이 즉시 반환 — 수정할 내용 없음 정상 케이스
+        if not operations:
+            return Response(
+                {"version_id": None, "plan_id": plan_id, "changes": []},
+                status=status.HTTP_200_OK,
+            )
+
+        version = DocumentVersion.objects.create(
+            upload_log=upload_log,
+            created_by=request.user,
+            status=DocumentVersion.Status.DRAFT,
+            label=prompt[:100],
+            summary=patch_plan.get("summary", ""),
+            patch_plan=patch_plan,
+        )
+        changes = self._create_changes(version, operations, plan_id)
+
+        return Response(
+            {"version_id": version.pk, "plan_id": plan_id, "changes": changes},
+            status=status.HTTP_201_CREATED,
+        )
+
+    @staticmethod
+    def _build_file_context(upload_log: UploadLog) -> dict:
+        """LLM에 전달할 파일 컨텍스트를 upload_log.result에서 추출한다."""
+        result = upload_log.result or {}
+        snippet = result.get("snippet_data") or {}
+        return {
+            "filename": upload_log.original_filename,
+            "source_type": result.get(
+                "source_type",
+                upload_log.file_structure.source_type if upload_log.file_structure else "",
+            ),
+            "corrections": snippet.get("corrections", []),
+            "snippet_data": snippet,
+            "summary": result.get("summary", ""),
+            "errors": result.get("errors", []),
+        }
+
+    @staticmethod
+    def _create_changes(
+        version: DocumentVersion, operations: list, plan_id: str
+    ) -> list[dict]:
+        """operations 배열을 DocumentChange 행으로 일괄 저장하고 응답용 dict 목록을 반환한다."""
+        changes = []
+        for op in operations:
+            risk = op.get("risk") or {}
+            change = DocumentChange.objects.create(
+                version=version,
+                operation_id=op.get("operation_id", ""),
+                plan_id=plan_id,
+                format=op.get("format", ""),
+                operation=op.get("operation", ""),
+                title=op.get("title", ""),
+                original=op.get("original") or "",
+                replacement=op.get("replacement") or "",
+                reason=op.get("reason", ""),
+                confidence=float(op.get("confidence", 0.0)),
+                anchor=op.get("anchor") or {},
+                patch=op.get("patch") or {},
+                risk_level=risk.get("level", ""),
+                status=DocumentChange.Status.PENDING,
+            )
+            changes.append({
+                "id": change.pk,
+                "operation_id": change.operation_id,
+                "format": change.format,
+                "operation": change.operation,
+                "title": change.title,
+                "original": change.original,
+                "replacement": change.replacement,
+                "reason": change.reason,
+                "confidence": change.confidence,
+                "anchor": change.anchor,
+                "status": change.status,
+            })
+        return changes
+
+    def _get_upload_or_raise(self, upload_id: int) -> UploadLog:
+        """소유권 검증. 없으면 404, 타인 소유면 403을 raise한다."""
+        try:
+            upload_log = UploadLog.objects.select_related("file_structure").get(
+                pk=upload_id
+            )
+        except UploadLog.DoesNotExist:
+            raise NotFound()
+
+        if upload_log.user_id != self.request.user.pk:
+            raise PermissionDenied()
+
+        return upload_log
