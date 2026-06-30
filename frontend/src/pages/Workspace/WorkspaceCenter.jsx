@@ -107,7 +107,15 @@ export function WorkspaceCenter({
     return !v || v.status === 'original'
   }, [selectedVersionId, versions])
 
-  // 파일 미선택 상태 — hook 호출 이후에 early return
+  // 수정본 선택 시 fileUrl을 Blob URL로 교체한 previewData를 뷰어에 전달
+  // previewData가 null인 동안에도 훅은 항상 호출돼야 하므로 early return보다 위에 둔다
+  const effectivePreviewData = useMemo(() => {
+    if (!previewData) return previewData
+    if (selectedIsOriginal || !versionBlobUrl) return previewData
+    return { ...previewData, fileUrl: versionBlobUrl }
+  }, [previewData, selectedIsOriginal, versionBlobUrl])
+
+  // 파일 미선택 상태 — 모든 hook 호출 이후에 early return
   if (!previewData) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center bg-zinc-100 dark:bg-zinc-950 text-zinc-400">
@@ -118,12 +126,6 @@ export function WorkspaceCenter({
   }
 
   const { filename, artifactUrl } = previewData
-
-  // 수정본 선택 시 fileUrl을 Blob URL로 교체한 previewData를 뷰어에 전달
-  const effectivePreviewData = useMemo(() => {
-    if (selectedIsOriginal || !versionBlobUrl) return previewData
-    return { ...previewData, fileUrl: versionBlobUrl }
-  }, [previewData, selectedIsOriginal, versionBlobUrl])
 
   return (
     <ViewerShell
