@@ -8,6 +8,7 @@ from pathlib import Path
 
 from celery import current_app
 from celery.result import AsyncResult
+from django.db import transaction
 from drf_spectacular.utils import extend_schema, OpenApiResponse, OpenApiExample
 from rest_framework import status
 from rest_framework.authentication import TokenAuthentication
@@ -502,6 +503,89 @@ class DocumentChangePatchView(APIView):
             raise PermissionDenied()
 
         return change
+
+
+class DocumentChangeAcceptAllView(APIView):
+    """
+    POST /api/v1/uploads/{upload_id}/versions/{version_id}/changes/accept-all/
+
+    해당 버전의 pending DocumentChange를 전부 조회해 anchor 기준으로 그룹핑한다.
+    같은 anchor를 가리키는 pending 변경이 여러 개면(충돌) confidence가 가장 높은
+    하나만 applied로, 나머지는 rejected로 자동 처리한다. 동점이면 operation_id
+    오름차순으로 먼저 오는 쪽이 승자다. 빈 anchor({})는 위치 정보가 없어
+    충돌 판단이 불가능하므로 그룹핑하지 않고 항상 단독 applied 처리한다.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, upload_id: int, version_id: int):
+        version = self._get_version_or_raise(upload_id, version_id)
+
+        pending_changes = list(
+            DocumentChange.objects.filter(version=version, status=DocumentChange.Status.PENDING)
+        )
+
+        applied, rejected = self._resolve_conflicts(pending_changes)
+
+        with transaction.atomic():
+            for change in applied:
+                change.status = DocumentChange.Status.APPLIED
+                change.save(update_fields=["status", "updated_at"])
+            for change in rejected:
+                change.reason = f"{change.reason}\n[자동 반려: 동일 위치 변경 충돌, 더 높은 신뢰도 변경 채택]"
+                change.status = DocumentChange.Status.REJECTED
+                change.save(update_fields=["status", "reason", "updated_at"])
+
+        return Response({
+            "applied": DocumentChangeSerializer(applied, many=True).data,
+            "rejected": DocumentChangeSerializer(rejected, many=True).data,
+        })
+
+    @staticmethod
+    def _resolve_conflicts(
+        pending_changes: list["DocumentChange"],
+    ) -> tuple[list["DocumentChange"], list["DocumentChange"]]:
+        """
+        anchor 기준으로 그룹핑 후 그룹별 승자/패자를 결정한다.
+        빈 anchor({})는 항상 단독 그룹으로 취급한다.
+        """
+        groups: dict[str, list["DocumentChange"]] = {}
+        for idx, change in enumerate(pending_changes):
+            if not change.anchor:
+                # 빈 anchor는 충돌 판단이 불가능하므로 항상 단독 그룹으로 처리
+                key = f"__empty_anchor_{idx}__"
+            else:
+                key = json.dumps(change.anchor, sort_keys=True)
+            groups.setdefault(key, []).append(change)
+
+        applied: list["DocumentChange"] = []
+        rejected: list["DocumentChange"] = []
+        for group in groups.values():
+            if len(group) == 1:
+                applied.append(group[0])
+                continue
+            # 충돌 그룹 — confidence 내림차순, 동점이면 operation_id 오름차순으로 승자 결정
+            winner = min(group, key=lambda c: (-c.confidence, c.operation_id))
+            applied.append(winner)
+            rejected.extend(c for c in group if c is not winner)
+
+        return applied, rejected
+
+    def _get_version_or_raise(self, upload_id: int, version_id: int) -> DocumentVersion:
+        """소유권 검증. 없거나 upload_log에 속하지 않으면 404, 타인 소유면 403."""
+        try:
+            version = (
+                DocumentVersion.objects
+                .select_related("upload_log")
+                .get(pk=version_id, upload_log_id=upload_id)
+            )
+        except DocumentVersion.DoesNotExist:
+            raise NotFound()
+
+        if version.upload_log.user_id != self.request.user.pk:
+            raise PermissionDenied()
+
+        return version
 
 
 class DocumentVersionCreateView(APIView):

@@ -1,6 +1,7 @@
 from django.urls import path
 from .views import (
     DashboardStatsView,
+    DocumentChangeAcceptAllView,
     DocumentChangeListView,
     DocumentChangePatchView,
     DocumentUploadView,
@@ -26,6 +27,7 @@ urlpatterns = [
     path("uploads/<int:upload_id>/versions/", DocumentVersionCreateView.as_view(), name="document-version-create"),
     path("uploads/<int:upload_id>/versions/<int:version_id>/patch/", DocumentVersionPatchTriggerView.as_view(), name="document-version-patch"),
     path("uploads/<int:upload_id>/versions/<int:version_id>/file/", DocumentVersionFileView.as_view(), name="document-version-file"),
+    path("uploads/<int:upload_id>/versions/<int:version_id>/changes/accept-all/", DocumentChangeAcceptAllView.as_view(), name="document-change-accept-all"),
     path("uploads/<int:upload_id>/generate-patch-plan/", GeneratePatchPlanView.as_view(), name="generate-patch-plan"),
     path("changes/<int:pk>/", DocumentChangePatchView.as_view(), name="document-change-patch"),
     path("workflows/", WorkflowListView.as_view(), name="workflow-list"),
