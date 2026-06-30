@@ -167,13 +167,25 @@ def notify_analysis_complete(upload_id: int, result: dict) -> None:
         upload_log.save(update_fields=["result"])
 
 
+# source_type → artifact 파일 확장자 매핑 (저장 파일명 결정용)
+_ARTIFACT_EXT_BY_SOURCE_TYPE: dict[str, str] = {
+    "excel": "xlsx",
+    "docx":  "docx",
+    "pptx":  "pptx",
+    "pdf":   "pdf",
+    "hwp":   "hwp",
+    "hwpx":  "hwpx",
+}
+
+
 @shared_task(name="documents.patch_document_version")
 def patch_document_version(version_id: int) -> None:
     """
     draft 상태 DocumentVersion의 applied DocumentChange를 검증하고
     applied_change_ids를 기록 후 version.status = ready로 전환한다.
 
-    파일 저장 없음 — 실제 파일은 조회 시 on-demand로 재생성한다.
+    패치 성공 시 결과 bytes를 artifact_file에 저장한다 — GET 다운로드는
+    이 저장본을 그대로 반환하며 재생성하지 않는다(멱등성 보장).
 
     포맷 디스패치:
       - excel       → _patch_xlsx  (bytes 반환 여부 확인)
@@ -181,8 +193,10 @@ def patch_document_version(version_id: int) -> None:
       - pptx        → _patch_pptx
       - pdf         → _patch_pdf
       - hwp/hwpx    → _patch_hwp
-      - 그 외       → version.status=failed
+      - 그 외       → version.status=failed (Result 패턴 — 지원 포맷 누락은 예측 가능한 업무 실패)
     """
+    from django.core.files.base import ContentFile
+
     from .models import DocumentVersion
 
     try:
@@ -216,12 +230,29 @@ def patch_document_version(version_id: int) -> None:
     }
     patcher = dispatchers.get(source_type)
     if patcher is None:
+        # 지원하지 않는 포맷 — 예측 가능한 업무 실패이므로 Result 패턴(_set_failed)으로 처리
         _set_failed(version, f"지원하지 않는 포맷: {source_type}")
         return
 
     # _patch_* 함수는 bytes를 반환하거나 None(실패) 반환
     # 실패 처리는 각 함수 내부에서 _set_failed로 수행한다
-    patcher(version, upload_log)
+    result_bytes = patcher(version, upload_log)
+    if result_bytes is None:
+        return
+
+    # ── artifact 파일 저장 — 인프라 경계(스토리지 I/O)이므로 try/except로 격리 ──
+    ext = _ARTIFACT_EXT_BY_SOURCE_TYPE.get(source_type, "")
+    try:
+        version.artifact_file.save(
+            f"v{version.pk}.{ext}", ContentFile(result_bytes), save=False,
+        )
+        version.artifact_format = ext
+        version.save(update_fields=["artifact_file", "artifact_format", "updated_at"])
+    except Exception as exc:
+        logger.exception(
+            "patch_document_version: artifact_file 저장 실패 | version_id=%s", version_id,
+        )
+        _set_failed(version, f"결과 파일 저장 실패: {exc}")
 
 
 def _set_failed(version: "DocumentVersion", error_message: str) -> None:

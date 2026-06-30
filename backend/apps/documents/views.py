@@ -659,8 +659,11 @@ class DocumentVersionFileView(APIView):
     """
     GET /api/v1/uploads/{upload_id}/versions/{version_id}/file/
 
-    ready 상태 버전에 대해 on-demand로 파일을 생성하고 bytes를 반환한다.
+    patch_document_version task가 저장해 둔 artifact_file을 그대로 반환한다.
+    재생성하지 않으므로 이 메서드는 DB write를 전혀 수행하지 않는다(멱등).
+
     status != ready → 409 Conflict
+    ready 상태인데 artifact_file이 비어있는 경우(방어적 경계 케이스) → 404 Not Found
     타인 소유 → 403 Forbidden
     """
 
@@ -675,40 +678,23 @@ class DocumentVersionFileView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        source_type = upload_log.file_structure.source_type if upload_log.file_structure else ""
-        file_bytes = self._generate_file(source_type, version, upload_log)
-        if file_bytes is None:
+        if not version.artifact_file:
             return Response(
-                {"detail": "파일 생성에 실패했습니다."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                {"detail": "파일이 아직 생성되지 않았습니다."},
+                status=status.HTTP_404_NOT_FOUND,
             )
 
+        source_type = upload_log.file_structure.source_type if upload_log.file_structure else ""
         mime = _MIME_BY_SOURCE_TYPE.get(source_type, "application/octet-stream")
         ext = _EXT_BY_SOURCE_TYPE.get(source_type, "")
         filename = f"version_{version_id}{ext}"
 
         from django.http import HttpResponse
+        with version.artifact_file.open("rb") as f:
+            file_bytes = f.read()
         response = HttpResponse(file_bytes, content_type=mime)
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response
-
-    @staticmethod
-    def _generate_file(source_type: str, version: "DocumentVersion", upload_log: "UploadLog"):
-        """source_type에 맞는 patcher를 호출해 bytes를 반환한다."""
-        from .tasks import _patch_docx, _patch_hwp, _patch_pdf, _patch_pptx, _patch_xlsx
-
-        dispatchers = {
-            "excel": _patch_xlsx,
-            "docx":  _patch_docx,
-            "pptx":  _patch_pptx,
-            "pdf":   _patch_pdf,
-            "hwp":   _patch_hwp,
-            "hwpx":  _patch_hwp,
-        }
-        patcher = dispatchers.get(source_type)
-        if patcher is None:
-            return None
-        return patcher(version, upload_log)
 
     def _get_version_or_raise(self, upload_id: int, version_id: int):
         """소유권 검증. 없으면 404, 타인 소유면 403을 raise한다."""

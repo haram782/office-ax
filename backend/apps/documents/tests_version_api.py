@@ -1,19 +1,25 @@
 """
-버전 목록 API + on-demand 파일 반환 API 테스트.
+버전 목록 API + artifact 저장 기반 파일 반환 API 테스트.
 
 커버 범위:
   GET /api/v1/uploads/{upload_id}/versions/
     - 소유자: 버전 목록 반환
     - 타인 소유 upload_id: 403
   GET /api/v1/uploads/{upload_id}/versions/{version_id}/file/
-    - ready 상태: 파일 bytes 반환 (Content-Disposition 헤더 포함)
+    - ready 상태 + artifact_file 저장됨: 저장된 파일 bytes 그대로 반환
     - status != ready: 409
+    - ready 상태인데 artifact_file이 비어있음(방어적 경계 케이스): 404
     - 타인 소유: 403
+    - GET 반복 호출 시 DB write가 발생하지 않음(멱등성 회귀 테스트)
+    - GET 호출 시 patcher 함수(_patch_pdf 등)가 호출되지 않음
+  patch_document_version Celery task
+    - 패치 성공 시 version.artifact_file에 실제 파일이 저장되는지
   _patch_* 함수가 bytes를 반환하는지
     - _patch_xlsx, _patch_docx, _patch_pptx 각각 bytes 확인
 """
 import io
 import tempfile
+from unittest.mock import patch as mock_patch
 
 from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
@@ -65,8 +71,9 @@ def _make_upload(user, source_type, filename, file_bytes, hash_val=None):
     return upload
 
 
-def _make_version(upload, user, status=DocumentVersion.Status.READY, version_number=2):
-    return DocumentVersion.objects.create(
+def _make_version(upload, user, status=DocumentVersion.Status.READY, version_number=2,
+                   artifact_bytes=None, artifact_ext="xlsx"):
+    version = DocumentVersion.objects.create(
         upload_log=upload,
         version_number=version_number,
         status=status,
@@ -74,6 +81,14 @@ def _make_version(upload, user, status=DocumentVersion.Status.READY, version_num
         applied_change_ids=["op_001"],
         created_by=user,
     )
+    if artifact_bytes is not None:
+        # 이미 patch가 완료되어 artifact_file이 저장된 상태를 시뮬레이션한다
+        version.artifact_file.save(
+            f"v{version.pk}.{artifact_ext}", ContentFile(artifact_bytes), save=False
+        )
+        version.artifact_format = artifact_ext
+        version.save(update_fields=["artifact_file", "artifact_format"])
+    return version
 
 
 def _make_change(version, operation_id, operation, anchor, original="", replacement="",
@@ -181,7 +196,12 @@ class DocumentVersionFileTest(TestCase):
     def _setup_xlsx(self):
         file_bytes = _xlsx_bytes_with_value("Sheet1", "A1", "원본값")
         upload = _make_upload(self.user, "excel", "test.xlsx", file_bytes, "ver_file_xlsx")
-        version = _make_version(upload, self.user, status=DocumentVersion.Status.READY)
+        # artifact_file에 patch 완료된 결과가 이미 저장된 상태로 생성
+        artifact_bytes = _xlsx_bytes_with_value("Sheet1", "A1", "수정값")
+        version = _make_version(
+            upload, self.user, status=DocumentVersion.Status.READY,
+            artifact_bytes=artifact_bytes, artifact_ext="xlsx",
+        )
         _make_change(
             version, "op_001", "replace_cell",
             anchor={"type": "cell", "sheet": "Sheet1", "cell": "A1"},
@@ -228,6 +248,140 @@ class DocumentVersionFileTest(TestCase):
             f"/api/v1/uploads/{upload.pk}/versions/{version.pk}/file/"
         )
         self.assertEqual(resp.status_code, 403)
+
+    def test_returned_content_matches_stored_artifact(self):
+        """응답 내용이 저장된 artifact_file의 bytes와 정확히 일치한다(재생성이 아닌 저장본 반환 확인)."""
+        upload, version = self._setup_xlsx()
+        version.refresh_from_db()
+        with version.artifact_file.open("rb") as f:
+            stored_bytes = f.read()
+
+        resp = self.client.get(
+            f"/api/v1/uploads/{upload.pk}/versions/{version.pk}/file/"
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.content, stored_bytes)
+
+    def test_ready_without_artifact_file_returns_404(self):
+        """status=ready인데 artifact_file이 비어있는 방어적 경계 케이스 → 404."""
+        file_bytes = _xlsx_bytes_with_value("Sheet1", "A1", "값")
+        upload = _make_upload(self.user, "excel", "no_artifact.xlsx", file_bytes, "ver_file_no_artifact")
+        # artifact_bytes=None → artifact_file이 비어있는 ready 버전
+        version = _make_version(upload, self.user, status=DocumentVersion.Status.READY)
+
+        resp = self.client.get(
+            f"/api/v1/uploads/{upload.pk}/versions/{version.pk}/file/"
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_generating_status_returns_409(self):
+        """status=generating(아직 생성 중)인 버전에 대한 GET → 409."""
+        file_bytes = _xlsx_bytes_with_value("Sheet1", "A1", "값")
+        upload = _make_upload(self.user, "excel", "generating.xlsx", file_bytes, "ver_file_generating")
+        version = _make_version(upload, self.user, status=DocumentVersion.Status.GENERATING)
+
+        resp = self.client.get(
+            f"/api/v1/uploads/{upload.pk}/versions/{version.pk}/file/"
+        )
+        self.assertEqual(resp.status_code, 409)
+
+
+class DocumentVersionFileIdempotencyTest(TestCase):
+    """GET 반복 호출 시 DB write가 발생하지 않는지 검증하는 회귀 테스트(멱등성 핵심 버그)."""
+
+    def setUp(self):
+        self.user = _make_user("ver_file_idem_user")
+        self.client = _authed(self.user)
+
+        file_bytes = _xlsx_bytes_with_value("Sheet1", "A1", "원본값")
+        self.upload = _make_upload(self.user, "excel", "idem.xlsx", file_bytes, "ver_file_idem")
+        artifact_bytes = _xlsx_bytes_with_value("Sheet1", "A1", "수정값")
+        self.version = _make_version(
+            self.upload, self.user, status=DocumentVersion.Status.READY,
+            artifact_bytes=artifact_bytes, artifact_ext="xlsx",
+        )
+        self.change = _make_change(
+            self.version, "op_idem", "replace_cell",
+            anchor={"type": "cell", "sheet": "Sheet1", "cell": "A1"},
+            original="원본값", replacement="수정값",
+        )
+
+    def test_repeated_get_does_not_mutate_updated_at(self):
+        self.version.refresh_from_db()
+        self.change.refresh_from_db()
+        version_updated_before = self.version.updated_at
+        change_updated_before = self.change.updated_at
+
+        url = f"/api/v1/uploads/{self.upload.pk}/versions/{self.version.pk}/file/"
+        self.client.get(url)
+        self.client.get(url)
+
+        self.version.refresh_from_db()
+        self.change.refresh_from_db()
+
+        self.assertEqual(
+            self.version.updated_at, version_updated_before,
+            "GET 반복 호출이 DocumentVersion.updated_at을 변경하면 안 된다",
+        )
+        self.assertEqual(
+            self.change.updated_at, change_updated_before,
+            "GET 반복 호출이 DocumentChange.updated_at을 변경하면 안 된다",
+        )
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA)
+class DocumentVersionFileDoesNotCallPatcherTest(TestCase):
+    """GET 호출이 더 이상 patcher 함수를 호출하지 않는지 mock으로 검증한다(PDF 포맷 기준)."""
+
+    def setUp(self):
+        self.user = _make_user("ver_file_nopatch_user")
+        self.client = _authed(self.user)
+
+        # PDF 최소 바이트 — fitz 의존 없이 단순 더미로 충분(patcher가 호출되지 않아야 하므로)
+        upload = _make_upload(self.user, "pdf", "doc.pdf", b"%PDF-1.4 dummy", "ver_file_nopatch")
+        artifact_bytes = b"%PDF-1.4 patched dummy"
+        self.version = _make_version(
+            upload, self.user, status=DocumentVersion.Status.READY,
+            artifact_bytes=artifact_bytes, artifact_ext="pdf",
+        )
+        self.upload = upload
+
+    def test_get_does_not_invoke_patch_pdf(self):
+        with mock_patch("apps.documents.tasks._patch_pdf") as mocked_patcher:
+            resp = self.client.get(
+                f"/api/v1/uploads/{self.upload.pk}/versions/{self.version.pk}/file/"
+            )
+            self.assertEqual(resp.status_code, 200)
+            mocked_patcher.assert_not_called()
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA)
+class PatchDocumentVersionSavesArtifactTest(TestCase):
+    """patch_document_version Celery task가 실제로 artifact_file을 저장하는지 검증한다."""
+
+    def setUp(self):
+        self.user = _make_user("patch_save_user")
+
+    def test_patch_success_saves_artifact_file(self):
+        from apps.documents.tasks import patch_document_version
+
+        file_bytes = _xlsx_bytes_with_value("Sheet1", "C3", "old")
+        upload = _make_upload(self.user, "excel", "save.xlsx", file_bytes, "patch_save_hash")
+        version = _make_version(upload, self.user, status=DocumentVersion.Status.DRAFT)
+        _make_change(
+            version, "op_save01", "replace_cell",
+            anchor={"type": "cell", "sheet": "Sheet1", "cell": "C3"},
+            original="old", replacement="new",
+        )
+
+        patch_document_version(version.pk)
+
+        version.refresh_from_db()
+        self.assertTrue(bool(version.artifact_file), "patch 성공 시 artifact_file이 저장되어야 한다")
+        with version.artifact_file.open("rb") as f:
+            content = f.read()
+        self.assertGreater(len(content), 0, "저장된 artifact_file 내용이 비어 있으면 안 된다")
+        self.assertEqual(version.artifact_format, "xlsx")
 
 
 # ── _patch_* 순수 함수 bytes 반환 테스트 ─────────────────────────────────────

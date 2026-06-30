@@ -250,6 +250,9 @@ class DocumentVersion(models.Model):
     applied_change_ids = models.JSONField(default=list, blank=True)
     # patcher 실패 시 사유 기록 (정상 완료 시 빈 문자열)
     error_message = models.TextField(blank=True, default="")
+    # patch 완료 결과물 — GET 다운로드는 이 파일을 그대로 반환한다(재생성하지 않음)
+    artifact_file = models.FileField(blank=True, null=True, upload_to="artifacts/")
+    artifact_format = models.CharField(blank=True, default="", max_length=20)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     created_by = models.ForeignKey(
