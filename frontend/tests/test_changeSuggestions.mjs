@@ -308,6 +308,132 @@ test('다른 anchor면 모두 포함된다', () => {
   assert.equal(result.length, 2)
 })
 
+// ── patch_changes 최우선순위 ───────────────────────────────────────────────────
+// patch_changes만 서버 DocumentChange PK(changeDbId)를 가지므로,
+// 동일 anchor를 다른 소스가 가리키더라도 patch_changes가 우선 유지되어야 한다.
+
+console.log('\n[patch_changes 최우선순위]')
+
+test('corrections와 동일 anchor면 patch_changes가 우선 유지된다', () => {
+  const snippetData = {
+    corrections: [{ cell: 'D12', sheet: 'Sheet1', original: 'old', corrected: 'new_c' }],
+    patch_changes: [{
+      id: 99, operation_id: 'op-1', original: 'old', replacement: 'new_p',
+      anchor: { type: 'cell', cell: 'D12', sheet: 'Sheet1' },
+    }],
+  }
+  const result = deriveChangeSuggestions(snippetData)
+  assert.equal(result.length, 1)
+  assert.equal(result[0].source, 'patch_changes')
+  assert.equal(result[0].changeDbId, 99)
+})
+
+test('edit_suggestions와 동일 anchor면 patch_changes가 우선 유지된다', () => {
+  const snippetData = {
+    edit_suggestions: [{
+      id: 'es-1', original: 'old', replacement: 'new_es',
+      anchor: { type: 'cell', cell: 'B2', sheet: '' },
+    }],
+    patch_changes: [{
+      id: 101, operation_id: 'op-2', original: 'old', replacement: 'new_p',
+      anchor: { type: 'cell', cell: 'B2', sheet: '' },
+    }],
+  }
+  const result = deriveChangeSuggestions(snippetData)
+  assert.equal(result.length, 1)
+  assert.equal(result[0].source, 'patch_changes')
+  assert.equal(result[0].changeDbId, 101)
+})
+
+test('change_highlights와 동일 anchor면 patch_changes가 우선 유지된다', () => {
+  const snippetData = {
+    change_highlights: [{
+      id: 'h-1', kind: 'correction', target: 'cell',
+      format: 'xlsx', cell: 'C3', sheet: 'Sheet2', original: 'old', corrected: 'new_h',
+    }],
+    patch_changes: [{
+      id: 102, operation_id: 'op-3', original: 'old', replacement: 'new_p',
+      anchor: { type: 'cell', cell: 'C3', sheet: 'Sheet2' },
+    }],
+  }
+  const result = deriveChangeSuggestions(snippetData)
+  assert.equal(result.length, 1)
+  assert.equal(result[0].source, 'patch_changes')
+  assert.equal(result[0].changeDbId, 102)
+})
+
+test('patch_changes가 없으면 기존 우선순위(edit_suggestions > change_highlights > corrections)가 유지된다', () => {
+  const snippetData = {
+    edit_suggestions: [{
+      id: 'es-1', original: 'old', replacement: 'new_es',
+      anchor: { type: 'cell', cell: 'F1', sheet: '' },
+    }],
+    change_highlights: [{
+      id: 'h-1', kind: 'correction', target: 'cell',
+      format: 'xlsx', cell: 'F1', sheet: '', original: 'old', corrected: 'new_h',
+    }],
+    corrections: [{ cell: 'F1', original: 'old', corrected: 'new_c' }],
+  }
+  const result = deriveChangeSuggestions(snippetData)
+  assert.equal(result.length, 1)
+  assert.equal(result[0].source, 'edit_suggestions')
+})
+
+test('서로 다른 anchor를 가진 4개 소스는 모두 결과에 포함된다 (병합이 아닌 순서 변경)', () => {
+  const snippetData = {
+    patch_changes: [{
+      id: 200, operation_id: 'op-4', original: 'a', replacement: 'a2',
+      anchor: { type: 'cell', cell: 'A1', sheet: '' },
+    }],
+    edit_suggestions: [{
+      id: 'es-1', original: 'b', replacement: 'b2',
+      anchor: { type: 'cell', cell: 'B1', sheet: '' },
+    }],
+    change_highlights: [{
+      id: 'h-1', kind: 'correction', target: 'cell',
+      format: 'xlsx', cell: 'C1', sheet: '', original: 'c', corrected: 'c2',
+    }],
+    corrections: [{ cell: 'D1', original: 'd', corrected: 'd2' }],
+  }
+  const result = deriveChangeSuggestions(snippetData)
+  assert.equal(result.length, 4)
+  const sources = result.map(s => s.source).sort()
+  assert.deepEqual(sources, ['change_highlights', 'corrections', 'edit_suggestions', 'patch_changes'])
+})
+
+test('patch_changes 항목의 anchor가 null이면 중복 제거 대상에서 제외되어 그대로 포함된다', () => {
+  const snippetData = {
+    corrections: [{ cell: 'A1', original: 'x', corrected: 'y' }],
+    patch_changes: [
+      { id: 300, operation_id: 'op-5', original: 'm', replacement: 'm2', anchor: null },
+      { id: 301, operation_id: 'op-6', original: 'n', replacement: 'n2', anchor: null },
+    ],
+  }
+  const result = deriveChangeSuggestions(snippetData)
+  // anchor가 null(→ anchorKey도 null)인 두 patch_changes 항목은 중복 판정 없이 모두 포함되고,
+  // 별도 anchor를 가진 corrections 항목도 그대로 포함되어 총 3건이어야 한다
+  assert.equal(result.length, 3)
+  const patchResults = result.filter(s => s.source === 'patch_changes')
+  assert.equal(patchResults.length, 2)
+  assert.equal(patchResults[0].changeDbId, 300)
+  assert.equal(patchResults[1].changeDbId, 301)
+})
+
+test('changeDbId는 patch_changes만 채워지고 다른 소스는 null이다', () => {
+  const snippetData = {
+    edit_suggestions: [{ id: 'es-1', original: 'a', replacement: 'b', anchor: { type: 'cell', cell: 'X1', sheet: '' } }],
+    change_highlights: [{ id: 'h-1', kind: 'correction', target: 'cell', format: 'xlsx', cell: 'X2', sheet: '', original: 'a', corrected: 'b' }],
+    corrections: [{ cell: 'X3', original: 'a', corrected: 'b' }],
+    patch_changes: [{ id: 999, operation_id: 'op-7', original: 'a', replacement: 'b', anchor: { type: 'cell', cell: 'X4', sheet: '' } }],
+  }
+  const result = deriveChangeSuggestions(snippetData)
+  const byTarget = Object.fromEntries(result.map(s => [s.source, s.changeDbId]))
+  assert.equal(byTarget.edit_suggestions, null)
+  assert.equal(byTarget.change_highlights, null)
+  assert.equal(byTarget.corrections, null)
+  assert.equal(byTarget.patch_changes, 999)
+})
+
 // ── format 유추 ────────────────────────────────────────────────────────────────
 
 console.log('\n[format 유추]')

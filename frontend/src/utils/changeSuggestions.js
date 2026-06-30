@@ -2,8 +2,9 @@
  * snippetData의 다양한 분석 결과 포맷을 공통 suggestion 배열로 정규화한다.
  * 원본 객체를 mutate하지 않는다.
  *
- * 우선순위: edit_suggestions > change_highlights > corrections
+ * 우선순위: patch_changes > edit_suggestions > change_highlights > corrections
  * 동일 anchor를 가진 항목은 높은 우선순위 항목만 유지한다.
+ * patch_changes만 서버 DocumentChange PK(changeDbId)를 가지므로 항상 최우선이다.
  */
 
 // ── 내부 유틸 ──────────────────────────────────────────────────────────────────
@@ -186,15 +187,25 @@ export function deriveChangeSuggestions(snippetData, { format } = {}) {
   const seen   = new Map()
   const result = []
 
-  // 1순위: edit_suggestions
-  for (const [i, s] of editSuggestions.entries()) {
-    const suggestion = _fromEditSuggestion(s, i, inferredFormat)
+  // 1순위: patch_changes — 서버 DocumentChange PK(changeDbId)를 가진 유일한 소스.
+  // patch plan 생성 이후에는 서버가 source of truth이므로 다른 소스보다 항상 우선한다.
+  for (const [i, c] of patchChanges.entries()) {
+    const suggestion = _fromPatchChange(c, i, inferredFormat)
     const key = _anchorKey(suggestion.anchor)
     if (key !== null) seen.set(key, true)
     result.push(suggestion)
   }
 
-  // 2순위: change_highlights — edit_suggestions와 중복 anchor 제거
+  // 2순위: edit_suggestions — patch_changes와 중복 anchor 제거
+  for (const [i, s] of editSuggestions.entries()) {
+    const suggestion = _fromEditSuggestion(s, i, inferredFormat)
+    const key = _anchorKey(suggestion.anchor)
+    if (key !== null && seen.has(key)) continue
+    if (key !== null) seen.set(key, true)
+    result.push(suggestion)
+  }
+
+  // 3순위: change_highlights — 위 소스들과 중복 anchor 제거
   for (const [i, h] of changeHighlights.entries()) {
     const suggestion = _fromChangeHighlight(h, i, inferredFormat)
     const key = _anchorKey(suggestion.anchor)
@@ -203,19 +214,9 @@ export function deriveChangeSuggestions(snippetData, { format } = {}) {
     result.push(suggestion)
   }
 
-  // 3순위: corrections — 위 두 소스와 중복 anchor 제거
+  // 4순위: corrections — 위 소스들과 중복 anchor 제거
   for (const [i, c] of corrections.entries()) {
     const suggestion = _fromCorrection(c, i, inferredFormat)
-    const key = _anchorKey(suggestion.anchor)
-    if (key !== null && seen.has(key)) continue
-    if (key !== null) seen.set(key, true)
-    result.push(suggestion)
-  }
-
-  // 4순위: patch_changes — AI가 생성한 구체적 패치 제안 (BE changeDbId 포함)
-  // 기존 소스들과 중복 anchor 제거
-  for (const [i, c] of patchChanges.entries()) {
-    const suggestion = _fromPatchChange(c, i, inferredFormat)
     const key = _anchorKey(suggestion.anchor)
     if (key !== null && seen.has(key)) continue
     if (key !== null) seen.set(key, true)
