@@ -14,7 +14,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, RequestFactory
 from django.core.files.uploadedfile import SimpleUploadedFile
 
-from apps.documents.models import FileStructure, UploadLog
+from apps.documents.models import DocumentVersion, FileStructure, UploadLog
 from apps.chat.models import ChatMessage, ChatSession
 from apps.chat.tasks import notify_chat_response
 
@@ -99,6 +99,37 @@ class NotifyChatResponseUploadLogTest(TestCase):
 
         self.upload_log.refresh_from_db()
         self.assertEqual(self.upload_log.status, UploadLog.Status.DONE)
+
+
+class NotifyChatResponseOriginalVersionTest(TestCase):
+    """
+    채팅 업로드 경로(notify_chat_response)도 documents 경로와 동일하게
+    원본(version_number=1, status=ORIGINAL) DocumentVersion을 생성해야 한다.
+
+    회귀 배경: documents.notify_analysis_complete는 분석 완료 후 원본 버전을
+    자동 생성하지만, chat.notify_chat_response에는 동일 로직이 없어
+    채팅으로 업로드한 파일은 버전 탭/패치 루프가 비는 문제가 있었다.
+    """
+
+    def setUp(self):
+        self.user = _make_user(username="chat_version_tester")
+        self.session = _make_session(self.user)
+        self.upload_log = _make_upload_log(self.user)
+        self.user_msg = _make_user_message(self.session, self.upload_log)
+
+    def test_notify_chat_response_creates_original_version(self):
+        result = {"summary": "분석 완료", "source_type": "excel", "errors": []}
+
+        notify_chat_response(self.user_msg.pk, result)
+
+        self.assertTrue(
+            DocumentVersion.objects.filter(
+                upload_log=self.upload_log,
+                version_number=1,
+                status=DocumentVersion.Status.ORIGINAL,
+            ).exists(),
+            "채팅 업로드 경로에서도 원본 DocumentVersion이 생성되어야 한다",
+        )
 
 
 # ── 2. duplicate 경로: views.py ─────────────────────────────────────────────────

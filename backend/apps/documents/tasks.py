@@ -11,6 +11,7 @@ from celery.utils.log import get_task_logger
 from django.utils import timezone
 
 from .models import DocumentVersion, IngestionWorkflow, UploadLog
+from .services import ensure_original_version
 
 logger = get_task_logger(__name__)
 
@@ -98,15 +99,7 @@ def notify_analysis_complete(upload_id: int, result: dict) -> None:
     upload_log.save(update_fields=["result", "status"])
 
     # ── 1-b. 원본 DocumentVersion 자동 생성 (idempotent — 중복 생성 방지) ──
-    DocumentVersion.objects.get_or_create(
-        upload_log=upload_log,
-        version_number=1,
-        defaults={
-            "status": DocumentVersion.Status.ORIGINAL,
-            "label": "원본",
-            "created_by": upload_log.user,
-        },
-    )
+    ensure_original_version(upload_log)
 
     # ── 2. 알림톡 발송 (자동화 워크플로우 + 전화번호 있을 때만) ─────────────
     workflow = (

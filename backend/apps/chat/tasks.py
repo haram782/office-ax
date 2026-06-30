@@ -2,6 +2,7 @@ from celery import shared_task
 from celery.utils.log import get_task_logger
 
 from apps.documents.models import UploadLog
+from apps.documents.services import ensure_original_version
 from .change_highlights import corrections_to_change_highlights
 
 logger = get_task_logger(__name__)
@@ -33,6 +34,9 @@ def notify_chat_response(chat_message_id: int, result: dict) -> None:
         user_message.upload_log.result = result
         user_message.upload_log.status = UploadLog.Status.DONE
         user_message.upload_log.save(update_fields=["result", "status"])
+
+        # ── 1-b. 원본 DocumentVersion 자동 생성 (idempotent — 중복 생성 방지) ──
+        ensure_original_version(user_message.upload_log)
 
     # ── 2. 어시스턴트 응답 내용 구성 ──────────────────────────────────────────
     summary = result.get("summary", "분석을 완료하였습니다.")
