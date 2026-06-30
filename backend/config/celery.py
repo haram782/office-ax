@@ -14,4 +14,8 @@ app.conf.beat_schedule = {
         "task": "documents.detect_weekly_patterns",
         "schedule": crontab(hour=2, minute=0),   # 매일 새벽 2시 KST
     },
+    "cleanup-expired-uploads-nightly": {
+        "task": "documents.cleanup_expired_uploads",
+        "schedule": crontab(hour=3, minute=0),   # 매일 새벽 3시 KST, 패턴 감지(2시) 이후
+    },
 }

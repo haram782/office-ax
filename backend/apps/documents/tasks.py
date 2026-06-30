@@ -15,6 +15,9 @@ from .services import ensure_original_version
 
 logger = get_task_logger(__name__)
 
+# storage 보관 정책 — 업로드 후 이 일수가 지나면 cleanup_expired_uploads가 삭제 대상으로 간주한다
+RETENTION_DAYS = 30
+
 
 @shared_task(name="documents.detect_weekly_patterns")
 def detect_weekly_patterns() -> dict:
@@ -69,6 +72,26 @@ def detect_weekly_patterns() -> dict:
 
     logger.info("detect_weekly_patterns 완료 | 신규 제안=%d건", suggested_count)
     return {"newly_suggested": suggested_count}
+
+
+@shared_task(name="documents.cleanup_expired_uploads")
+def cleanup_expired_uploads() -> dict:
+    """
+    매일 새벽 3시 실행 (Celery Beat 스케줄, 패턴 감지 2시 이후).
+
+    RETENTION_DAYS가 지난 UploadLog를 bulk delete한다. 연결된 DocumentVersion 및
+    storage의 file/artifact_file 정리는 pre_delete 시그널(models.py)에 위임한다.
+    """
+    cutoff = timezone.now() - timedelta(days=RETENTION_DAYS)
+    expired_qs = UploadLog.objects.filter(uploaded_at__lt=cutoff)
+
+    # delete()는 (총 삭제 행 수, {모델 라벨: 개수}) 를 반환한다.
+    # CASCADE로 DocumentVersion도 함께 지워지므로 UploadLog 건수만 따로 집계한다.
+    _, deleted_by_model = expired_qs.delete()
+    deleted_count = deleted_by_model.get("documents.UploadLog", 0)
+
+    logger.info("cleanup_expired_uploads 완료 | 삭제=%d건", deleted_count)
+    return {"deleted_count": deleted_count}
 
 
 @shared_task(name="documents.notify_analysis_complete")

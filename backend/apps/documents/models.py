@@ -1,10 +1,15 @@
 import hashlib
+import logging
 
 from django.contrib.auth import get_user_model
 from django.db import models
+from django.db.models.signals import pre_delete
+from django.dispatch import receiver
 from django.utils import timezone
 
 User = get_user_model()
+
+logger = logging.getLogger(__name__)
 
 
 # ── 헬퍼 ─────────────────────────────────────────────────────────────────────
@@ -343,3 +348,35 @@ class DocumentChange(models.Model):
 
     def __str__(self) -> str:
         return f"{self.operation_id[:12]}… [{self.operation}] {self.status}"
+
+
+# ── storage 파일 정리 시그널 ───────────────────────────────────────────────────
+#
+# 모델 delete() 오버라이드 대신 pre_delete 시그널을 쓰는 이유:
+# CASCADE 연쇄 삭제(예: UploadLog 삭제 → DocumentVersion 자동 삭제)나 쿼리셋
+# bulk .delete()는 인스턴스의 커스텀 delete()를 호출하지 않고 Collector를 거치는데,
+# Collector는 각 인스턴스에 대해 pre_delete/post_delete 시그널은 항상 보낸다.
+# 시그널 리스너가 등록되면 Django는 해당 모델에 fast-delete 최적화를 적용하지
+# 않으므로 bulk delete에서도 정상적으로 발생한다.
+
+@receiver(pre_delete, sender=UploadLog)
+def _cleanup_upload_log_file(sender, instance: "UploadLog", **kwargs) -> None:
+    """UploadLog row 삭제 직전 storage에서 원본 file을 제거한다."""
+    if not instance.file:
+        return
+    try:
+        instance.file.delete(save=False)
+    except Exception as exc:
+        # storage I/O 실패는 인프라 경계 실패 — row 삭제 자체를 막지 않는다
+        logger.warning("UploadLog.file storage 삭제 실패 | pk=%s | %s", instance.pk, exc)
+
+
+@receiver(pre_delete, sender=DocumentVersion)
+def _cleanup_document_version_artifact(sender, instance: "DocumentVersion", **kwargs) -> None:
+    """DocumentVersion row 삭제 직전 storage에서 artifact_file을 제거한다."""
+    if not instance.artifact_file:
+        return
+    try:
+        instance.artifact_file.delete(save=False)
+    except Exception as exc:
+        logger.warning("DocumentVersion.artifact_file storage 삭제 실패 | pk=%s | %s", instance.pk, exc)

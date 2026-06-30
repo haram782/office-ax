@@ -505,6 +505,25 @@ class DocumentChangePatchView(APIView):
         return change
 
 
+def _resolve_owned_version(
+    user, upload_id: int, version_id: int, *, select_related: tuple[str, ...] = ("upload_log",)
+) -> DocumentVersion:
+    """버전 소유권 검증 공통 헬퍼. 없거나 upload_log에 속하지 않으면 404, 타인 소유면 403을 raise한다."""
+    try:
+        version = (
+            DocumentVersion.objects
+            .select_related(*select_related)
+            .get(pk=version_id, upload_log_id=upload_id)
+        )
+    except DocumentVersion.DoesNotExist:
+        raise NotFound()
+
+    if version.upload_log.user_id != user.pk:
+        raise PermissionDenied()
+
+    return version
+
+
 class DocumentChangeAcceptAllView(APIView):
     """
     POST /api/v1/uploads/{upload_id}/versions/{version_id}/changes/accept-all/
@@ -519,7 +538,7 @@ class DocumentChangeAcceptAllView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, upload_id: int, version_id: int):
-        version = self._get_version_or_raise(upload_id, version_id)
+        version = _resolve_owned_version(request.user, upload_id, version_id)
 
         pending_changes = list(
             DocumentChange.objects.filter(version=version, status=DocumentChange.Status.PENDING)
@@ -570,22 +589,6 @@ class DocumentChangeAcceptAllView(APIView):
             rejected.extend(c for c in group if c is not winner)
 
         return applied, rejected
-
-    def _get_version_or_raise(self, upload_id: int, version_id: int) -> DocumentVersion:
-        """소유권 검증. 없거나 upload_log에 속하지 않으면 404, 타인 소유면 403."""
-        try:
-            version = (
-                DocumentVersion.objects
-                .select_related("upload_log")
-                .get(pk=version_id, upload_log_id=upload_id)
-            )
-        except DocumentVersion.DoesNotExist:
-            raise NotFound()
-
-        if version.upload_log.user_id != self.request.user.pk:
-            raise PermissionDenied()
-
-        return version
 
 
 class DocumentVersionCreateView(APIView):
@@ -670,7 +673,11 @@ class DocumentVersionFileView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, upload_id: int, version_id: int):
-        version, upload_log = self._get_version_or_raise(upload_id, version_id)
+        version = _resolve_owned_version(
+            request.user, upload_id, version_id,
+            select_related=("upload_log", "upload_log__file_structure"),
+        )
+        upload_log = version.upload_log
 
         if version.status != DocumentVersion.Status.READY:
             return Response(
@@ -696,22 +703,6 @@ class DocumentVersionFileView(APIView):
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response
 
-    def _get_version_or_raise(self, upload_id: int, version_id: int):
-        """소유권 검증. 없으면 404, 타인 소유면 403을 raise한다."""
-        try:
-            version = (
-                DocumentVersion.objects
-                .select_related("upload_log", "upload_log__file_structure")
-                .get(pk=version_id, upload_log_id=upload_id)
-            )
-        except DocumentVersion.DoesNotExist:
-            raise NotFound()
-
-        if version.upload_log.user_id != self.request.user.pk:
-            raise PermissionDenied()
-
-        return version, version.upload_log
-
 
 class DocumentVersionPatchTriggerView(APIView):
     """
@@ -726,7 +717,7 @@ class DocumentVersionPatchTriggerView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, upload_id: int, version_id: int):
-        version = self._get_version_or_raise(upload_id, version_id)
+        version = _resolve_owned_version(request.user, upload_id, version_id)
 
         if version.status != DocumentVersion.Status.DRAFT:
             return Response(
@@ -744,21 +735,40 @@ class DocumentVersionPatchTriggerView(APIView):
             status=status.HTTP_202_ACCEPTED,
         )
 
-    def _get_version_or_raise(self, upload_id: int, version_id: int) -> DocumentVersion:
-        """소유권 검증. 없으면 404, 타인 소유면 403을 raise한다."""
-        try:
-            version = (
-                DocumentVersion.objects
-                .select_related("upload_log")
-                .get(pk=version_id, upload_log_id=upload_id)
+
+class DocumentVersionDeleteView(APIView):
+    """
+    DELETE /api/v1/uploads/{upload_id}/versions/{version_id}/
+
+    명시적으로 버전을 삭제한다. storage의 artifact_file 정리는
+    DocumentVersion의 pre_delete 시그널에 위임한다(models.py 참조).
+
+    소유권: version.upload_log.user != request.user → 403
+    상태 제약: status=original → 400(원본 버전 보호)
+              status=generating → 409(패치 작업 중 레이스 컨디션 방지)
+    성공: row 삭제 → 204
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, upload_id: int, version_id: int):
+        version = _resolve_owned_version(request.user, upload_id, version_id)
+
+        if version.status == DocumentVersion.Status.ORIGINAL:
+            return Response(
+                {"detail": "원본 버전은 삭제할 수 없습니다."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        except DocumentVersion.DoesNotExist:
-            raise NotFound()
 
-        if version.upload_log.user_id != self.request.user.pk:
-            raise PermissionDenied()
+        if version.status == DocumentVersion.Status.GENERATING:
+            return Response(
+                {"detail": "생성 중인 버전은 삭제할 수 없습니다."},
+                status=status.HTTP_409_CONFLICT,
+            )
 
-        return version
+        version.delete()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 def _sync_task_result(upload_log: UploadLog) -> None:
