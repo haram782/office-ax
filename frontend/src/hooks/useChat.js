@@ -13,9 +13,10 @@ function makeConvId() { return `conv_${Date.now()}` }
  *   각 대화(conversation)를 독립적인 메시지 목록으로 관리한다.
  * activeSessionId: 현재 선택된 대화 ID.
  *
- * 무한 루프 방지:
- *   전송 전 baseline 어시스턴트 수 → targetCount = baseline + 파일 수.
- *   targetCount 도달 시 즉시 폴링 종료.
+ * 폴링 종료 조건:
+ *   baseline 이후 새로 생성된 어시스턴트 메시지 중 snippet_data.type이
+ *   있는 것이 하나라도 도착하면 종료한다.
+ *   BE가 중간 안내 메시지(snippet_data 없음)를 먼저 전송해도 폴링을 계속한다.
  */
 export function useChat() {
   const initId = useRef(makeConvId())
@@ -182,20 +183,20 @@ export function useChat() {
         // 전송 전 어시스턴트 수 baseline 기록
         const beforeMsgs = await getChatMessages(sid)
         const baselineAssistantCount = beforeMsgs.filter(m => m.role === 'assistant').length
-        const targetAssistantCount   = baselineAssistantCount + 1
 
         await sendChatMessage(sid, content, null, uploadId)
 
         const afterSendMsgs = await getChatMessages(sid)
         setConvMessages(convId, afterSendMsgs)
 
-        // 동기 응답(mock 등)이 즉시 왔으면 폴링 불필요
-        if (afterSendMsgs.filter(m => m.role === 'assistant').length >= targetAssistantCount) {
+        // 새 어시스턴트 메시지 중 snippet_data.type이 있으면 즉시 종료
+        const newAfterSend = afterSendMsgs.filter(m => m.role === 'assistant').slice(baselineAssistantCount)
+        if (newAfterSend.some(m => m.snippet_data?.type)) {
           setIsProcessing(false)
           return
         }
 
-        // Celery text_chat 태스크 완료까지 폴링
+        // Celery text_chat 태스크 완료까지 폴링 — snippet_data.type 도착 시 종료
         intervalRef.current = setInterval(async () => {
           pollCountRef.current += 1
 
@@ -209,7 +210,8 @@ export function useChat() {
           try {
             const fresh = await getChatMessages(sid)
             setConvMessages(convId, fresh)
-            if (fresh.filter(m => m.role === 'assistant').length >= targetAssistantCount) {
+            const newMsgs = fresh.filter(m => m.role === 'assistant').slice(baselineAssistantCount)
+            if (newMsgs.some(m => m.snippet_data?.type)) {
               stopPolling()
               setIsProcessing(false)
             }
@@ -221,7 +223,6 @@ export function useChat() {
       // ── 파일 전송 ────────────────────────────────────────────────────────────
       const beforeMsgs = await getChatMessages(sid)
       const baselineAssistantCount = beforeMsgs.filter(m => m.role === 'assistant').length
-      const targetAssistantCount   = baselineAssistantCount + fileList.length
 
       for (let i = 0; i < fileList.length; i++) {
         await sendChatMessage(sid, i === 0 ? content : '', fileList[i], uploadId)
@@ -230,13 +231,14 @@ export function useChat() {
       const afterSendMsgs = await getChatMessages(sid)
       setConvMessages(convId, afterSendMsgs)
 
-      // 중복 파일 dedup: 즉시 완료 여부 확인
-      if (afterSendMsgs.filter(m => m.role === 'assistant').length >= targetAssistantCount) {
+      // 새 어시스턴트 메시지 중 snippet_data.type이 있으면 즉시 종료
+      const newAfterSendFile = afterSendMsgs.filter(m => m.role === 'assistant').slice(baselineAssistantCount)
+      if (newAfterSendFile.some(m => m.snippet_data?.type)) {
         setIsProcessing(false)
         return
       }
 
-      // ── Celery 완료 폴링 ─────────────────────────────────────────────────────
+      // ── Celery 완료 폴링 — snippet_data.type 도착 시 종료 ────────────────────
       intervalRef.current = setInterval(async () => {
         pollCountRef.current += 1
 
@@ -250,7 +252,8 @@ export function useChat() {
         try {
           const fresh = await getChatMessages(sid)
           setConvMessages(convId, fresh)
-          if (fresh.filter(m => m.role === 'assistant').length >= targetAssistantCount) {
+          const newMsgs = fresh.filter(m => m.role === 'assistant').slice(baselineAssistantCount)
+          if (newMsgs.some(m => m.snippet_data?.type)) {
             stopPolling()
             setIsProcessing(false)
           }

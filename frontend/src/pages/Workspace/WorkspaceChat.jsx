@@ -145,8 +145,8 @@ export function WorkspaceChat({
                 key={msg.id}
                 message={msg}
                 onFileView={onFileView}
-                onAcceptPatch={msg.source_type === 'patch_plan' ? onChatAcceptAll : undefined}
-                onRejectPatch={msg.source_type === 'patch_plan' ? handleRejectPatch : undefined}
+                onAcceptPatch={msg.snippet_data?.type === 'patch_plan' ? onChatAcceptAll : undefined}
+                onRejectPatch={msg.snippet_data?.type === 'patch_plan' ? handleRejectPatch : undefined}
               />
             ))}
             {isProcessing && <TypingIndicator mode={typingMode} />}

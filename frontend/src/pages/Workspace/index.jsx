@@ -69,7 +69,7 @@ export default function Workspace() {
   // 최신 source_type='patch_plan' 메시지 감지 → localPatchData 자동 설정
   // BE가 채팅 응답으로 patch_plan을 반환하면 우측 패널에 즉시 반영한다
   useEffect(() => {
-    const last = [...messages].reverse().find(m => m.source_type === 'patch_plan' && m.snippet_data)
+    const last = [...messages].reverse().find(m => m.snippet_data?.type === 'patch_plan')
     if (!last) return
     const pd = last.snippet_data
     if (Array.isArray(pd?.patch_changes)) {

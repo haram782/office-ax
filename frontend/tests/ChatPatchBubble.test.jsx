@@ -20,14 +20,29 @@ import { MessageBubble } from '../src/components/MessageBubble'
 const PATCH_PLAN_MSG = {
   id: 'msg-1',
   role: 'assistant',
-  source_type: 'patch_plan',
   content: '아래 2개 항목을 수정합니다.',
   snippet_data: {
+    type: 'patch_plan',
     patch_changes: [
       { id: 1, operation_id: 'op-1', title: '항목 1', anchor: { type: 'cell', cell: 'A1', sheet: 'Sheet1' } },
       { id: 2, operation_id: 'op-2', title: '항목 2', anchor: { type: 'cell', cell: 'B2', sheet: 'Sheet1' } },
     ],
     version_id: 99,
+  },
+  created_at: '2026-06-26T10:00:00Z',
+}
+
+// source_type 없이 snippet_data.type만으로 patch_plan을 판별하는 새 형식
+const PATCH_PLAN_MSG_NEW = {
+  id: 'msg-1b',
+  role: 'assistant',
+  content: 'snippet_data.type만으로 판별합니다.',
+  snippet_data: {
+    type: 'patch_plan',
+    patch_changes: [
+      { id: 3, operation_id: 'op-3', title: '항목 3', anchor: { type: 'cell', cell: 'C3', sheet: 'Sheet1' } },
+    ],
+    version_id: 100,
   },
   created_at: '2026-06-26T10:00:00Z',
 }
@@ -70,7 +85,7 @@ const SNIPPET_MSG = {
 describe('MessageBubble — patch_plan 말풍선', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('[happy] source_type=patch_plan 이면 [전체 반영] 버튼이 렌더된다', () => {
+  it('[happy] snippet_data.type=patch_plan 이면 [전체 반영] 버튼이 렌더된다', () => {
     render(
       <MessageBubble
         message={PATCH_PLAN_MSG}
@@ -81,7 +96,7 @@ describe('MessageBubble — patch_plan 말풍선', () => {
     expect(screen.getByRole('button', { name: /전체 반영/ })).toBeTruthy()
   })
 
-  it('[happy] source_type=patch_plan 이면 [보류] 버튼이 렌더된다', () => {
+  it('[happy] snippet_data.type=patch_plan 이면 [보류] 버튼이 렌더된다', () => {
     render(
       <MessageBubble
         message={PATCH_PLAN_MSG}
@@ -140,7 +155,7 @@ describe('MessageBubble — patch_plan 말풍선', () => {
     expect(screen.getByText(/2개 항목을 수정합니다/)).toBeTruthy()
   })
 
-  it('[boundary] source_type=chat 이면 [전체 반영] 버튼이 없다', () => {
+  it('[boundary] snippet_data.type=chat 이면 [전체 반영] 버튼이 없다', () => {
     render(<MessageBubble message={NORMAL_CHAT_MSG} />)
     expect(screen.queryByRole('button', { name: /전체 반영/ })).toBeNull()
   })
@@ -170,6 +185,18 @@ describe('MessageBubble — patch_plan 말풍선', () => {
   it('[failure] onRejectPatch가 없어도 [보류] 클릭 시 에러가 발생하지 않는다', () => {
     render(<MessageBubble message={PATCH_PLAN_MSG} onAcceptPatch={vi.fn()} />)
     expect(() => fireEvent.click(screen.getByRole('button', { name: /보류/ }))).not.toThrow()
+  })
+
+  it('[regression] source_type 없이 snippet_data.type=patch_plan만 있어도 PatchPlanBubble이 렌더된다', () => {
+    render(
+      <MessageBubble
+        message={PATCH_PLAN_MSG_NEW}
+        onAcceptPatch={vi.fn()}
+        onRejectPatch={vi.fn()}
+      />
+    )
+    expect(screen.getByRole('button', { name: /전체 반영/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /보류/ })).toBeTruthy()
   })
 
   it('[regression] 기존 chat 메시지 콘텐츠가 정상 렌더된다', () => {

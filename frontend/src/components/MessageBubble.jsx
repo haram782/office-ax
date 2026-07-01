@@ -186,7 +186,7 @@ export function MessageBubble({ message, onFileView, onAcceptPatch, onRejectPatc
         )}
 
         {/* patch_plan 메시지 — 전체 반영/보류 액션 버튼 말풍선 */}
-        {!isUser && message.source_type === 'patch_plan' ? (
+        {!isUser && message.snippet_data?.type === 'patch_plan' ? (
           <PatchPlanBubble
             message={message}
             onAcceptPatch={onAcceptPatch}
@@ -208,7 +208,7 @@ export function MessageBubble({ message, onFileView, onAcceptPatch, onRejectPatc
         )}
 
         {/* Excel 교정 스니펫 카드 (어시스턴트 + patch_plan 아닌 경우에만) */}
-        {!isUser && message.source_type !== 'patch_plan' && message.has_snippet && message.snippet_data && (
+        {!isUser && message.snippet_data?.type !== 'patch_plan' && message.has_snippet && message.snippet_data && (
           <SnippetCard snippetData={message.snippet_data} onFileView={onFileView} />
         )}
 
