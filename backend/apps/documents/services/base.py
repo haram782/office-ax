@@ -1,4 +1,4 @@
-from .models import DocumentVersion, UploadLog
+from ..models import DocumentVersion, UploadLog
 
 
 def ensure_original_version(upload_log: UploadLog) -> DocumentVersion:

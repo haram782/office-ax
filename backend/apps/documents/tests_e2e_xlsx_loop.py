@@ -140,7 +140,7 @@ class XlsxE2EHappyPathTest(TestCase):
         self.user = _make_user("e2e_happy_user")
         self.client = _authed(self.user)
 
-    @patch("apps.documents.views._generate_patch_plan")
+    @patch("apps.documents.services.patch_plan._generate_patch_plan")
     @patch("apps.documents.views.current_app.send_task")
     def test_full_xlsx_loop(self, mock_send_task, mock_gen_plan):
         """1~8 단계를 전부 거쳐 최종 XLSX에서 승인된 change만 반영됨을 검증한다."""
@@ -283,7 +283,7 @@ class XlsxE2EEmptyOperationsTest(TestCase):
         self.user = _make_user("e2e_empty_user")
         self.client = _authed(self.user)
 
-    @patch("apps.documents.views._generate_patch_plan")
+    @patch("apps.documents.services.patch_plan._generate_patch_plan")
     @patch("apps.documents.views.current_app.send_task")
     def test_empty_operations_ends_chain_naturally(self, mock_send_task, mock_gen_plan):
         """빈 operations일 때 200 + version_id=null을 반환하고 draft 버전이 생성되지 않는다."""
@@ -371,7 +371,7 @@ class XlsxE2EOriginalMismatchTest(TestCase):
         self.user = _make_user("e2e_mismatch_user")
         self.client = _authed(self.user)
 
-    @patch("apps.documents.views._generate_patch_plan")
+    @patch("apps.documents.services.patch_plan._generate_patch_plan")
     @patch("apps.documents.views.current_app.send_task")
     def test_mismatch_change_fails_rest_succeeds(self, mock_send_task, mock_gen_plan):
         """original 불일치 change는 failed, 나머지는 applied, version은 ready."""
@@ -506,7 +506,7 @@ class XlsxE2EVersionNumberRegressionTest(TestCase):
         notify_analysis_complete(upload_id, {"source_type": "excel", "summary": "회귀 테스트", "errors": []})
 
         # ── 첫 번째 버전 전체 처리 ────────────────────────────────────────
-        with patch("apps.documents.views._generate_patch_plan", return_value=self._PLAN_V2):
+        with patch("apps.documents.services.patch_plan._generate_patch_plan", return_value=self._PLAN_V2):
             resp = self.client.post(
                 f"/api/v1/uploads/{upload_id}/generate-patch-plan/",
                 {"prompt": "v2 교체"},
@@ -527,7 +527,7 @@ class XlsxE2EVersionNumberRegressionTest(TestCase):
         self.assertTrue(default_storage.exists(artifact_name_v2), "v2 artifact_file이 storage에 존재해야 한다")
 
         # ── 두 번째 버전 생성 ─────────────────────────────────────────────
-        with patch("apps.documents.views._generate_patch_plan", return_value=self._PLAN_V3):
+        with patch("apps.documents.services.patch_plan._generate_patch_plan", return_value=self._PLAN_V3):
             resp = self.client.post(
                 f"/api/v1/uploads/{upload_id}/generate-patch-plan/",
                 {"prompt": "v3 교체"},
@@ -641,7 +641,7 @@ class XlsxE2ESalesScenarioTest(TestCase):
         self.user = _make_user("e2e_sales_user")
         self.client = _authed(self.user)
 
-    @patch("apps.documents.views._generate_patch_plan")
+    @patch("apps.documents.services.patch_plan._generate_patch_plan")
     @patch("apps.documents.views.current_app.send_task")
     def test_sales_table_scenario_partial_failure_preserves_success(self, mock_send_task, mock_gen_plan):
         """헤더 강조·표시 형식·수식은 성공, 잘못된 number_format은 개별 실패로 격리된다."""

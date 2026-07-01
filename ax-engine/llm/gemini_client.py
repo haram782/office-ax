@@ -52,6 +52,7 @@ class GeminiClient(BaseLLMClient):
             summary=parsed.get("summary", parsed.get("reply", "")),
             detected_errors=parsed.get("errors", []),
             model_used=f"gemini/{self._model}",
+            parsed_data=parsed,
         )
 
     # ── 내부 헬퍼 ──────────────────────────────────────────────────────────────

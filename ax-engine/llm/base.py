@@ -11,6 +11,8 @@ class AnalysisResult:
     output_tokens: int = 0
     # LLM이 생성한 보정 파일 절대 경로 (없으면 빈 문자열)
     artifact_path: str = ""
+    # LLM 응답 전체 파싱 결과 — 의도 판별 등 summary 외 필드가 필요한 경우 사용
+    parsed_data: dict = field(default_factory=dict)
 
 
 class BaseLLMClient(ABC):

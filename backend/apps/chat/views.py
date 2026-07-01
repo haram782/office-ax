@@ -161,12 +161,16 @@ class ChatMessageCreateView(APIView):
                 for msg in reversed(list(history_qs))
             ]
 
+            # 프론트엔드가 파일 열람 중일 때 upload_id를 전달해 의도 판별 모드 활성화
+            upload_id = request.data.get("upload_id")
+
             current_app.send_task(
                 "tasks.text_chat",
                 kwargs={
                     "content":         content,
                     "chat_message_id": user_message.pk,
                     "session_history": session_history,
+                    "upload_id":       upload_id,
                 },
                 queue="ax",
             )

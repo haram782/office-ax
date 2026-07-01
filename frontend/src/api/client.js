@@ -69,10 +69,12 @@ export async function getChatMessages(sessionId) {
   return data  // ChatMessage[]
 }
 
-export async function sendChatMessage(sessionId, content, file = null) {
+export async function sendChatMessage(sessionId, content, file = null, uploadId = null) {
   const form = new FormData()
   form.append('content', content)
   if (file) form.append('file', file)
+  // BE가 채팅 맥락에서 참조할 문서 upload_id (patch_plan 생성 등에 사용)
+  if (uploadId != null) form.append('upload_id', String(uploadId))
   const { data } = await api.post(
     `/chat/sessions/${sessionId}/messages/send/`,
     form,

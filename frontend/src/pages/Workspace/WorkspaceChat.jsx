@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, useState, useCallback } from 'react'
 import { Ic }              from '../../components/Ic'
 import { ChatInput }       from '../../components/ChatInput'
 import { MessageBubble, TypingIndicator } from '../../components/MessageBubble'
@@ -47,6 +47,8 @@ function WelcomeScreen({ onChipClick }) {
  *   error: string|null,
  *   onSend: Function,
  *   onFileView: Function,
+ *   uploadId: number|null,
+ *   onChatAcceptAll: Function,
  *   ragTone: string,
  *   ragForm: string,
  *   onRagToneChange: Function,
@@ -62,6 +64,8 @@ export function WorkspaceChat({
   error,
   onSend,
   onFileView,
+  uploadId = null,
+  onChatAcceptAll,
   ragTone,
   ragForm,
   onRagToneChange,
@@ -71,6 +75,10 @@ export function WorkspaceChat({
   onNewConversation,
 }) {
   const bottomRef = useRef(null)
+  // ChatInput ref — [보류] 클릭 후 입력창 포커스 이동에 사용
+  const chatInputRef = useRef(null)
+  // [보류] 클릭 후 입력창 위에 표시할 안내 문구
+  const [inputGuidance, setInputGuidance] = useState(null)
 
   // 새 메시지 도착 시 하단 스크롤
   useEffect(() => {
@@ -80,6 +88,20 @@ export function WorkspaceChat({
   // 마지막 유저 메시지에 파일 첨부 여부로 TypingIndicator 모드 결정
   const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')
   const typingMode  = lastUserMsg?.upload_log ? 'file' : 'chat'
+
+  // uploadId와 현재 versionId를 포함해 전송 — BE가 upload_id로 수정 맥락을 파악한다
+  const handleSend = useCallback((text, files) => {
+    onSend(text, files, uploadId)
+  }, [onSend, uploadId])
+
+  // [보류] — 입력창 포커스 이동 + 안내 문구 표시
+  const handleRejectPatch = useCallback(() => {
+    setInputGuidance('수정 내용을 정정해 주세요')
+    chatInputRef.current?.focus()
+  }, [])
+
+  // 입력 시작 시 안내 문구 해제
+  const handleGuidanceClear = useCallback(() => setInputGuidance(null), [])
 
   // 빠른 칩 → 미리 정의된 텍스트 전송
   function handleChip(key) {
@@ -119,7 +141,13 @@ export function WorkspaceChat({
         : (
           <div className="flex-1 overflow-auto p-4 flex flex-col gap-4">
             {messages.map(msg => (
-              <MessageBubble key={msg.id} message={msg} onFileView={onFileView} />
+              <MessageBubble
+                key={msg.id}
+                message={msg}
+                onFileView={onFileView}
+                onAcceptPatch={msg.source_type === 'patch_plan' ? onChatAcceptAll : undefined}
+                onRejectPatch={msg.source_type === 'patch_plan' ? handleRejectPatch : undefined}
+              />
             ))}
             {isProcessing && <TypingIndicator mode={typingMode} />}
             {error && (
@@ -162,8 +190,28 @@ export function WorkspaceChat({
           ))}
         </div>
 
-        {/* 채팅 입력 */}
-        <ChatInput onSend={onSend} isProcessing={isProcessing} />
+        {/* 파일 미선택 시 안내 문구 — 입력창 위에 표시 */}
+        {!uploadId && (
+          <p className="px-4 pt-2 text-xs text-zinc-400 dark:text-zinc-500">
+            파일을 먼저 선택해주세요
+          </p>
+        )}
+
+        {/* [보류] 후 정정 안내 문구 */}
+        {uploadId && inputGuidance && (
+          <p className="px-4 pt-2 text-xs text-blue-500 dark:text-blue-400">
+            {inputGuidance}
+          </p>
+        )}
+
+        {/* 채팅 입력 — 파일 미선택 시 disabled */}
+        <ChatInput
+          ref={chatInputRef}
+          onSend={handleSend}
+          isProcessing={isProcessing}
+          disabled={!uploadId}
+          onFocus={handleGuidanceClear}
+        />
       </div>
     </aside>
   )

@@ -1,14 +1,19 @@
 """
 text_chat Celery 태스크.
 사용자 채팅 메시지를 LLM으로 처리하고 결과를 chat.notify_chat_response 콜백으로 전달한다.
+
+upload_id가 전달되면 의도 판별 프롬프트(CHAT_INTENT_SYSTEM_PROMPT)로 전환해
+Q&A/수정 요청을 구분한 결과를 반환한다.
 """
 from __future__ import annotations
+
+import json
 
 from celery import shared_task
 from celery.utils.log import get_task_logger
 
 from llm import get_llm_client
-from prompts.chat import CHAT_SYSTEM_PROMPT
+from prompts.chat import CHAT_INTENT_SYSTEM_PROMPT, CHAT_SYSTEM_PROMPT
 
 logger = get_task_logger(__name__)
 
@@ -42,7 +47,33 @@ def _send_callback(task_self, chat_message_id: int, result: dict) -> None:
     )
 
 
-def _run_text_chat(task_self, content: str, chat_message_id: int, session_history: list[dict]) -> dict:
+def _parse_intent_response(raw: str) -> dict:
+    """
+    의도 판별 LLM 응답을 파싱한다.
+    파싱 실패 시 안전하게 qa 타입으로 폴백한다.
+    """
+    text = raw.strip()
+    # LLM이 마크다운 코드블록을 붙이는 경우 방어적 제거
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(lines[1:-1]) if len(lines) > 2 else text
+    try:
+        parsed = json.loads(text)
+        if parsed.get("type") in ("qa", "patch_intent"):
+            return parsed
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # 파싱 실패 — LLM 원문을 reply로 감싸 qa로 처리
+    return {"type": "qa", "reply": raw}
+
+
+def _run_text_chat(
+    task_self,
+    content: str,
+    chat_message_id: int,
+    session_history: list[dict],
+    upload_id: int | None = None,
+) -> dict:
     """
     실제 채팅 처리 로직. Celery 태스크와 분리해 단위 테스트가 가능하게 한다.
 
@@ -51,28 +82,59 @@ def _run_text_chat(task_self, content: str, chat_message_id: int, session_histor
         content: 사용자 메시지 텍스트
         chat_message_id: Django ChatMessage PK
         session_history: 최근 대화 이력
+        upload_id: 현재 열람 중인 UploadLog PK (None이면 일반 Q&A 모드)
     """
     prompt_text = _build_prompt(content, session_history)
+
+    # upload_id 있으면 의도 판별 프롬프트 사용
+    system_prompt = CHAT_INTENT_SYSTEM_PROMPT if upload_id else CHAT_SYSTEM_PROMPT
 
     try:
         client = get_llm_client()
         result = client.analyze(
             prompt_text,
-            CHAT_SYSTEM_PROMPT,
+            system_prompt,
             mode="chat",
             chat_message_id=chat_message_id,
         )
 
-        # result.summary에 LLM 응답 텍스트가 저장됨
-        reply = result.summary or "(응답 없음)"
+        if upload_id:
+            # 의도 판별 모드 — parsed_data에서 type을 직접 읽어 분기
+            # (result.summary는 reply/summary 키만 추출하므로 patch_intent 응답에서 ""가 됨)
+            intent = result.parsed_data if result.parsed_data.get("type") in ("qa", "patch_intent") \
+                else _parse_intent_response(result.summary or "")
+            intent_type = intent.get("type", "qa")
 
-        output = {
-            "chat_message_id": chat_message_id,
-            "summary":         reply,
-            "errors":          [],
-            "source_type":     "chat",
-            "model_used":      result.model_used,
-        }
+            if intent_type == "patch_intent":
+                output = {
+                    "type":           "patch_intent",
+                    "refined_prompt": intent.get("refined_prompt", content),
+                    "upload_id":      upload_id,
+                    "summary":        "",
+                    "errors":         [],
+                    "source_type":    "chat",
+                    "model_used":     result.model_used,
+                }
+            else:
+                # qa 또는 파싱 실패 폴백
+                reply = intent.get("reply", "") or result.summary or "(응답 없음)"
+                output = {
+                    "type":        "qa",
+                    "summary":     reply,
+                    "upload_id":   upload_id,
+                    "errors":      [],
+                    "source_type": "chat",
+                    "model_used":  result.model_used,
+                }
+        else:
+            # 일반 Q&A 모드 — 기존 형식 유지 (하위 호환)
+            output = {
+                "chat_message_id": chat_message_id,
+                "summary":         result.summary or "(응답 없음)",
+                "errors":          [],
+                "source_type":     "chat",
+                "model_used":      result.model_used,
+            }
 
         _send_callback(task_self, chat_message_id, output)
         return output
@@ -91,13 +153,15 @@ def text_chat(
     content: str,
     chat_message_id: int,
     session_history: list[dict] | None = None,
+    upload_id: int | None = None,
 ) -> dict:
     """
-    Django 백엔드의 chat.send_text_chat 또는 직접 호출 진입점.
+    Django 백엔드의 ChatMessageCreateView 또는 직접 호출 진입점.
 
     Args:
         content: 사용자 메시지 텍스트
         chat_message_id: Django ChatMessage PK (콜백 라우팅용)
         session_history: 최근 대화 이력 [{"role": "user"|"assistant", "content": "..."}]
+        upload_id: 현재 열람 중인 UploadLog PK — 있으면 의도 판별 모드로 전환
     """
-    return _run_text_chat(self, content, chat_message_id, session_history or [])
+    return _run_text_chat(self, content, chat_message_id, session_history or [], upload_id)

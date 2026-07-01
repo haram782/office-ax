@@ -13,7 +13,7 @@ LLM → patch plan 생성 → DocumentChange 저장 API 테스트.
   6. LLM JSON 파싱 실패 mock → 400
   7. operations 빈 배열 mock → 200 + changes=[]
 """
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -25,7 +25,7 @@ from apps.documents.models import (
     FileStructure,
     UploadLog,
 )
-from apps.documents.views import LLMParseError
+from apps.documents.services.patch_plan import LLMParseError, _generate_patch_plan
 
 User = get_user_model()
 
@@ -120,7 +120,7 @@ class GeneratePatchPlanTest(TestCase):
         self.client = _authed(self.user)
         self.upload = _make_done_upload(self.user)
 
-    @patch("apps.documents.views._generate_patch_plan", return_value=_MOCK_PATCH_PLAN)
+    @patch("apps.documents.services.patch_plan._generate_patch_plan", return_value=_MOCK_PATCH_PLAN)
     def test_creates_draft_document_version(self, _mock):
         """유효한 prompt + upload_id → DocumentVersion(draft)이 생성된다."""
         resp = self.client.post(
@@ -137,7 +137,7 @@ class GeneratePatchPlanTest(TestCase):
             "draft 상태의 DocumentVersion이 생성되어야 한다",
         )
 
-    @patch("apps.documents.views._generate_patch_plan", return_value=_MOCK_PATCH_PLAN)
+    @patch("apps.documents.services.patch_plan._generate_patch_plan", return_value=_MOCK_PATCH_PLAN)
     def test_creates_document_changes(self, _mock):
         """유효한 prompt + upload_id → DocumentChange 행들이 생성된다."""
         resp = self.client.post(
@@ -154,7 +154,7 @@ class GeneratePatchPlanTest(TestCase):
             "operations 2개에 해당하는 DocumentChange 행이 생성되어야 한다",
         )
 
-    @patch("apps.documents.views._generate_patch_plan", return_value=_MOCK_PATCH_PLAN)
+    @patch("apps.documents.services.patch_plan._generate_patch_plan", return_value=_MOCK_PATCH_PLAN)
     def test_response_contains_change_db_id(self, _mock):
         """응답 changes 항목에 id(changeDbId)가 포함된다."""
         resp = self.client.post(
@@ -201,7 +201,7 @@ class GeneratePatchPlanTest(TestCase):
         self.assertEqual(resp.status_code, 400)
 
     @patch(
-        "apps.documents.views._generate_patch_plan",
+        "apps.documents.services.patch_plan._generate_patch_plan",
         side_effect=LLMParseError("JSON 파싱 실패"),
     )
     def test_llm_parse_error_returns_400(self, _mock):
@@ -214,7 +214,7 @@ class GeneratePatchPlanTest(TestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertIn("detail", resp.data)
 
-    @patch("apps.documents.views._generate_patch_plan", return_value=_MOCK_EMPTY_PLAN)
+    @patch("apps.documents.services.patch_plan._generate_patch_plan", return_value=_MOCK_EMPTY_PLAN)
     def test_empty_operations_returns_200_with_empty_changes(self, _mock):
         """operations가 빈 배열이면 200 + changes=[]를 반환한다."""
         resp = self.client.post(
@@ -225,3 +225,29 @@ class GeneratePatchPlanTest(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data.get("changes"), [])
         self.assertIsNone(resp.data.get("version_id"))
+
+
+class PatchPlanLLMDispatchTest(TestCase):
+    """PatchPlan LLM 호출이 backend SDK가 아니라 ax-engine 태스크로 위임되는지 검증."""
+
+    @patch("apps.documents.services.patch_plan.current_app.send_task")
+    def test_generate_patch_plan_delegates_to_ax_engine_task(self, mock_send_task):
+        """_generate_patch_plan은 tasks.generate_patch_plan을 ax 큐로 보내고 결과를 기다린다."""
+        async_result = MagicMock()
+        async_result.get.return_value = _MOCK_PATCH_PLAN
+        mock_send_task.return_value = async_result
+
+        plan = _generate_patch_plan(
+            "날짜 형식을 고쳐줘",
+            {"filename": "sample.xlsx", "source_type": "excel", "snippet_data": {}},
+        )
+
+        self.assertEqual(plan["plan_id"], "plan_test_001")
+        mock_send_task.assert_called_once()
+        self.assertEqual(mock_send_task.call_args.args[0], "tasks.generate_patch_plan")
+        self.assertEqual(mock_send_task.call_args.kwargs["queue"], "ax")
+        self.assertEqual(
+            mock_send_task.call_args.kwargs["kwargs"]["prompt"],
+            "날짜 형식을 고쳐줘",
+        )
+        async_result.get.assert_called_once()

@@ -122,8 +122,8 @@ export function useChat() {
     setError(null)
   }, [stopPolling])
 
-  // 메시지 전송
-  const sendMessage = useCallback(async (content, files = []) => {
+  // 메시지 전송 — uploadId는 현재 열려 있는 문서의 upload_log.id (없으면 null)
+  const sendMessage = useCallback(async (content, files = [], uploadId = null) => {
     const convId = activeSessionId
     if (!convId) return
 
@@ -184,7 +184,7 @@ export function useChat() {
         const baselineAssistantCount = beforeMsgs.filter(m => m.role === 'assistant').length
         const targetAssistantCount   = baselineAssistantCount + 1
 
-        await sendChatMessage(sid, content, null)
+        await sendChatMessage(sid, content, null, uploadId)
 
         const afterSendMsgs = await getChatMessages(sid)
         setConvMessages(convId, afterSendMsgs)
@@ -224,7 +224,7 @@ export function useChat() {
       const targetAssistantCount   = baselineAssistantCount + fileList.length
 
       for (let i = 0; i < fileList.length; i++) {
-        await sendChatMessage(sid, i === 0 ? content : '', fileList[i])
+        await sendChatMessage(sid, i === 0 ? content : '', fileList[i], uploadId)
       }
 
       const afterSendMsgs = await getChatMessages(sid)

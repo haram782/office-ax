@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 
 // 파일 분석 로딩 스텝
 const FILE_LOADING_STEPS = [
@@ -98,7 +98,69 @@ function SnippetCard({ snippetData, onFileView }) {
   )
 }
 
-export function MessageBubble({ message, onFileView }) {
+/**
+ * patch_plan 전용 말풍선.
+ * source_type='patch_plan'인 어시스턴트 메시지에만 사용한다.
+ * snippet_data.patch_changes 개수와 [전체 반영][보류] 액션 버튼을 표시한다.
+ */
+function PatchPlanBubble({ message, onAcceptPatch, onRejectPatch }) {
+  const [isAccepting, setIsAccepting] = useState(false)
+  const { content, snippet_data } = message
+  const patchCount = snippet_data?.patch_changes?.length ?? 0
+
+  const handleAccept = useCallback(async () => {
+    if (isAccepting) return
+    setIsAccepting(true)
+    try {
+      await onAcceptPatch?.()
+    } finally {
+      setIsAccepting(false)
+    }
+  }, [isAccepting, onAcceptPatch])
+
+  return (
+    <div className="rounded-2xl rounded-bl-sm border border-blue-200 dark:border-blue-700 bg-blue-50/50 dark:bg-blue-900/20 shadow-sm overflow-hidden">
+      {/* 메시지 본문 */}
+      {content && (
+        <div className="px-4 pt-3 pb-2 text-sm text-zinc-800 dark:text-zinc-100 leading-relaxed space-y-1">
+          {renderContent(content)}
+        </div>
+      )}
+
+      {/* 변경사항 수 요약 배지 — patch_changes가 1개 이상일 때만 표시 */}
+      {patchCount > 0 && (
+        <div className="px-4 py-1.5 border-t border-blue-200/60 dark:border-blue-700/60">
+          <span className="text-xs text-blue-600 dark:text-blue-400 font-medium">
+            📝 {patchCount}개 변경사항 준비됨
+          </span>
+        </div>
+      )}
+
+      {/* 전체 반영 / 보류 버튼 */}
+      <div className="px-4 py-2.5 border-t border-blue-200/60 dark:border-blue-700/60 flex gap-2">
+        <button
+          onClick={handleAccept}
+          disabled={isAccepting}
+          className="flex-1 flex items-center justify-center gap-1.5 text-xs font-semibold py-1.5 px-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          {isAccepting && (
+            <span className="w-3 h-3 border border-white border-t-transparent rounded-full animate-spin" />
+          )}
+          전체 반영
+        </button>
+        <button
+          onClick={() => onRejectPatch?.()}
+          disabled={isAccepting}
+          className="flex-1 text-xs font-semibold py-1.5 px-3 rounded-lg border border-zinc-300 dark:border-zinc-600 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          보류
+        </button>
+      </div>
+    </div>
+  )
+}
+
+export function MessageBubble({ message, onFileView, onAcceptPatch, onRejectPatch }) {
   const isUser = message.role === 'user'
   const isPending = message._pending
 
@@ -123,21 +185,30 @@ export function MessageBubble({ message, onFileView }) {
           </div>
         )}
 
-        {/* 말풍선 */}
-        {message.content && (
-          <div className={`rounded-2xl px-4 py-3 text-sm leading-relaxed space-y-1
-            ${isUser
-              ? 'bg-blue-600 text-white rounded-br-sm'
-              : 'bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-800 text-zinc-800 dark:text-zinc-100 rounded-bl-sm shadow-sm'
-            }
-            ${isPending ? 'opacity-60' : ''}
-          `}>
-            {renderContent(message.content)}
-          </div>
+        {/* patch_plan 메시지 — 전체 반영/보류 액션 버튼 말풍선 */}
+        {!isUser && message.source_type === 'patch_plan' ? (
+          <PatchPlanBubble
+            message={message}
+            onAcceptPatch={onAcceptPatch}
+            onRejectPatch={onRejectPatch}
+          />
+        ) : (
+          /* 일반 말풍선 */
+          message.content && (
+            <div className={`rounded-2xl px-4 py-3 text-sm leading-relaxed space-y-1
+              ${isUser
+                ? 'bg-blue-600 text-white rounded-br-sm'
+                : 'bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-800 text-zinc-800 dark:text-zinc-100 rounded-bl-sm shadow-sm'
+              }
+              ${isPending ? 'opacity-60' : ''}
+            `}>
+              {renderContent(message.content)}
+            </div>
+          )
         )}
 
-        {/* Excel 교정 스니펫 카드 (어시스턴트 메시지에만) */}
-        {!isUser && message.has_snippet && message.snippet_data && (
+        {/* Excel 교정 스니펫 카드 (어시스턴트 + patch_plan 아닌 경우에만) */}
+        {!isUser && message.source_type !== 'patch_plan' && message.has_snippet && message.snippet_data && (
           <SnippetCard snippetData={message.snippet_data} onFileView={onFileView} />
         )}
 
