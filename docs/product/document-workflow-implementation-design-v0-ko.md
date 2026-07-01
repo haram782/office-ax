@@ -1,5 +1,7 @@
 # Office-AX 문서 수정 및 업무 흐름 추론 구현 설계 v0
 
+문서 상태: v0 구현 설계 및 장기 workflow inference 배경 문서. 현재 MVP 범위는 `mvp-scope-and-gap-v1-ko.md`, 현재 PatchPlan 계약은 `patch-plan-schema-v0-ko.md`를 우선한다.
+
 ## 1. 목적
 
 이 문서는 `viewer-first-workflow-automation-v0-ko.md`의 제품 방향을 구현 가능한 시스템 설계로 내린다.
@@ -806,4 +808,3 @@ output/delivery -> output
 3. `xlsx-edit-spike-v0-ko.md`
 4. `hwp-anchor-strategy-v0-ko.md`
 5. `workflow-candidate-rules-v0-ko.md`
-

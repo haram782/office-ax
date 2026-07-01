@@ -1,5 +1,7 @@
 # Office-AX Viewer-First Workflow Automation v0
 
+Document status: historical product direction and long-term automation thesis. Use `viewer-first-workflow-automation-v0-ko.md` as the Korean source, and use `mvp-scope-and-gap-v1-ko.md` for the current MVP scope.
+
 ## 1. Product Direction
 
 Office-AX starts as an AI document editing workspace, but its deeper product goal is to infer the user's repeated document workflow and convert it into automation.
@@ -521,4 +523,3 @@ Recommended follow-up docs:
 2. `document-workflow-inference-v0.md`
 3. `hwp-xlsx-viewer-mvp-v0.md`
 4. `automation-candidate-to-pipeline-v0.md`
-

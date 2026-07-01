@@ -1,5 +1,7 @@
 # Office-AX Patch Plan JSON 스키마 v0
 
+문서 상태: 활성 계약 문서. LLM, 백엔드, patcher, 프론트가 공유하는 operation/anchor/patch payload를 바꿀 때 이 문서를 함께 갱신한다.
+
 ## 1. 목적
 
 이 문서는 프롬프트 기반 문서 수정에서 LLM, 백엔드, 문서 patcher, 뷰어가 공유할 중간 계약을 정의한다.
@@ -687,4 +689,3 @@ patcher는 다음을 보장해야 한다.
 - PDF overlay 결과를 제품에서 “수정본”이라 부를지 “검토본”이라 부를지
 - HWP patch worker를 `ax-engine`에 둘지 `backend`에 둘지
 - `@rhwp/core` 서버 사용 시 Node 프로세스 타임아웃/메모리 제한 기준
-

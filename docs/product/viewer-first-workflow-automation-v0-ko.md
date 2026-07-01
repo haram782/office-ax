@@ -1,5 +1,7 @@
 # Office-AX 뷰어 중심 문서 업무 자동화 v0
 
+문서 상태: 초기 제품 방향과 장기 자동화 가설 문서. 현재 MVP 구현 범위는 `mvp-scope-and-gap-v1-ko.md`를 우선한다.
+
 ## 1. 제품 방향
 
 Office-AX는 처음에는 AI 문서 수정 워크스페이스처럼 보이지만, 더 깊은 목표는 사용자의 반복되는 문서 업무 흐름을 추론하고 자동화로 전환하는 것이다.
@@ -521,4 +523,3 @@ workspace에서 업무 단위 이벤트를 기록하기 시작한다.
 2. `document-workflow-inference-v0.md`
 3. `hwp-xlsx-viewer-mvp-v0.md`
 4. `automation-candidate-to-pipeline-v0.md`
-

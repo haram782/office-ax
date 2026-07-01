@@ -1,5 +1,7 @@
 # Office-AX 문서 양식 수정 AX v1
 
+문서 상태: v1 POC 배경 문서. XLSX `set_cell_style`과 양식 수정의 제품/기술 가설을 설명하며, 현재 MVP 전체 범위는 `mvp-scope-and-gap-v1-ko.md`를 우선한다.
+
 ## 1. 문서의 위치
 
 이 문서는 기존 v0 기획 위에 이어지는 v1 제품 기획이다.
