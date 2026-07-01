@@ -35,6 +35,10 @@ function _anchorKey(anchor) {
     case 'cell':
       // 셀 주소(시트 포함)가 같으면 동일 항목으로 간주
       return `cell:${anchor.sheet ?? ''}:${anchor.cell ?? ''}`
+    case 'cell_range':
+      // set_cell_style 등 range anchor — 같은 시트+range면 동일 항목으로 간주.
+      // range overlap 판정(A1:D1 vs B1:C1)은 v1 POC 범위 밖이라 exact match만 본다.
+      return `cell_range:${anchor.sheet ?? ''}:${anchor.range ?? ''}`
     case 'text_match':
       return `text:${anchor.target_text ?? ''}`
     case 'slide_shape':
@@ -86,6 +90,9 @@ function _fromPatchChange(c, index, inferredFormat) {
     source:      'patch_changes',
     format:      c.format                       ?? inferredFormat,
     target:      c.target                       ?? 'unknown',
+    // operation은 BE DocumentChange.operation 원본값(예: replace_cell, set_cell_style)을 그대로 보존한다.
+    // changeType은 카드 타입 레이블용 폴백 분류이고, operation은 카드가 diff/스타일 요약을 분기할 때 사용한다.
+    operation:   c.operation                    ?? '',
     changeType:  c.changeType   ?? c.kind       ?? 'patch',
     severity:    c.severity                     ?? 'info',
     status:      c.status                       ?? 'pending',
@@ -94,6 +101,8 @@ function _fromPatchChange(c, index, inferredFormat) {
     replacement: c.replacement  ?? c.corrected  ?? '',
     reason:      c.reason       ?? c.summary    ?? '',
     anchor:      c.anchor                       ?? { type: 'unknown' },
+    // set_cell_style 등 operation별 patcher 지시값. ChangeSuggestionCard가 스타일 요약 표시에 사용한다.
+    patch:       c.patch                        ?? {},
     // patch_changes는 항상 BE의 DocumentChange PK를 id 필드로 가진다
     changeDbId:  c.id                           ?? null,
   }

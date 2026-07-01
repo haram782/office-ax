@@ -19,10 +19,31 @@ import io
 import json
 import logging
 import os
+import re
 import subprocess
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
+
+
+# ── set_cell_style 상수 (document-format-editing-ax-v1-ko.md 7절 기준) ───────────
+
+# 1차 구현은 최대 200셀까지만 허용한다 (anchor.range 검증 시 사용).
+_STYLE_MAX_RANGE_CELLS = 200
+
+# patch에 허용된 키. expected_context는 DB 저장 시 patch에 병합되므로 함께 허용한다.
+_STYLE_ALLOWED_PATCH_KEYS = {
+    "font_bold",
+    "fill_color",
+    "horizontal_alignment",
+    "vertical_alignment",
+    "border",
+    "expected_context",
+}
+_STYLE_HORIZONTAL_ALIGNMENTS = {"left", "center", "right"}
+_STYLE_VERTICAL_ALIGNMENTS = {"top", "center", "bottom"}
+_STYLE_BORDER_STYLES = {"thin", "medium", "none"}
+_STYLE_FILL_COLOR_RE = re.compile(r"^[0-9A-Fa-f]{6}$")
 
 
 # ── 공용 결과 타입 ─────────────────────────────────────────────────────────────
@@ -65,6 +86,10 @@ def render_xlsx(original_bytes: bytes, changes: list) -> PatchResult:
     replace_cell operation: anchor.sheet / anchor.cell 으로 셀을 특정하고
     original과 실제 값이 일치하면 replacement로 교체한다.
     불일치·시트 없음 → failed_items에 기록.
+
+    set_cell_style operation: anchor.sheet / anchor.range(cell_range)로 영역을 특정하고
+    expected_context 검증 통과 시 patch whitelist 필드만 적용한다.
+    검증 실패 → failed_items에 기록 (document-format-editing-ax-v1-ko.md 7-8절 기준).
     """
     import openpyxl
 
@@ -82,6 +107,35 @@ def render_xlsx(original_bytes: bytes, changes: list) -> PatchResult:
     failed_items: list[dict] = []
 
     for change in changes:
+        if change.operation == "set_cell_style":
+            # validate/apply 내부에서 예상치 못한 예외(예: 잘못된 셀 참조 파싱)가 나더라도
+            # caller로 전파하지 않고 failed_items로 변환한다 (모듈 상단 render_* 규칙).
+            try:
+                error = validate_xlsx_style_change(wb, change)
+            except Exception as exc:
+                error = f"검증 중 예외 발생: {exc}"
+            if error is not None:
+                failed_items.append({"operation_id": change.operation_id, "reason": error})
+                logger.warning(
+                    "render_xlsx: set_cell_style 검증 실패 | op=%s | reason=%s",
+                    change.operation_id, error,
+                )
+                continue
+            try:
+                apply_xlsx_cell_style(wb, change)
+            except Exception as exc:
+                failed_items.append({
+                    "operation_id": change.operation_id,
+                    "reason": f"적용 중 예외 발생: {exc}",
+                })
+                logger.warning(
+                    "render_xlsx: set_cell_style 적용 실패 | op=%s | exc=%s",
+                    change.operation_id, exc,
+                )
+                continue
+            applied_ids.append(change.operation_id)
+            continue
+
         sheet_name = change.anchor.get("sheet", "")
         cell_ref = change.anchor.get("cell", "")
 
@@ -116,6 +170,190 @@ def render_xlsx(original_bytes: bytes, changes: list) -> PatchResult:
     output = io.BytesIO()
     wb.save(output)
     return PatchResult(output.getvalue(), applied_ids, failed_items)
+
+
+def validate_xlsx_style_change(wb, change) -> str | None:
+    """
+    set_cell_style change를 검증한다. 통과 시 None, 실패 시 실패 사유 문자열을 반환한다.
+
+    검증 순서: 시트 존재 → range 문법/크기 → patch whitelist → expected_context 존재·셀 참조 →
+    sample_values/non_empty_cells 실값 대조.
+
+    expected_context는 서식 변경이 엉뚱한 영역에 적용되는 것을 막는 유일한 안전장치이므로
+    (document-format-editing-ax-v1-ko.md 3.3절) 누락·빈 값이면 무조건 실패시킨다.
+    """
+    from openpyxl.utils.cell import range_boundaries
+
+    sheet_name = change.anchor.get("sheet", "")
+    range_ref = change.anchor.get("range", "")
+
+    if sheet_name not in wb.sheetnames:
+        return f"시트 없음: {sheet_name}"
+
+    try:
+        min_col, min_row, max_col, max_row = range_boundaries(range_ref)
+        if min_col is None or min_row is None or max_col is None or max_row is None:
+            raise ValueError("range_boundaries가 None을 반환")
+    except (ValueError, TypeError, AttributeError):
+        return f"range 문법 오류: {range_ref!r}"
+
+    cell_count = (max_col - min_col + 1) * (max_row - min_row + 1)
+    if cell_count > _STYLE_MAX_RANGE_CELLS:
+        return f"range가 너무 큼: {cell_count}셀 (최대 {_STYLE_MAX_RANGE_CELLS}셀)"
+
+    patch = change.patch or {}
+    whitelist_error = _validate_xlsx_style_patch_whitelist(patch)
+    if whitelist_error is not None:
+        return whitelist_error
+
+    expected_context = patch.get("expected_context")
+    context_error = _validate_xlsx_style_expected_context(
+        expected_context, min_col, min_row, max_col, max_row,
+    )
+    if context_error is not None:
+        return context_error
+
+    ws = wb[sheet_name]
+    sample_values = expected_context.get("sample_values")
+    for cell_ref, expected_value in sample_values.items():
+        actual = ws[cell_ref].value
+        actual_str = str(actual) if actual is not None else ""
+        if actual_str != str(expected_value):
+            return f"sample_value 불일치: {cell_ref} expected={expected_value!r} actual={actual_str!r}"
+
+    non_empty_cells = expected_context.get("non_empty_cells")
+    for cell_ref in non_empty_cells:
+        if ws[cell_ref].value in (None, ""):
+            return f"필수 셀이 비어 있음: {cell_ref}"
+
+    return None
+
+
+def _validate_xlsx_style_expected_context(
+    expected_context, min_col: int, min_row: int, max_col: int, max_row: int,
+) -> str | None:
+    """
+    expected_context 존재 여부와 형식, 그리고 모든 셀 참조가 유효한 A1 단일 셀이면서
+    anchor.range 내부에 있는지 검증한다. set_cell_style은 expected_context 없이 적용할 수 없다.
+    """
+    if not isinstance(expected_context, dict) or not expected_context:
+        return "expected_context가 필요합니다 (set_cell_style은 검증 없이 적용할 수 없음)"
+
+    sample_values = expected_context.get("sample_values")
+    non_empty_cells = expected_context.get("non_empty_cells")
+    if not sample_values or not non_empty_cells:
+        return "expected_context에는 sample_values와 non_empty_cells가 모두 필요합니다"
+
+    if not isinstance(sample_values, dict):
+        return f"sample_values는 객체여야 함: {sample_values!r}"
+    if not isinstance(non_empty_cells, list):
+        return f"non_empty_cells는 배열이어야 함: {non_empty_cells!r}"
+
+    all_refs = list(sample_values.keys()) + list(non_empty_cells)
+    for cell_ref in all_refs:
+        ref_error = _validate_xlsx_style_context_cell_ref(cell_ref, min_col, min_row, max_col, max_row)
+        if ref_error is not None:
+            return ref_error
+
+    return None
+
+
+def _validate_xlsx_style_context_cell_ref(
+    cell_ref, min_col: int, min_row: int, max_col: int, max_row: int,
+) -> str | None:
+    """단일 A1 셀 참조 문법인지, anchor.range 내부 좌표인지 검증한다."""
+    from openpyxl.utils.cell import coordinate_to_tuple
+
+    if not isinstance(cell_ref, str):
+        return f"expected_context 셀 참조는 문자열이어야 함: {cell_ref!r}"
+
+    try:
+        row, col = coordinate_to_tuple(cell_ref)
+    except (ValueError, TypeError, AttributeError, KeyError):
+        return f"expected_context 셀 참조 오류: {cell_ref!r}"
+
+    if not (min_row <= row <= max_row and min_col <= col <= max_col):
+        return f"expected_context 셀이 anchor.range 밖에 있음: {cell_ref!r}"
+
+    return None
+
+
+def _validate_xlsx_style_patch_whitelist(patch: dict) -> str | None:
+    """patch에 허용되지 않은 키나 값이 있으면 실패 사유를 반환한다."""
+    unknown_keys = set(patch.keys()) - _STYLE_ALLOWED_PATCH_KEYS
+    if unknown_keys:
+        return f"허용되지 않은 patch 필드: {sorted(unknown_keys)}"
+
+    font_bold = patch.get("font_bold")
+    if font_bold is not None and not isinstance(font_bold, bool):
+        return f"font_bold는 boolean이어야 함: {font_bold!r}"
+
+    fill_color = patch.get("fill_color")
+    if fill_color is not None:
+        if not isinstance(fill_color, str) or not _STYLE_FILL_COLOR_RE.match(fill_color):
+            return f"fill_color 형식 오류 (RRGGBB 6자리 필요): {fill_color!r}"
+
+    h_align = patch.get("horizontal_alignment")
+    if h_align is not None and h_align not in _STYLE_HORIZONTAL_ALIGNMENTS:
+        return f"horizontal_alignment 허용값 아님: {h_align!r}"
+
+    v_align = patch.get("vertical_alignment")
+    if v_align is not None and v_align not in _STYLE_VERTICAL_ALIGNMENTS:
+        return f"vertical_alignment 허용값 아님: {v_align!r}"
+
+    border = patch.get("border")
+    if border is not None and border not in _STYLE_BORDER_STYLES:
+        return f"border 허용값 아님: {border!r}"
+
+    return None
+
+
+def apply_xlsx_cell_style(wb, change) -> None:
+    """
+    검증을 통과한 set_cell_style change를 워크북에 적용한다.
+
+    기존 스타일 객체는 immutable에 가깝게 다뤄야 하므로, 허용 필드만 덮어쓴 새
+    Font/Fill/Alignment/Border 객체를 만들어 대입한다(8.4절 권장 방식).
+    fill_color는 6자리 RRGGBB를 그대로 넘기면 openpyxl이 alpha=00으로 저장해
+    배경색이 보이지 않을 수 있으므로, 적용 직전 "FF" ARGB prefix를 붙인다.
+    """
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils.cell import range_boundaries
+
+    ws = wb[change.anchor["sheet"]]
+    min_col, min_row, max_col, max_row = range_boundaries(change.anchor["range"])
+    patch = change.patch or {}
+
+    font_bold = patch.get("font_bold")
+    fill_color = patch.get("fill_color")
+    h_align = patch.get("horizontal_alignment")
+    v_align = patch.get("vertical_alignment")
+    border_style = patch.get("border")
+
+    fill = PatternFill(fgColor=f"FF{fill_color}", fill_type="solid") if fill_color is not None else None
+    side = Side(style=border_style) if border_style not in (None, "none") else None
+
+    for row in ws.iter_rows(min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col):
+        for cell in row:
+            if font_bold is not None:
+                cell.font = Font(
+                    name=cell.font.name,
+                    size=cell.font.sz,
+                    bold=font_bold,
+                    italic=cell.font.italic,
+                    color=cell.font.color,
+                )
+            if fill is not None:
+                cell.fill = fill
+            if h_align is not None or v_align is not None:
+                cell.alignment = Alignment(
+                    horizontal=h_align or cell.alignment.horizontal,
+                    vertical=v_align or cell.alignment.vertical,
+                )
+            if border_style is not None:
+                cell.border = Border() if border_style == "none" else Border(
+                    left=side, right=side, top=side, bottom=side,
+                )
 
 
 def render_docx(original_bytes: bytes, changes: list) -> PatchResult:

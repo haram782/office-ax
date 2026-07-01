@@ -501,6 +501,90 @@ test('반환된 suggestion을 수정해도 원본 snippetData에 영향을 주�
   assert.equal(c.cell, 'A1')
 })
 
+// ── set_cell_style patch_changes 변환 (v1 XLSX style POC) ───────────────────────
+
+console.log('\n[set_cell_style patch_changes 변환]')
+
+test('set_cell_style의 operation 필드가 보존된다', () => {
+  const snippetData = {
+    patch_changes: [{
+      id: 500, operation_id: 'op_style_1', format: 'xlsx', operation: 'set_cell_style',
+      title: '표 헤더 서식 정리', original: '', replacement: '',
+      anchor: { type: 'cell_range', sheet: 'Sheet1', range: 'A1:D1' },
+      patch: { font_bold: true, fill_color: 'D9EAF7' },
+    }],
+  }
+  const [s] = deriveChangeSuggestions(snippetData)
+  assert.equal(s.operation, 'set_cell_style')
+})
+
+test('set_cell_style의 patch 객체가 보존된다', () => {
+  const snippetData = {
+    patch_changes: [{
+      id: 501, operation_id: 'op_style_2', format: 'xlsx', operation: 'set_cell_style',
+      anchor: { type: 'cell_range', sheet: 'Sheet1', range: 'A1:D1' },
+      patch: { font_bold: true, fill_color: 'D9EAF7', horizontal_alignment: 'center', border: 'thin' },
+    }],
+  }
+  const [s] = deriveChangeSuggestions(snippetData)
+  assert.deepEqual(s.patch, { font_bold: true, fill_color: 'D9EAF7', horizontal_alignment: 'center', border: 'thin' })
+})
+
+test('patch가 없는 patch_changes 항목은 빈 객체로 폴백한다', () => {
+  const snippetData = {
+    patch_changes: [{ id: 502, operation_id: 'op_replace', original: 'a', replacement: 'b', anchor: { type: 'cell', cell: 'A1', sheet: '' } }],
+  }
+  const [s] = deriveChangeSuggestions(snippetData)
+  assert.deepEqual(s.patch, {})
+})
+
+test('operation이 없는 patch_changes 항목(예: replace_cell 레거시 응답)은 빈 문자열로 폴백한다', () => {
+  const snippetData = {
+    patch_changes: [{ id: 503, operation_id: 'op_legacy', original: 'a', replacement: 'b', anchor: { type: 'cell', cell: 'A1', sheet: '' } }],
+  }
+  const [s] = deriveChangeSuggestions(snippetData)
+  assert.equal(s.operation, '')
+})
+
+test('cell_range anchor가 그대로 보존된다', () => {
+  const snippetData = {
+    patch_changes: [{
+      id: 504, operation_id: 'op_style_3', operation: 'set_cell_style',
+      anchor: { type: 'cell_range', sheet: 'Sheet1', range: 'A1:D1' },
+      patch: { font_bold: true },
+    }],
+  }
+  const [s] = deriveChangeSuggestions(snippetData)
+  assert.equal(s.anchor.type, 'cell_range')
+  assert.equal(s.anchor.sheet, 'Sheet1')
+  assert.equal(s.anchor.range, 'A1:D1')
+})
+
+test('동일 시트+range의 set_cell_style 두 건은 중복 제거된다(우선 항목만 유지)', () => {
+  const snippetData = {
+    patch_changes: [
+      { id: 600, operation_id: 'op_a', operation: 'set_cell_style', anchor: { type: 'cell_range', sheet: 'Sheet1', range: 'A1:D1' }, patch: { font_bold: true } },
+    ],
+    edit_suggestions: [
+      { id: 'es-dup', anchor: { type: 'cell_range', sheet: 'Sheet1', range: 'A1:D1' }, original: '', replacement: '' },
+    ],
+  }
+  const result = deriveChangeSuggestions(snippetData)
+  assert.equal(result.length, 1)
+  assert.equal(result[0].source, 'patch_changes')
+})
+
+test('다른 range를 가진 cell_range는 모두 포함된다', () => {
+  const snippetData = {
+    patch_changes: [
+      { id: 601, operation_id: 'op_b1', operation: 'set_cell_style', anchor: { type: 'cell_range', sheet: 'Sheet1', range: 'A1:D1' }, patch: {} },
+      { id: 602, operation_id: 'op_b2', operation: 'set_cell_style', anchor: { type: 'cell_range', sheet: 'Sheet1', range: 'A2:D2' }, patch: {} },
+    ],
+  }
+  const result = deriveChangeSuggestions(snippetData)
+  assert.equal(result.length, 2)
+})
+
 // ── 결과 출력 ──────────────────────────────────────────────────────────────────
 
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed\n`)
