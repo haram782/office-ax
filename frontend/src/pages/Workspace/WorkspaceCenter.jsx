@@ -34,10 +34,11 @@ export function WorkspaceCenter({
   }, [onPatchDataChange])
 
   // 로컬 patch_changes가 있으면 snippetData에 합성, 없으면 원본 그대로
+  // base가 null(HWP 등 corrections 없는 파일)이어도 localPatchData는 반영해야 한다
   const effectiveSnippetData = useMemo(() => {
     const base = previewData?.snippetData ?? null
-    if (!localPatchData || !base) return base
-    return { ...base, patch_changes: localPatchData.patch_changes, version_id: localPatchData.version_id }
+    if (!localPatchData) return base
+    return { ...(base ?? {}), patch_changes: localPatchData.patch_changes, version_id: localPatchData.version_id }
   }, [previewData?.snippetData, localPatchData])
 
   // uploadId: previewData.id (upload_log.id)
