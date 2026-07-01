@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, forwardRef, useImperativeHandle } from 'react'
 
 const _ICON_MAP = { xlsx: '📊', xls: '📊', csv: '📋', pdf: '📄', docx: '📝', doc: '📝', pptx: '📑', hwp: '📄', hwpx: '📄', png: '🖼', jpg: '🖼', jpeg: '🖼', webp: '🖼', gif: '🖼' }
 function chipIcon(name) {
@@ -6,11 +6,23 @@ function chipIcon(name) {
   return _ICON_MAP[ext] ?? '🗂'
 }
 
-export function ChatInput({ onSend, isProcessing }) {
+/**
+ * 채팅 입력 컴포넌트.
+ *
+ * ref를 통해 focus() 메서드를 노출한다 — [보류] 버튼 후 포커스 이동에 사용.
+ *
+ * @param {boolean} [disabled=false] - true이면 파일 미선택 등 외부 조건으로 입력을 막는다.
+ */
+export const ChatInput = forwardRef(function ChatInput({ onSend, isProcessing, disabled = false, onFocus }, ref) {
   const [text, setText] = useState('')
   const [files, setFiles] = useState([])
   const fileInputRef = useRef(null)
   const textareaRef = useRef(null)
+
+  // 외부에서 programmatic focus 가능하도록 노출 ([보류] 후 입력창 이동)
+  useImperativeHandle(ref, () => ({
+    focus: () => textareaRef.current?.focus(),
+  }))
 
   // textarea 높이 자동 조절
   useEffect(() => {
@@ -20,7 +32,8 @@ export function ChatInput({ onSend, isProcessing }) {
     el.style.height = `${Math.min(el.scrollHeight, 128)}px`
   }, [text])
 
-  const canSend = (text.trim() || files.length > 0) && !isProcessing
+  // disabled=true(파일 미선택) 또는 처리 중이면 전송 불가
+  const canSend = (text.trim() || files.length > 0) && !isProcessing && !disabled
 
   const handleSend = () => {
     if (!canSend) return
@@ -79,7 +92,7 @@ export function ChatInput({ onSend, isProcessing }) {
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          disabled={isProcessing}
+          disabled={isProcessing || disabled}
           className="flex-shrink-0 p-2.5 rounded-xl text-gray-400 dark:text-zinc-500 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-zinc-800 disabled:opacity-40 transition-colors"
           title="파일 첨부 (xlsx·xls·csv·pdf·docx·pptx·hwp·hwpx·png·jpg) — 여러 개 선택 가능"
         >
@@ -102,9 +115,10 @@ export function ChatInput({ onSend, isProcessing }) {
           value={text}
           onChange={e => setText(e.target.value)}
           onKeyDown={handleKeyDown}
+          onFocus={onFocus}
           placeholder="메시지를 입력하세요…"
           rows={1}
-          disabled={isProcessing}
+          disabled={isProcessing || disabled}
           className="flex-1 resize-none rounded-xl border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800 px-3.5 py-2.5 text-sm text-gray-800 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500
             focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 focus:bg-white dark:focus:bg-zinc-700
             disabled:opacity-50 transition-all scroll-on-hover"
@@ -131,4 +145,4 @@ export function ChatInput({ onSend, isProcessing }) {
       </div>
     </div>
   )
-}
+})

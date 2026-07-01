@@ -46,6 +46,37 @@ export default function Workspace() {
   // 자동화 배너
   const [showBanner, setShowBanner] = useState(false)
 
+  // ── 채팅 patch_plan 연동 ────────────────────────────────────────────────────
+  // PatchRequestInput 또는 채팅 patch_plan 메시지로부터 받은 patch 데이터
+  // WorkspaceCenter 내부에서 관리하던 것을 채팅 연동을 위해 여기서 관리한다
+  const [localPatchData, setLocalPatchData] = useState(null)
+
+  // WorkspaceCenter가 마운트될 때 handleAcceptAll 함수를 등록하는 ref
+  // 채팅 [전체 반영] 클릭 시 우측 패널과 동일한 acceptAll 로직을 실행한다
+  const acceptAllFnRef = useRef(null)
+  const handleAcceptAllReady = useCallback((fn) => {
+    acceptAllFnRef.current = fn
+  }, [])
+  const handleChatAcceptAll = useCallback(async () => {
+    await acceptAllFnRef.current?.()
+  }, [])
+
+  // 파일 전환 시 localPatchData 초기화 — 다른 파일의 patch 데이터가 남지 않도록
+  useEffect(() => {
+    setLocalPatchData(null)
+  }, [viewingFileId])
+
+  // 최신 source_type='patch_plan' 메시지 감지 → localPatchData 자동 설정
+  // BE가 채팅 응답으로 patch_plan을 반환하면 우측 패널에 즉시 반영한다
+  useEffect(() => {
+    const last = [...messages].reverse().find(m => m.source_type === 'patch_plan' && m.snippet_data)
+    if (!last) return
+    const pd = last.snippet_data
+    if (Array.isArray(pd?.patch_changes)) {
+      setLocalPatchData({ version_id: pd.version_id ?? null, patch_changes: pd.patch_changes })
+    }
+  }, [messages])
+
   // 새 대화 생성 — sessions 맵에 추가하고 뷰어 초기화
   const handleNewConversation = useCallback(() => {
     createSession()
@@ -115,6 +146,9 @@ export default function Workspace() {
             onCloseViewer={() => setViewingFileId(null)}
             showBanner={showBanner}
             onDismissBanner={() => setShowBanner(false)}
+            localPatchData={localPatchData}
+            onPatchDataChange={setLocalPatchData}
+            onAcceptAllReady={handleAcceptAllReady}
           />
         ) : (
           <div className="flex-1 bg-zinc-100 dark:bg-zinc-950" />
@@ -127,6 +161,8 @@ export default function Workspace() {
           error={error}
           onSend={sendMessage}
           onFileView={setViewingFileId}
+          uploadId={previewData?.id ?? null}
+          onChatAcceptAll={handleChatAcceptAll}
           ragTone={ragTone}
           ragForm={ragForm}
           onRagToneChange={setRagTone}

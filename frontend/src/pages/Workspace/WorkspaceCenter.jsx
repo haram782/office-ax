@@ -22,15 +22,16 @@ export function WorkspaceCenter({
   onCloseViewer,
   showBanner,
   onDismissBanner,
+  // 채팅 patch_plan 메시지 또는 PatchRequestInput 성공 결과를 부모에서 관리하는 상태
+  localPatchData,
+  onPatchDataChange,
+  // 채팅 [전체 반영] 버튼이 handleAcceptAll을 호출할 수 있도록 부모에 함수를 등록
+  onAcceptAllReady,
 }) {
-  // generatePatchPlan 성공 시 받은 patch_changes + version_id를 로컬에 보관
-  // previewData.snippetData에 overlay해서 useChangeSuggestions에 전달한다
-  const [localPatchData, setLocalPatchData] = useState(null)
-
-  // onSuccess: version_id + changes를 로컬 상태에 저장
+  // onSuccess: PatchRequestInput에서 호출 — version_id + changes를 부모 상태에 저장
   const handlePatchPlanSuccess = useCallback((data) => {
-    setLocalPatchData({ version_id: data.version_id, patch_changes: data.changes ?? [] })
-  }, [])
+    onPatchDataChange?.({ version_id: data.version_id, patch_changes: data.changes ?? [] })
+  }, [onPatchDataChange])
 
   // 로컬 patch_changes가 있으면 snippetData에 합성, 없으면 원본 그대로
   const effectiveSnippetData = useMemo(() => {
@@ -58,6 +59,12 @@ export function WorkspaceCenter({
     handleAcceptAll,
     handleSelectHighlight,
   } = useChangeSuggestions(effectiveSnippetData, uploadId, versionId)
+
+  // 채팅 [전체 반영] 버튼이 우측 패널과 동일한 handleAcceptAll을 호출할 수 있도록 부모에 등록
+  // handleAcceptAll이 바뀔 때마다 최신 참조를 전달한다
+  useEffect(() => {
+    onAcceptAllReady?.(handleAcceptAll)
+  }, [onAcceptAllReady, handleAcceptAll])
 
   const { patchStatus, trigger } = usePatchTrigger(uploadId, versionId)
 
