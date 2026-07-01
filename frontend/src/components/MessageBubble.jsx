@@ -106,7 +106,8 @@ function SnippetCard({ snippetData, onFileView }) {
 function PatchPlanBubble({ message, onAcceptPatch, onRejectPatch }) {
   const [isAccepting, setIsAccepting] = useState(false)
   const { content, snippet_data } = message
-  const patchCount = snippet_data?.patch_changes?.length ?? 0
+  // BE는 snippet_data.changes로 저장 — patch_changes는 구버전 키
+  const patchCount = (snippet_data?.changes ?? snippet_data?.patch_changes)?.length ?? 0
 
   const handleAccept = useCallback(async () => {
     if (isAccepting) return

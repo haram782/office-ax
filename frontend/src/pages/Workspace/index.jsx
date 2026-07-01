@@ -72,8 +72,10 @@ export default function Workspace() {
     const last = [...messages].reverse().find(m => m.snippet_data?.type === 'patch_plan')
     if (!last) return
     const pd = last.snippet_data
-    if (Array.isArray(pd?.patch_changes)) {
-      setLocalPatchData({ version_id: pd.version_id ?? null, patch_changes: pd.patch_changes })
+    // BE는 snippet_data.changes로 저장 — patch_changes는 구버전 키
+    const changes = pd?.changes ?? pd?.patch_changes
+    if (Array.isArray(changes)) {
+      setLocalPatchData({ version_id: pd.version_id ?? null, patch_changes: changes })
     }
   }, [messages])
 
