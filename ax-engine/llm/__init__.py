@@ -4,6 +4,7 @@ from .openai_client import OpenAIClient
 from .anthropic_client import AnthropicClient
 from .mock_client import MockLLMClient
 from .gemini_client import GeminiClient
+from .claude_cli_client import ClaudeCodeCLIClient
 from .ensemble_client import EnsembleClient
 
 __all__ = [
@@ -19,6 +20,8 @@ _REGISTRY: dict[str, type[BaseLLMClient]] = {
     "anthropic": AnthropicClient,
     "mock": MockLLMClient,
     "gemini": GeminiClient,
+    # 로컬 개발 전용 — Claude Code Pro 플랜 구독으로 API 과금 없이 사용
+    "claude_cli": ClaudeCodeCLIClient,
     "ensemble": EnsembleClient,
 }
 
