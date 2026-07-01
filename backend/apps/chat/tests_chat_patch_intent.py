@@ -4,8 +4,8 @@
 검증하는 흐름:
   1. 채팅 뷰가 upload_id를 text_chat 태스크에 전달한다.
   2. notify_chat_response가 type="patch_intent" 결과를 받으면
-     PatchPlanService.generate()를 호출한다.
-  3. 생성된 DocumentVersion/DocumentChange가 DB에 저장된다.
+     ax-engine tasks.generate_patch_plan을 enqueue한다.
+  3. notify_patch_plan_generated 콜백이 생성된 PatchPlan을 저장한다.
   4. 어시스턴트 ChatMessage가 type="patch_plan" snippet_data로 저장된다.
 
 4가지 관점:
@@ -23,7 +23,7 @@ from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from apps.chat.models import ChatMessage, ChatSession
-from apps.chat.tasks import notify_chat_response
+from apps.chat.tasks import notify_chat_response, notify_patch_plan_generated
 from apps.documents.models import (
     DocumentChange,
     DocumentVersion,
@@ -122,7 +122,7 @@ _MOCK_PATCH_PLAN = {
 class ChatPatchIntentHappyPathTest(TestCase):
     """
     type="patch_intent" 결과를 받으면
-    PatchPlanService.generate()를 호출해 DocumentVersion과 ChatMessage를 생성한다.
+    ax-engine PatchPlan 태스크를 enqueue하고, 완료 콜백에서 DB 저장을 수행한다.
     """
 
     def setUp(self):
@@ -131,9 +131,9 @@ class ChatPatchIntentHappyPathTest(TestCase):
         self.upload = _make_done_upload(self.user)
         self.user_msg = _make_user_message(self.session, upload_log=self.upload)
 
-    @patch("apps.documents.services.patch_plan._generate_patch_plan", return_value=_MOCK_PATCH_PLAN)
-    def test_patch_intent_creates_document_version(self, _mock_llm):
-        """patch_intent 결과 수신 시 DocumentVersion(draft)이 생성된다."""
+    @patch("apps.chat.tasks.current_app.send_task")
+    def test_patch_intent_enqueues_generate_patch_plan_task(self, mock_send_task):
+        """patch_intent 결과 수신 시 ax-engine PatchPlan 태스크가 enqueue된다."""
         result = {
             "type": "patch_intent",
             "refined_prompt": "A2 셀 날짜를 2026-01-01로 교체",
@@ -145,27 +145,33 @@ class ChatPatchIntentHappyPathTest(TestCase):
 
         notify_chat_response(self.user_msg.pk, result)
 
-        self.assertTrue(
+        mock_send_task.assert_called_once()
+        self.assertEqual(mock_send_task.call_args.args[0], "tasks.generate_patch_plan")
+        kwargs = mock_send_task.call_args.kwargs["kwargs"]
+        self.assertEqual(kwargs["prompt"], "A2 셀 날짜를 2026-01-01로 교체")
+        self.assertEqual(kwargs["callback_task"], "chat.notify_patch_plan_generated")
+        self.assertEqual(kwargs["callback_kwargs"]["upload_id"], self.upload.pk)
+        self.assertEqual(
+            mock_send_task.call_args.kwargs["queue"],
+            "ax",
+            "PatchPlan LLM 호출은 ax-engine 큐로 보내야 한다",
+        )
+        self.assertFalse(
             DocumentVersion.objects.filter(
                 upload_log=self.upload,
                 status=DocumentVersion.Status.DRAFT,
             ).exists(),
-            "patch_intent 수신 시 draft DocumentVersion이 생성되어야 한다",
+            "enqueue 단계에서는 아직 draft DocumentVersion이 생성되면 안 된다",
         )
 
-    @patch("apps.documents.services.patch_plan._generate_patch_plan", return_value=_MOCK_PATCH_PLAN)
-    def test_patch_intent_creates_document_changes(self, _mock_llm):
-        """생성된 DocumentVersion에 DocumentChange 행이 저장된다."""
-        result = {
-            "type": "patch_intent",
-            "refined_prompt": "A2 셀 날짜 교체",
-            "upload_id": self.upload.pk,
-            "summary": "",
-            "errors": [],
-            "source_type": "chat",
-        }
-
-        notify_chat_response(self.user_msg.pk, result)
+    def test_patch_plan_callback_creates_document_changes(self):
+        """ax-engine 콜백 수신 시 DocumentVersion과 DocumentChange가 저장된다."""
+        notify_patch_plan_generated(
+            chat_message_id=self.user_msg.pk,
+            upload_id=self.upload.pk,
+            prompt="A2 셀 날짜 교체",
+            result=_MOCK_PATCH_PLAN,
+        )
 
         version = DocumentVersion.objects.get(
             upload_log=self.upload, status=DocumentVersion.Status.DRAFT
@@ -176,19 +182,14 @@ class ChatPatchIntentHappyPathTest(TestCase):
             "operation 1건 → DocumentChange 1개가 생성되어야 한다",
         )
 
-    @patch("apps.documents.services.patch_plan._generate_patch_plan", return_value=_MOCK_PATCH_PLAN)
-    def test_patch_intent_creates_assistant_message_with_patch_plan_snippet(self, _mock_llm):
-        """어시스턴트 ChatMessage가 type='patch_plan' snippet_data로 저장된다."""
-        result = {
-            "type": "patch_intent",
-            "refined_prompt": "A2 셀 날짜 교체",
-            "upload_id": self.upload.pk,
-            "summary": "",
-            "errors": [],
-            "source_type": "chat",
-        }
-
-        notify_chat_response(self.user_msg.pk, result)
+    def test_patch_plan_callback_creates_assistant_message_with_patch_plan_snippet(self):
+        """완료 콜백이 type='patch_plan' snippet_data를 가진 어시스턴트 메시지를 저장한다."""
+        notify_patch_plan_generated(
+            chat_message_id=self.user_msg.pk,
+            upload_id=self.upload.pk,
+            prompt="A2 셀 날짜 교체",
+            result=_MOCK_PATCH_PLAN,
+        )
 
         assistant_msg = ChatMessage.objects.filter(
             session=self.session,
@@ -205,6 +206,27 @@ class ChatPatchIntentHappyPathTest(TestCase):
         self.assertIn("version_id", assistant_msg.snippet_data)
         self.assertIn("changes", assistant_msg.snippet_data)
         self.assertIsNotNone(assistant_msg.snippet_data.get("version_id"))
+
+    @patch("apps.chat.tasks.current_app.send_task", side_effect=RuntimeError("redis down"))
+    def test_patch_intent_enqueue_failure_creates_error_message(self, _mock_send_task):
+        """ax-engine enqueue 실패 시 태스크 예외 대신 오류 어시스턴트 메시지를 남긴다."""
+        result = {
+            "type": "patch_intent",
+            "refined_prompt": "A2 셀 날짜 교체",
+            "upload_id": self.upload.pk,
+            "summary": "",
+            "errors": [],
+            "source_type": "chat",
+        }
+
+        notify_chat_response(self.user_msg.pk, result)
+
+        assistant_msg = ChatMessage.objects.filter(
+            session=self.session,
+            role=ChatMessage.Role.ASSISTANT,
+        ).last()
+        self.assertIsNotNone(assistant_msg)
+        self.assertIn("시작하지 못했습니다", assistant_msg.content)
 
 
 # ── boundary ─────────────────────────────────────────────────────────────────

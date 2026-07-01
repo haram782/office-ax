@@ -6,10 +6,12 @@ documents/views.py(GeneratePatchPlanView)와 chat/tasks.py(notify_chat_response)
 """
 from __future__ import annotations
 
-import json
 import os
 from datetime import datetime
 from uuid import uuid4
+
+from celery import current_app
+from celery.exceptions import CeleryError, TimeoutError as CeleryTimeoutError
 
 from ..models import DocumentChange, DocumentVersion, UploadLog
 
@@ -22,89 +24,35 @@ class LLMParseError(Exception):
 _XLSX_FORMAT_OPERATIONS = {"set_cell_style", "set_number_format", "set_formula"}
 
 
-_PATCH_PLAN_SYSTEM_PROMPT = """You are a document correction AI. Given a file's context and a user's edit request, generate a structured PatchPlan JSON.
-
-Rules:
-- Return ONLY valid JSON. No explanation text, no markdown code blocks.
-- The JSON must have: schema, plan_id, summary, operations (array).
-- operation_id: numbered "op_001", "op_002", ...
-- Allowed operations: replace_cell, replace_text, annotate, set_cell_style, set_number_format, set_formula (XLSX/excel only — see rules below) (NOT redact_overlay or regenerate)
-- Each operation must include: operation_id, format, operation, title, original, replacement, reason, confidence (0.0-1.0), anchor, patch
-- anchor for XLSX: {"type": "cell", "sheet": "...", "cell": "A1"}
-- anchor for text-based: {"type": "text_match", "target_text": "...", "occurrence": 1}
-- risk: {"level": "low"|"medium"|"high"}
-- If no changes are needed, return operations as empty array []
-- Only generate a formatting/number-format/formula operation when the user explicitly asked for that kind of change within a range/cell you are confident about. If you are not confident about the exact range, the current cell values, or the target cell, do not generate the operation at all — an unconfident operation will simply be rejected by validation, so it is always safer to omit it.
-
-set_cell_style (XLSX/Excel ONLY — never use this operation when format/source_type is not xlsx or excel):
-- Only generate set_cell_style when the file's format/source_type is "xlsx" or "excel" AND the user explicitly asked for a formatting/style change (e.g. "헤더 보기 좋게 정리해줘"). Do not invent style changes the user did not ask for.
-- operation_id, format="xlsx", operation="set_cell_style", title, reason, confidence, anchor, expected_context, patch are all required. original and replacement may be empty strings.
-- anchor: {"type": "cell_range", "sheet": "...", "range": "A1:D1"}. Keep the range as small as possible (max 200 cells) — never select an entire sheet or an oversized range.
-- expected_context is required and must include: "sample_values" (a dict of a few cell refs in the range mapped to their current text value, used to confirm you picked the right area) and "non_empty_cells" (a list of cell refs in the range that must not be blank, e.g. header cells).
-- patch may ONLY contain these whitelisted keys — never add any other key, never use raw openpyxl/CSS property names: "font_bold" (boolean), "fill_color" (6-hex RRGGBB, no "#"), "horizontal_alignment" ("left"|"center"|"right"), "vertical_alignment" ("top"|"center"|"bottom"), "border" ("thin"|"medium"|"none").
-
-set_number_format (XLSX/Excel ONLY):
-- Only generate set_number_format when the user explicitly asked for a display-format change (e.g. "금액 열에 천 단위 콤마 붙여줘", "날짜 형식 통일해줘", "비율을 퍼센트로 표시해줘").
-- operation_id, format="xlsx", operation="set_number_format", title, reason, confidence, anchor, expected_context, patch are all required. original and replacement may be empty strings.
-- anchor: {"type": "cell_range", "sheet": "...", "range": "A1:D1"}, same 200-cell max as set_cell_style.
-- expected_context is required, same shape as set_cell_style: "sample_values" and "non_empty_cells".
-- patch may ONLY contain "number_format" (one of the following exact strings — never invent a different pattern) and "expected_context": "yyyy-mm-dd", "yyyy. mm. dd", "#,##0", "#,##0원", "#,##0.00", "0.0%", "0.00%".
-
-set_formula (XLSX/Excel ONLY):
-- Only generate set_formula when the user explicitly asked for a simple calculation (sum/average/count/min/max/simple conditional) to be written into ONE specific cell (e.g. "합계 행에 금액 합계를 넣어줘"). Never use it for row/column insertion or multi-cell formulas.
-- operation_id, format="xlsx", operation="set_formula", title, reason, confidence, anchor, expected_context, patch are all required. original and replacement may be empty strings.
-- anchor MUST be a single cell: {"type": "cell", "sheet": "...", "cell": "D5"}. Never use anchor.type="cell_range" for set_formula.
-- expected_context is required and describes the data the formula reads (NOT the target cell, which is usually still empty): "sample_values" (a dict of a few cell refs the formula will sum/average/etc. mapped to their current value) and "non_empty_cells" (cell refs that must not be blank, typically the same data cells).
-- patch may ONLY contain "formula" and "expected_context". formula must be a plain Excel formula string starting with "=" and MUST use only these whitelisted functions: SUM, AVERAGE, COUNT, COUNTA, MIN, MAX, IF (nesting is allowed, e.g. "=IF(COUNT(B2:B10)>0,SUM(B2:B10),0)").
-- NEVER generate a formula containing: other-sheet or other-workbook references ("!" or "[...]"), URLs, string concatenation ("&"), or any function outside the whitelist (INDIRECT, HYPERLINK, WEBSERVICE, IMPORTRANGE, etc. are always forbidden). Such formulas will always be rejected — do not attempt them.
-
-Return only JSON, starting with {"""
-
-
 def _generate_patch_plan(prompt: str, file_context: dict) -> dict:
     """
-    Anthropic Claude를 호출해 PatchPlan JSON을 생성한다.
+    AX Engine 태스크를 통해 PatchPlan JSON을 생성한다.
+
+    실제 LLM 호출은 ax-engine의 get_llm_client() 경로를 사용한다.
+    따라서 로컬 Gemini CLI, OpenAI, Ensemble 등 LLM_PROVIDER 설정을
+    backend가 직접 알 필요가 없다.
 
     :param prompt: 사용자 수정 요청 문자열
     :param file_context: filename, source_type, corrections, summary 등 파일 컨텍스트
     :raises LLMParseError: JSON 파싱 실패 또는 operations 필드 누락 시
     """
-    import anthropic  # lazy import — LLM 호출 시에만 의존
-
-    client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
-    model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-
-    context_json = json.dumps(
-        file_context.get("corrections") or file_context.get("snippet_data") or {},
-        ensure_ascii=False,
-        indent=2,
+    timeout = int(os.environ.get("PATCH_PLAN_TASK_TIMEOUT", "180"))
+    async_result = current_app.send_task(
+        "tasks.generate_patch_plan",
+        kwargs={"prompt": prompt, "file_context": file_context},
+        queue="ax",
     )
-    user_message = (
-        f"파일명: {file_context.get('filename', '알 수 없음')}\n"
-        f"형식: {file_context.get('source_type', '알 수 없음')}\n"
-        f"컨텍스트:\n{context_json}\n"
-        f"수정 요청: {prompt}"
-    )
-
-    response = client.messages.create(
-        model=model,
-        max_tokens=2048,
-        system=_PATCH_PLAN_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_message}],
-    )
-
-    raw = response.content[0].text.strip()
-
-    # LLM이 실수로 마크다운 코드블록을 붙이는 경우 방어적 제거
-    if raw.startswith("```"):
-        lines = raw.split("\n")
-        raw = "\n".join(lines[1:-1]) if len(lines) > 2 else raw
-
     try:
-        plan = json.loads(raw)
-    except (json.JSONDecodeError, ValueError) as exc:
-        raise LLMParseError(f"JSON 파싱 실패: {exc}") from exc
+        plan = async_result.get(timeout=timeout)
+    except CeleryTimeoutError as exc:
+        raise LLMParseError("PatchPlan 생성 태스크가 시간 내 완료되지 않았습니다.") from exc
+    except CeleryError as exc:
+        raise LLMParseError(f"PatchPlan 생성 태스크 실패: {exc}") from exc
+    except Exception as exc:
+        raise LLMParseError(f"PatchPlan 생성 태스크 실패: {exc}") from exc
 
+    if not isinstance(plan, dict):
+        raise LLMParseError("PatchPlan 생성 태스크가 dict가 아닌 결과를 반환했습니다.")
     if "operations" not in plan:
         raise LLMParseError("PatchPlan에 operations 필드가 없습니다.")
 
@@ -132,6 +80,28 @@ def _build_file_context(upload_log: UploadLog) -> dict:
         "summary": result.get("summary", ""),
         "errors": result.get("errors", []),
     }
+
+
+def _get_valid_upload_log(upload_id: int, prompt: str, user) -> tuple[UploadLog, str]:
+    """PatchPlan 생성 요청의 소유권, prompt, 업로드 상태를 검증한다."""
+    upload_log = (
+        UploadLog.objects
+        .select_related("file_structure")
+        .get(pk=upload_id)
+    )
+
+    # 소유권 검증 — 예측 가능한 업무 실패이므로 호출자가 사용자 메시지로 변환한다.
+    if upload_log.user_id != user.pk:
+        raise PermissionError("해당 문서에 대한 수정 권한이 없습니다.")
+
+    stripped_prompt = (prompt or "").strip()
+    if not stripped_prompt:
+        raise ValueError("prompt 필드가 필요합니다.")
+
+    if upload_log.status != UploadLog.Status.DONE:
+        raise ValueError("분석이 완료된 문서만 수정 요청이 가능합니다.")
+
+    return upload_log, stripped_prompt
 
 
 def _create_changes(
@@ -188,6 +158,50 @@ class PatchPlanService:
     """
 
     @staticmethod
+    def validate_request(upload_id: int, prompt: str, user) -> tuple[UploadLog, str]:
+        """PatchPlan 요청을 검증하고 UploadLog와 정규화된 prompt를 반환한다."""
+        return _get_valid_upload_log(upload_id, prompt, user)
+
+    @staticmethod
+    def build_file_context(upload_log: UploadLog) -> dict:
+        """검증된 UploadLog에서 ax-engine에 전달할 파일 컨텍스트를 만든다."""
+        return _build_file_context(upload_log)
+
+    @staticmethod
+    def persist_patch_plan(
+        upload_log: UploadLog,
+        prompt: str,
+        user,
+        patch_plan: dict,
+    ) -> dict:
+        """이미 생성된 PatchPlan을 DocumentVersion/DocumentChange로 저장한다."""
+        if "operations" not in patch_plan:
+            raise LLMParseError("PatchPlan에 operations 필드가 없습니다.")
+
+        operations = patch_plan.get("operations", [])
+        plan_id = patch_plan.get("plan_id", "")
+
+        if not plan_id:
+            plan_id = f"plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:6]}"
+            patch_plan["plan_id"] = plan_id
+
+        # operations 빈 배열 → 버전 생성 없이 반환 (정상 케이스)
+        if not operations:
+            return {"version_id": None, "plan_id": plan_id, "changes": []}
+
+        version = DocumentVersion.objects.create(
+            upload_log=upload_log,
+            created_by=user,
+            status=DocumentVersion.Status.DRAFT,
+            label=prompt[:100],
+            summary=patch_plan.get("summary", ""),
+            patch_plan=patch_plan,
+        )
+        changes = _create_changes(version, operations, plan_id)
+
+        return {"version_id": version.pk, "plan_id": plan_id, "changes": changes}
+
+    @staticmethod
     def generate(upload_id: int, prompt: str, user) -> dict:
         """
         upload_id로 UploadLog를 조회하고 PatchPlan을 생성한 뒤 DB에 저장한다.
@@ -206,40 +220,7 @@ class PatchPlanService:
             ValueError: upload_log.status != DONE
             LLMParseError: LLM이 유효한 PatchPlan JSON을 반환하지 않음
         """
-        upload_log = (
-            UploadLog.objects
-            .select_related("file_structure")
-            .get(pk=upload_id)
-        )
-
-        # 소유권 검증 — 예측 가능한 업무 실패이므로 PermissionError(표준 Python)로 처리
-        if upload_log.user_id != user.pk:
-            raise PermissionError("해당 문서에 대한 수정 권한이 없습니다.")
-
-        if not prompt or not prompt.strip():
-            raise ValueError("prompt 필드가 필요합니다.")
-
-        if upload_log.status != UploadLog.Status.DONE:
-            raise ValueError("분석이 완료된 문서만 수정 요청이 가능합니다.")
-
+        upload_log, prompt = PatchPlanService.validate_request(upload_id, prompt, user)
         file_context = _build_file_context(upload_log)
         patch_plan = _generate_patch_plan(prompt, file_context)
-
-        operations = patch_plan.get("operations", [])
-        plan_id = patch_plan.get("plan_id", "")
-
-        # operations 빈 배열 → 버전 생성 없이 반환 (정상 케이스)
-        if not operations:
-            return {"version_id": None, "plan_id": plan_id, "changes": []}
-
-        version = DocumentVersion.objects.create(
-            upload_log=upload_log,
-            created_by=user,
-            status=DocumentVersion.Status.DRAFT,
-            label=prompt[:100],
-            summary=patch_plan.get("summary", ""),
-            patch_plan=patch_plan,
-        )
-        changes = _create_changes(version, operations, plan_id)
-
-        return {"version_id": version.pk, "plan_id": plan_id, "changes": changes}
+        return PatchPlanService.persist_patch_plan(upload_log, prompt, user, patch_plan)

@@ -13,7 +13,7 @@ LLM → patch plan 생성 → DocumentChange 저장 API 테스트.
   6. LLM JSON 파싱 실패 mock → 400
   7. operations 빈 배열 mock → 200 + changes=[]
 """
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -25,7 +25,7 @@ from apps.documents.models import (
     FileStructure,
     UploadLog,
 )
-from apps.documents.services.patch_plan import LLMParseError
+from apps.documents.services.patch_plan import LLMParseError, _generate_patch_plan
 
 User = get_user_model()
 
@@ -225,3 +225,29 @@ class GeneratePatchPlanTest(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data.get("changes"), [])
         self.assertIsNone(resp.data.get("version_id"))
+
+
+class PatchPlanLLMDispatchTest(TestCase):
+    """PatchPlan LLM 호출이 backend SDK가 아니라 ax-engine 태스크로 위임되는지 검증."""
+
+    @patch("apps.documents.services.patch_plan.current_app.send_task")
+    def test_generate_patch_plan_delegates_to_ax_engine_task(self, mock_send_task):
+        """_generate_patch_plan은 tasks.generate_patch_plan을 ax 큐로 보내고 결과를 기다린다."""
+        async_result = MagicMock()
+        async_result.get.return_value = _MOCK_PATCH_PLAN
+        mock_send_task.return_value = async_result
+
+        plan = _generate_patch_plan(
+            "날짜 형식을 고쳐줘",
+            {"filename": "sample.xlsx", "source_type": "excel", "snippet_data": {}},
+        )
+
+        self.assertEqual(plan["plan_id"], "plan_test_001")
+        mock_send_task.assert_called_once()
+        self.assertEqual(mock_send_task.call_args.args[0], "tasks.generate_patch_plan")
+        self.assertEqual(mock_send_task.call_args.kwargs["queue"], "ax")
+        self.assertEqual(
+            mock_send_task.call_args.kwargs["kwargs"]["prompt"],
+            "날짜 형식을 고쳐줘",
+        )
+        async_result.get.assert_called_once()
