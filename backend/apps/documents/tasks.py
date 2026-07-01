@@ -282,7 +282,18 @@ def patch_document_version(version_id: int) -> None:
         _set_failed(version, f"원본 파일 읽기 실패: {exc}")
         return
 
-    result = render_fn(original_bytes, changes)
+    # render 함수 내부에서 처리하지 못한 예외(fitz.save 실패 등)를 여기서 잡아
+    # version을 반드시 failed로 전환한다 — 미처리 예외로 'generating' 상태가
+    # 영구히 남아 FE 무한 로딩으로 이어지는 것을 방지한다
+    try:
+        result = render_fn(original_bytes, changes)
+    except Exception as exc:
+        logger.exception(
+            "patch_document_version: render 단계 예외 | version_id=%s | format=%s",
+            version_id, source_type,
+        )
+        _set_failed(version, f"render 실패: {exc}")
+        return
 
     # ── 3단계: persist ─────────────────────────────────────────────────────
     ext = _ARTIFACT_EXT_BY_SOURCE_TYPE.get(source_type, "")

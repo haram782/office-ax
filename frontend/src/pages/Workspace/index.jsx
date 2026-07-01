@@ -61,23 +61,25 @@ export default function Workspace() {
     await acceptAllFnRef.current?.()
   }, [])
 
-  // 파일 전환 시 localPatchData 초기화 — 다른 파일의 patch 데이터가 남지 않도록
+  // 최신 patch_plan 메시지 감지 → localPatchData 자동 설정.
+  // viewingFileId가 바뀌면 즉시 재실행해 다른 파일의 patch 데이터가 남지 않도록 한다.
+  // upload_id 기준으로 현재 보는 파일과 일치하는 patch_plan만 채택한다.
   useEffect(() => {
-    setLocalPatchData(null)
-  }, [viewingFileId])
-
-  // 최신 source_type='patch_plan' 메시지 감지 → localPatchData 자동 설정
-  // BE가 채팅 응답으로 patch_plan을 반환하면 우측 패널에 즉시 반영한다
-  useEffect(() => {
-    const last = [...messages].reverse().find(m => m.snippet_data?.type === 'patch_plan')
-    if (!last) return
+    const last = [...messages].reverse().find(
+      m => m.snippet_data?.type === 'patch_plan' &&
+           (viewingFileId == null || m.snippet_data?.upload_id === viewingFileId),
+    )
+    if (!last) {
+      setLocalPatchData(null)
+      return
+    }
     const pd = last.snippet_data
     // BE는 snippet_data.changes로 저장 — patch_changes는 구버전 키
     const changes = pd?.changes ?? pd?.patch_changes
     if (Array.isArray(changes)) {
       setLocalPatchData({ version_id: pd.version_id ?? null, patch_changes: changes })
     }
-  }, [messages])
+  }, [messages, viewingFileId])
 
   // 새 대화 생성 — sessions 맵에 추가하고 뷰어 초기화
   const handleNewConversation = useCallback(() => {

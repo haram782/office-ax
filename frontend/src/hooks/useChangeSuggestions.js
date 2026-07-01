@@ -85,9 +85,13 @@ export function useChangeSuggestions(snippetData, uploadId = null, versionId = n
     setPendingIds(prev => new Set([...prev, id]))
 
     patchDocumentChange(suggestion.changeDbId, nextStatus)
-      .catch(() => {
-        // API 실패 → 낙관적 업데이트 롤백
-        setStatuses(prev => ({ ...prev, [id]: prevStatus }))
+      .catch((err) => {
+        // 'applied' 전환 시 400: DB가 이미 'applied' 상태(applied→applied 전환 불가) — 낙관적 업데이트 유지
+        // 그 외 오류는 낙관적 업데이트를 롤백해 데이터 정합성을 보장한다
+        const dbAlreadyApplied = nextStatus === 'applied' && err?.response?.status === 400
+        if (!dbAlreadyApplied) {
+          setStatuses(prev => ({ ...prev, [id]: prevStatus }))
+        }
       })
       .finally(() => {
         // 완료(성공·실패) 후 pendingIds에서 제거
@@ -164,6 +168,7 @@ export function useChangeSuggestions(snippetData, uploadId = null, versionId = n
   return {
     suggestions,
     statuses,
+    setStatuses,
     selectedSuggestionId,
     setSelectedSuggestionId,
     highlights,

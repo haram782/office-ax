@@ -1,15 +1,13 @@
-import { useState, useCallback, useMemo, useEffect } from 'react'
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import { Ic } from '../../components/Ic'
 import { resolveViewer }            from '../../components/DocumentPanel'
 import { ViewerShell }              from '../../components/ViewerShell'
 import { useChangeSuggestions }     from '../../hooks/useChangeSuggestions'
 import { usePatchTrigger }          from '../../hooks/usePatchTrigger'
-import { useGeneratePatchPlan }     from '../../hooks/useGeneratePatchPlan'
 import { useDocumentVersions }      from '../../hooks/useDocumentVersions'
 import { fetchVersionFileBlob }     from '../../api/documentChanges'
 import { AutomationBanner }         from './AutomationBanner'
 import { ChangeSuggestionPanel }    from './ChangeSuggestionPanel'
-import { PatchRequestInput }        from './PatchRequestInput'
 import { VersionTabs }              from './VersionTabs'
 
 /**
@@ -22,17 +20,12 @@ export function WorkspaceCenter({
   onCloseViewer,
   showBanner,
   onDismissBanner,
-  // 채팅 patch_plan 메시지 또는 PatchRequestInput 성공 결과를 부모에서 관리하는 상태
+  // 채팅 patch_plan 메시지로부터 받은 patch 데이터 (부모 관리)
   localPatchData,
   onPatchDataChange,
   // 채팅 [전체 반영] 버튼이 handleAcceptAll을 호출할 수 있도록 부모에 함수를 등록
   onAcceptAllReady,
 }) {
-  // onSuccess: PatchRequestInput에서 호출 — version_id + changes를 부모 상태에 저장
-  const handlePatchPlanSuccess = useCallback((data) => {
-    onPatchDataChange?.({ version_id: data.version_id, patch_changes: data.changes ?? [] })
-  }, [onPatchDataChange])
-
   // 로컬 patch_changes가 있으면 snippetData에 합성, 없으면 원본 그대로
   // base가 null(HWP 등 corrections 없는 파일)이어도 localPatchData는 반영해야 한다
   const effectiveSnippetData = useMemo(() => {
@@ -49,6 +42,7 @@ export function WorkspaceCenter({
   const {
     suggestions,
     statuses,
+    setStatuses,
     selectedSuggestionId,
     setSelectedSuggestionId,
     highlights,
@@ -61,18 +55,40 @@ export function WorkspaceCenter({
     handleSelectHighlight,
   } = useChangeSuggestions(effectiveSnippetData, uploadId, versionId)
 
-  // 채팅 [전체 반영] 버튼이 우측 패널과 동일한 handleAcceptAll을 호출할 수 있도록 부모에 등록
-  // handleAcceptAll이 바뀔 때마다 최신 참조를 전달한다
+  const { patchStatus: rawPatchStatus, trigger } = usePatchTrigger(uploadId, versionId)
+
+  // 버전 탭 — rawPatchStatus가 'generating'일 때 polling 시작
+  const { versions } = useDocumentVersions(uploadId, rawPatchStatus)
+
+  // accept-all 후 자동으로 patcher를 실행해 수정본 생성까지 한 번에 처리한다.
+  // 버전이 이미 ready/failed이면 trigger를 호출하지 않아 불필요한 스피너를 방지한다.
+  const handleAcceptAllAndPatch = useCallback(async () => {
+    await handleAcceptAll()
+    const currentVersion = versions.find(v => v.id === versionId)
+    const needsPatch = versionId && (!currentVersion || currentVersion.status === 'draft')
+    if (needsPatch) trigger()
+  }, [handleAcceptAll, versionId, versions, trigger])
+
+  // 채팅 [전체 반영] 버튼이 accept-all+patch 함수를 호출할 수 있도록 부모에 등록
   useEffect(() => {
-    onAcceptAllReady?.(handleAcceptAll)
-  }, [onAcceptAllReady, handleAcceptAll])
+    onAcceptAllReady?.(handleAcceptAllAndPatch)
+  }, [onAcceptAllReady, handleAcceptAllAndPatch])
 
-  const { patchStatus, trigger } = usePatchTrigger(uploadId, versionId)
-
-  const { generate, isGenerating, error: generateError } = useGeneratePatchPlan(uploadId, handlePatchPlanSuccess)
-
-  // 버전 탭 — patchStatus가 'ready'가 되면 재조회
-  const { versions } = useDocumentVersions(uploadId, patchStatus)
+  // versions polling 결과로 현재 versionId의 실제 상태를 반영한다.
+  // rawPatchStatus가 null(초기값)이어도 versions에 ready/failed 버전이 있으면
+  // 실제 상태를 반환해 autoSelectedRef 동기화와 뷰어 자동 전환이 동작하도록 한다.
+  const patchStatus = useMemo(() => {
+    if (versionId && versions.length > 0) {
+      const current = versions.find(v => v.id === versionId)
+      if (current && current.status !== 'draft' && current.status !== 'original') {
+        // usePatchTrigger 타임아웃이 rawPatchStatus를 'failed'로 전환한 경우,
+        // versions가 아직 'generating'이어도 'failed'를 우선 반영한다
+        if (current.status === 'generating' && rawPatchStatus === 'failed') return 'failed'
+        return current.status
+      }
+    }
+    return rawPatchStatus
+  }, [rawPatchStatus, versions, versionId])
 
   // 선택된 버전 ID (기본값: 원본 버전 ID 또는 null)
   const [selectedVersionId, setSelectedVersionId] = useState(null)
@@ -107,6 +123,38 @@ export function WorkspaceCenter({
       // 다운로드 실패 시 기존 URL 유지 (빈 값보다 낫다)
     }
   }, [uploadId, versionBlobUrl])
+
+  // 패치 완료(ready) 시 수정본 버전을 자동 선택하고 제안 상태를 applied로 동기화한다.
+  // snippet_data의 초기 status는 항상 'pending' 스냅샷이므로, version이 ready가 되면
+  // 모든 pending 제안을 applied로 덮어써야 실제 DB 상태와 일치한다.
+  const autoSelectedRef = useRef(false)
+
+  // versionId가 바뀌면 자동 선택 플래그를 초기화해 새 버전도 자동 선택되도록 한다
+  useEffect(() => {
+    autoSelectedRef.current = false
+  }, [versionId])
+
+  useEffect(() => {
+    if (patchStatus !== 'ready' || !versionId) return
+    const readyVersion = versions.find(v => v.id === versionId && v.status === 'ready')
+    if (!readyVersion) return
+    if (!autoSelectedRef.current) {
+      autoSelectedRef.current = true
+      handleSelectVersion(readyVersion)
+    }
+    // DB 상태 동기화: ready 버전의 applied_change_ids가 있으면 그 기준으로, 없으면 전체 applied
+    const appliedIds = new Set(readyVersion.applied_change_ids ?? [])
+    setStatuses(prev => {
+      const next = { ...prev }
+      for (const s of suggestions) {
+        if (!s.changeDbId) continue
+        if (appliedIds.size === 0 || appliedIds.has(s.changeDbId)) {
+          next[s.id] = 'applied'
+        }
+      }
+      return next
+    })
+  }, [patchStatus, versionId, versions, handleSelectVersion, suggestions, setStatuses])
 
   // 뷰어에 전달할 fileUrl — 수정본 선택 시 Blob URL, 원본 선택 시 previewData.fileUrl
   const selectedIsOriginal = useMemo(() => {
@@ -160,7 +208,7 @@ export function WorkspaceCenter({
             statuses={statuses}
             pendingIds={pendingIds}
             onSetStatus={handleSetStatus}
-            onAcceptAll={handleAcceptAll}
+            onAcceptAll={handleAcceptAllAndPatch}
             isAcceptingAll={isAcceptingAll}
             acceptAllError={acceptAllError}
             autoRejectedIds={autoRejectedIds}
@@ -173,14 +221,7 @@ export function WorkspaceCenter({
           />
         ) : null
       }
-      inputPanel={
-        <PatchRequestInput
-          uploadId={uploadId}
-          onGenerate={generate}
-          isGenerating={isGenerating}
-          error={generateError}
-        />
-      }
+      inputPanel={null}
       banner={showBanner ? <AutomationBanner onDismiss={onDismissBanner} /> : null}
     >
       {resolveViewer(effectivePreviewData, {

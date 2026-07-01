@@ -21,7 +21,7 @@ describe('fetchDocumentVersions', () => {
 
     await fetchDocumentVersions(10)
 
-    expect(mockGet).toHaveBeenCalledWith('/documents/uploads/10/versions/')
+    expect(mockGet).toHaveBeenCalledWith('/uploads/10/versions/')
   })
 
   it('버전 배열을 반환한다', async () => {
@@ -60,7 +60,7 @@ describe('fetchVersionFileBlob', () => {
     await fetchVersionFileBlob(10, 2)
 
     expect(mockGet).toHaveBeenCalledWith(
-      '/documents/uploads/10/versions/2/file/',
+      '/uploads/10/versions/2/file/',
       { responseType: 'blob' },
     )
   })

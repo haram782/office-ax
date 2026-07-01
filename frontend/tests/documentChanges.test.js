@@ -22,7 +22,7 @@ describe('patchDocumentChange', () => {
     await patchDocumentChange(42, 'applied')
 
     expect(mockPatch).toHaveBeenCalledWith(
-      '/documents/changes/42/',
+      '/changes/42/',
       { status: 'applied' },
     )
   })
@@ -33,7 +33,7 @@ describe('patchDocumentChange', () => {
     await patchDocumentChange(7, 'rejected')
 
     expect(mockPatch).toHaveBeenCalledWith(
-      '/documents/changes/7/',
+      '/changes/7/',
       { status: 'rejected' },
     )
   })
