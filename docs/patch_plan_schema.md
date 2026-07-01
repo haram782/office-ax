@@ -67,6 +67,7 @@ patcher가 실제 파일을 수정할 때 이 스키마를 입력으로 사용�
 | `redact_overlay`  | PDF                    | 기존 텍스트를 불투명 박스로 가리고 새 텍스트를 오버레이          |
 | `regenerate`      | PDF                    | 원본 내용 추출 후 새 PDF로 재생성 (대규모 구조 변경 시 사용)    |
 | `replace_shape`   | PPTX                   | 슬라이드 내 셰이프의 텍스트 교체. `anchor.type`은 `slide_shape` |
+| `set_cell_style`  | Excel                  | range 단위 셀 서식 변경(굵게/배경색/정렬/테두리). `anchor.type`은 `cell_range`. xlsx/excel 전용 |
 
 > **제약**: 포맷과 operation의 조합이 위 테이블에 없으면 patcher가 거부한다.
 
@@ -125,6 +126,26 @@ patcher가 실제 파일을 수정할 때 이 스키마를 입력으로 사용�
 | `slide_index` | integer | ✅   | 0-based 슬라이드 인덱스                           |
 | `shape_id`    | integer | ❌   | python-pptx shape.shape_id. 없으면 이름으로 탐색 |
 | `shape_name`  | string  | ❌   | shape.name. shape_id와 중 하나는 필수             |
+
+### cell_range anchor (Excel 전용, `set_cell_style`)
+
+```json
+{
+  "type": "cell_range",
+  "sheet": "Sheet1",
+  "range": "A1:D1"
+}
+```
+
+| 필드    | 타입   | 필수 | 설명                                                |
+|---------|--------|------|-----------------------------------------------------|
+| `type`  | string | ✅   | 고정값 `"cell_range"`                               |
+| `sheet` | string | ✅   | 시트 이름                                            |
+| `range` | string | ✅   | A1 표기법 range (예: `"A1:D1"`). 단일 셀도 허용. 최대 200셀 |
+
+`set_cell_style`의 `expected_context`(`sample_values`, `non_empty_cells`)와 `patch` whitelist
+(`font_bold`, `fill_color`, `horizontal_alignment`, `vertical_alignment`, `border`)는
+`patch-plan-schema-v0-ko.md` 8.1b절과 `document-format-editing-ax-v1-ko.md` 7절을 참조한다.
 
 ### pdf_region anchor (PDF)
 

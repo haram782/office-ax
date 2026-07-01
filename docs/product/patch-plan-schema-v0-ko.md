@@ -151,6 +151,12 @@ redact_overlay
 regenerate
 ```
 
+v1에서 추가된 값 (XLSX 전용, 자세한 내용은 `document-format-editing-ax-v1-ko.md` 6-7절 참조):
+
+```text
+set_cell_style
+```
+
 향후 후보:
 
 ```text
@@ -170,6 +176,7 @@ mask_pii
 | `annotate` | 메모 가능 | notice/주석 후보 | comment 후보 | comment 후보 | highlight/comment | OCR bbox 필요 |
 | `redact_overlay` | 해당 없음 | 해당 없음 | 해당 없음 | 해당 없음 | 영역 가림 + 대체 텍스트 | 이미지 위 가림 |
 | `regenerate` | 새 통합 문서 생성 | 새 HWP/HWPX 생성 후보 | 새 DOCX/PDF 생성 | 새 PPTX/PDF 생성 | HTML/PDF 재작성 | OCR 기반 재작성 |
+| `set_cell_style` | range 단위 서식 변경(폰트 굵게, 배경색, 정렬, 테두리) | 해당 없음 | 해당 없음 | 해당 없음 | 해당 없음 | 해당 없음 |
 
 주의:
 
@@ -273,6 +280,26 @@ PPTX용.
 }
 ```
 
+### 7.6 cell_range anchor (XLSX 전용, v1)
+
+`set_cell_style` operation에서 사용한다. 자세한 검증 규칙은
+`document-format-editing-ax-v1-ko.md` 7.3-7.4절을 참조한다.
+
+```json
+{
+  "type": "cell_range",
+  "sheet": "Sheet1",
+  "range": "A1:D1"
+}
+```
+
+규칙:
+
+- `type`은 `cell_range`
+- `sheet`는 필수
+- `range`는 A1 notation. 단일 셀 `"A1"`과 `"A1:A1"`을 모두 허용한다.
+- 최대 200셀까지만 허용한다.
+
 ## 8. Patch payload 예시
 
 ### 8.1 XLSX 셀 변경
@@ -296,6 +323,51 @@ PPTX용.
   }
 }
 ```
+
+### 8.1b XLSX 셀 서식 변경 (v1, `set_cell_style`)
+
+```json
+{
+  "operation_id": "op_xlsx_style_001",
+  "format": "xlsx",
+  "operation": "set_cell_style",
+  "title": "표 헤더 서식 정리",
+  "reason": "헤더 영역이 일반 셀처럼 보여 표의 구분이 어렵습니다.",
+  "confidence": 0.86,
+  "anchor": {
+    "type": "cell_range",
+    "sheet": "Sheet1",
+    "range": "A1:D1"
+  },
+  "expected_context": {
+    "sample_values": {
+      "A1": "항목",
+      "D1": "금액"
+    },
+    "non_empty_cells": ["A1", "B1", "C1", "D1"]
+  },
+  "patch": {
+    "font_bold": true,
+    "fill_color": "D9EAF7",
+    "horizontal_alignment": "center",
+    "vertical_alignment": "center",
+    "border": "thin"
+  }
+}
+```
+
+patch whitelist (그 외 필드는 거부):
+
+| 필드 | 타입 | 허용값 |
+| --- | --- | --- |
+| `font_bold` | boolean | `true` / `false` |
+| `fill_color` | string | 6자리 `RRGGBB` (적용 시 `FF` ARGB prefix로 변환) |
+| `horizontal_alignment` | string | `left` \| `center` \| `right` |
+| `vertical_alignment` | string | `top` \| `center` \| `bottom` |
+| `border` | string | `thin` \| `medium` \| `none` |
+
+`expected_context`는 DB에는 별도 필드가 없으므로 저장 시 `patch.expected_context`로 병합한다.
+검증 실패 조건과 backend 구현은 `document-format-editing-ax-v1-ko.md` 7.4, 8.3절을 참조한다.
 
 ### 8.2 HWP 텍스트 변경
 

@@ -208,7 +208,7 @@ _ARTIFACT_EXT_BY_SOURCE_TYPE: dict[str, str] = {
 
 # source_type → collect 단계에서 필터링할 operation 타입 목록
 _OPERATIONS_BY_FORMAT: dict[str, list[str]] = {
-    "excel": ["replace_cell"],
+    "excel": ["replace_cell", "set_cell_style"],
     "docx":  ["replace_text"],
     "pptx":  ["replace_text"],
     "hwp":   ["replace_text"],

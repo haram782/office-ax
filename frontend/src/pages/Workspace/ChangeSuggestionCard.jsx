@@ -16,6 +16,31 @@ const CHANGE_TYPE_LABEL = {
   edit:       '수정',
 }
 
+// set_cell_style patch 필드 → 한국어 레이블 (document-format-editing-ax-v1-ko.md 9.2절 표시 예시 기준)
+const STYLE_HORIZONTAL_ALIGN_LABEL = { left: '왼쪽 정렬', center: '가운데 정렬', right: '오른쪽 정렬' }
+const STYLE_VERTICAL_ALIGN_LABEL   = { top: '위쪽 정렬', center: '세로 가운데 정렬', bottom: '아래쪽 정렬' }
+const STYLE_BORDER_LABEL           = { thin: '얇은 테두리', medium: '중간 테두리', none: '테두리 없음' }
+
+/**
+ * set_cell_style patch(whitelist 필드)를 "굵게 · 배경색 D9EAF7 · 가운데 정렬 · 얇은 테두리" 형태로 요약한다.
+ * 필드가 하나도 없으면 빈 문자열을 반환한다.
+ */
+function styleSummaryLabel(patch) {
+  if (!patch) return ''
+  const parts = []
+  if (patch.font_bold === true) parts.push('굵게')
+  if (patch.font_bold === false) parts.push('굵기 해제')
+  if (patch.fill_color) parts.push(`배경색 ${patch.fill_color}`)
+  if (patch.horizontal_alignment) {
+    parts.push(STYLE_HORIZONTAL_ALIGN_LABEL[patch.horizontal_alignment] ?? patch.horizontal_alignment)
+  }
+  if (patch.vertical_alignment) {
+    parts.push(STYLE_VERTICAL_ALIGN_LABEL[patch.vertical_alignment] ?? patch.vertical_alignment)
+  }
+  if (patch.border) parts.push(STYLE_BORDER_LABEL[patch.border] ?? patch.border)
+  return parts.join(' · ')
+}
+
 // status → 뱃지 스타일
 const STATUS_BADGE = {
   pending:  { cls: 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400', label: '대기' },
@@ -32,6 +57,11 @@ function anchorLabel(anchor) {
   switch (anchor.type) {
     case 'cell': {
       const parts = [anchor.cell].filter(Boolean)
+      if (anchor.sheet) parts.push(anchor.sheet)
+      return parts.join(' · ')
+    }
+    case 'cell_range': {
+      const parts = [anchor.range].filter(Boolean)
       if (anchor.sheet) parts.push(anchor.sheet)
       return parts.join(' · ')
     }
@@ -57,13 +87,18 @@ function anchorLabel(anchor) {
  * @param {boolean} [isAutoRejected=false] - 서버가 confidence 충돌로 자동 반려한 항목인지 여부.
  */
 export function ChangeSuggestionCard({ suggestion, status, isSelected, isPending = false, isAutoRejected = false, onSelect, onAccept, onReject, onReset }) {
-  const { title, original, replacement, reason, anchor, changeType, severity } = suggestion
+  const { title, original, replacement, reason, anchor, changeType, severity, operation, patch } = suggestion
 
   const effectiveStatus = status ?? 'pending'
   const badge           = STATUS_BADGE[effectiveStatus] ?? STATUS_BADGE.pending
   const borderCls       = SEVERITY_BORDER[severity] ?? SEVERITY_BORDER.info
   const typeLabel       = CHANGE_TYPE_LABEL[changeType] ?? changeType ?? '변경'
   const location        = anchorLabel(anchor)
+
+  // set_cell_style은 original/replacement가 비어 있는 operation summary 타입이므로
+  // 빈 diff를 보여주지 않고 패치 내용을 요약 문장으로 표시한다 (9.2절).
+  const isStyleChange = operation === 'set_cell_style'
+  const styleSummary  = isStyleChange ? styleSummaryLabel(patch) : ''
 
   return (
     <div
@@ -102,25 +137,33 @@ export function ChangeSuggestionCard({ suggestion, status, isSelected, isPending
         </p>
       )}
 
-      {/* 3행: original → replacement */}
-      {(original || replacement) && (
-        <div className="flex items-start gap-1.5 mb-1.5 text-[11px]">
-          {original && (
-            <span className="line-through text-red-400 truncate max-w-[80px]" title={original}>
-              {original}
-            </span>
-          )}
-          {original && replacement && (
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="flex-shrink-0 mt-0.5 text-zinc-400">
-              <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
-            </svg>
-          )}
-          {replacement && (
-            <span className="text-emerald-600 dark:text-emerald-400 font-medium truncate max-w-[80px]" title={replacement}>
-              {replacement}
-            </span>
-          )}
-        </div>
+      {/* 3행: set_cell_style은 스타일 요약, 그 외는 original → replacement diff */}
+      {isStyleChange ? (
+        styleSummary && (
+          <p className="text-[11px] text-zinc-600 dark:text-zinc-300 mb-1.5 leading-relaxed">
+            {styleSummary}
+          </p>
+        )
+      ) : (
+        (original || replacement) && (
+          <div className="flex items-start gap-1.5 mb-1.5 text-[11px]">
+            {original && (
+              <span className="line-through text-red-400 truncate max-w-[80px]" title={original}>
+                {original}
+              </span>
+            )}
+            {original && replacement && (
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="flex-shrink-0 mt-0.5 text-zinc-400">
+                <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+              </svg>
+            )}
+            {replacement && (
+              <span className="text-emerald-600 dark:text-emerald-400 font-medium truncate max-w-[80px]" title={replacement}>
+                {replacement}
+              </span>
+            )}
+          </div>
+        )
       )}
 
       {/* 4행: 이유 */}
