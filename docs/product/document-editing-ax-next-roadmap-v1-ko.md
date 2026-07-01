@@ -1,5 +1,7 @@
 # Office-AX 문서 수정 AX 다음 구현 로드맵 v1
 
+문서 상태: 현재 문서 수정 AX 구현 순서의 기준 문서. MVP 전체 범위와 과금/사용량 갭은 `mvp-scope-and-gap-v1-ko.md`를 우선한다.
+
 관련 문서:
 
 - `mvp-scope-and-gap-v1-ko.md`: MVP 전체 범위, 과금/사용량 측정, 대시보드 갭, 운영자 조회 도구를 함께 다룬다.
