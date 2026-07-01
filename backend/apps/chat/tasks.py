@@ -123,6 +123,11 @@ def notify_chat_response(chat_message_id: int, result: dict) -> None:
                     upload_log_id=user_message.upload_log_id,
                     fmt=fmt,
                 )
+    elif source_type == "chat" or result_type == "qa":
+        # 텍스트 Q&A 응답 — 폴링 종료 마커 제공
+        # (upload_id 있는 의도 판별 qa, 없는 일반 텍스트 채팅 모두 포함)
+        has_snippet  = True
+        snippet_data = {"type": "qa"}
 
     # upload_log를 assistant 메시지에도 연결 — 프론트엔드가 id 기반 매칭을 할 수 있도록
     ChatMessage.objects.create(

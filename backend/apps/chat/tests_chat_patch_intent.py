@@ -274,6 +274,30 @@ class ChatQaResponseBoundaryTest(TestCase):
             "qa 응답에서 snippet_data.type이 patch_plan이 되어선 안 된다",
         )
 
+    def test_qa_type_sets_snippet_data_type_qa(self):
+        """type='qa' 응답은 snippet_data.type='qa'로 저장되어 프론트 폴링 종료 마커를 제공한다."""
+        result = {
+            "type": "qa",
+            "reply": "이 파일은 매출 데이터 Excel 파일입니다.",
+            "summary": "이 파일은 매출 데이터 Excel 파일입니다.",
+            "errors": [],
+            "source_type": "chat",
+        }
+
+        notify_chat_response(self.user_msg.pk, result)
+
+        assistant_msg = ChatMessage.objects.filter(
+            session=self.session,
+            role=ChatMessage.Role.ASSISTANT,
+        ).last()
+        self.assertIsNotNone(assistant_msg)
+        self.assertTrue(assistant_msg.has_snippet, "has_snippet=True이어야 한다")
+        self.assertEqual(
+            (assistant_msg.snippet_data or {}).get("type"),
+            "qa",
+            "snippet_data.type이 'qa'이어야 프론트가 폴링을 종료할 수 있다",
+        )
+
 
 # ── failure ───────────────────────────────────────────────────────────────────
 
@@ -384,6 +408,29 @@ class ChatTextOnlyRegressionTest(TestCase):
         self.assertNotEqual(
             (assistant_msg.snippet_data or {}).get("type"),
             "patch_plan",
+        )
+
+    def test_no_type_result_sets_snippet_data_type_qa(self):
+        """type 필드 없는 순수 텍스트 응답도 snippet_data.type='qa'로 저장된다."""
+        result = {
+            # type 필드 없음 — 기존 notify_chat_response 형식
+            "summary": "Q&A 응답입니다.",
+            "errors": [],
+            "source_type": "chat",
+        }
+
+        notify_chat_response(self.user_msg.pk, result)
+
+        assistant_msg = ChatMessage.objects.filter(
+            session=self.session,
+            role=ChatMessage.Role.ASSISTANT,
+        ).last()
+        self.assertIsNotNone(assistant_msg)
+        self.assertTrue(assistant_msg.has_snippet, "has_snippet=True이어야 한다")
+        self.assertEqual(
+            (assistant_msg.snippet_data or {}).get("type"),
+            "qa",
+            "type 없는 텍스트 응답도 snippet_data.type='qa'이어야 프론트가 폴링을 종료할 수 있다",
         )
 
     @patch("apps.chat.views.current_app.send_task")
