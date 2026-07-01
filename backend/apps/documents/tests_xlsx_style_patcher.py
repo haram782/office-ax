@@ -190,6 +190,16 @@ class XlsxStyleRenderTest(TestCase):
         self.assertEqual(result.applied_ids, [])
         self.assertIn("range가 너무 큼", result.failed_items[0]["reason"])
 
+    # 7-1. Excel 최대 열(XFD)을 벗어난 range → failed
+    def test_out_of_bounds_range_fails(self):
+        change = _style_change(
+            range_ref="XFE1:XFE1",
+            expected_context={"sample_values": {"XFE1": ""}, "non_empty_cells": ["XFE1"]},
+        )
+        result = self._render(change)
+        self.assertEqual(result.applied_ids, [])
+        self.assertIn("XLSX 허용 범위를 벗어남", result.failed_items[0]["reason"])
+
     # 8. sample_values 불일치 → failed
     def test_sample_value_mismatch_fails(self):
         change = _style_change()

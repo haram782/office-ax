@@ -157,6 +157,14 @@ v1에서 추가된 값 (XLSX 전용, 자세한 내용은 `document-format-editin
 set_cell_style
 ```
 
+다음 구현 로드맵에서 추가된 값 (XLSX 전용, 자세한 내용은
+`document-editing-ax-next-roadmap-v1-ko.md` 6.Phase2-3절 참조):
+
+```text
+set_number_format
+set_formula
+```
+
 향후 후보:
 
 ```text
@@ -177,6 +185,8 @@ mask_pii
 | `redact_overlay` | 해당 없음 | 해당 없음 | 해당 없음 | 해당 없음 | 영역 가림 + 대체 텍스트 | 이미지 위 가림 |
 | `regenerate` | 새 통합 문서 생성 | 새 HWP/HWPX 생성 후보 | 새 DOCX/PDF 생성 | 새 PPTX/PDF 생성 | HTML/PDF 재작성 | OCR 기반 재작성 |
 | `set_cell_style` | range 단위 서식 변경(폰트 굵게, 배경색, 정렬, 테두리) | 해당 없음 | 해당 없음 | 해당 없음 | 해당 없음 | 해당 없음 |
+| `set_number_format` | range 단위 표시 형식 변경(날짜, 천단위, 퍼센트 등) | 해당 없음 | 해당 없음 | 해당 없음 | 해당 없음 | 해당 없음 |
+| `set_formula` | 단일 셀 수식 설정(SUM/AVERAGE/COUNT/COUNTA/MIN/MAX/IF) | 해당 없음 | 해당 없음 | 해당 없음 | 해당 없음 | 해당 없음 |
 
 주의:
 
@@ -368,6 +378,82 @@ patch whitelist (그 외 필드는 거부):
 
 `expected_context`는 DB에는 별도 필드가 없으므로 저장 시 `patch.expected_context`로 병합한다.
 검증 실패 조건과 backend 구현은 `document-format-editing-ax-v1-ko.md` 7.4, 8.3절을 참조한다.
+
+### 8.1c XLSX 표시 형식 변경 (다음 로드맵, `set_number_format`)
+
+```json
+{
+  "operation_id": "op_xlsx_format_001",
+  "format": "xlsx",
+  "operation": "set_number_format",
+  "title": "금액 열 표시 형식 정리",
+  "reason": "금액이 콤마 없이 표시되어 자릿수를 읽기 어렵습니다.",
+  "confidence": 0.88,
+  "anchor": {
+    "type": "cell_range",
+    "sheet": "Sheet1",
+    "range": "D2:D10"
+  },
+  "expected_context": {
+    "sample_values": {
+      "D2": "10000"
+    },
+    "non_empty_cells": ["D2"]
+  },
+  "patch": {
+    "number_format": "#,##0원"
+  }
+}
+```
+
+patch whitelist (그 외 필드는 거부):
+
+| 필드 | 타입 | 허용값 |
+| --- | --- | --- |
+| `number_format` | string | `yyyy-mm-dd` \| `yyyy. mm. dd` \| `#,##0` \| `#,##0원` \| `#,##0.00` \| `0.0%` \| `0.00%` |
+
+anchor/range/expected_context 규칙은 `set_cell_style`(7.6절)과 동일하다(최대 200셀,
+`sample_values`/`non_empty_cells` 필수, anchor.range 내부 셀만 허용).
+
+### 8.1d XLSX 수식 설정 (다음 로드맵, `set_formula`)
+
+```json
+{
+  "operation_id": "op_xlsx_formula_001",
+  "format": "xlsx",
+  "operation": "set_formula",
+  "title": "금액 합계 셀 계산",
+  "reason": "합계 행이 비어 있어 표 하단에 합계를 채워달라는 요청입니다.",
+  "confidence": 0.82,
+  "anchor": {
+    "type": "cell",
+    "sheet": "Sheet1",
+    "cell": "D11"
+  },
+  "expected_context": {
+    "sample_values": {
+      "D2": "10000"
+    },
+    "non_empty_cells": ["D2"]
+  },
+  "patch": {
+    "formula": "=SUM(D2:D10)"
+  }
+}
+```
+
+규칙:
+
+- `anchor.type`은 `cell`만 허용한다(range 대상은 거부). 1차 범위는 단일 셀 수식 설정만 지원한다.
+- `patch`는 `formula`만 허용하며 `SUM`/`AVERAGE`/`COUNT`/`COUNTA`/`MIN`/`MAX`/`IF` whitelist
+  함수만 사용할 수 있다(중첩 호출 허용, 예: `IF(COUNT(...)>0,SUM(...),0)`).
+- 외부 시트/통합문서 참조(`!`, `[...]`), URL, 문자열 연결(`&`), whitelist 밖 함수
+  (`INDIRECT`, `HYPERLINK`, `WEBSERVICE` 등)는 모두 거부된다.
+- `expected_context`는 대상 셀이 아니라 수식이 참조하는 데이터의 현재 값을 확인하는
+  용도다(대상 셀은 수식을 넣기 전이라 보통 비어 있다).
+
+검증 실패 조건과 backend 구현은 `document-editing-ax-next-roadmap-v1-ko.md`
+6.Phase2-3절을 참조한다.
 
 ### 8.2 HWP 텍스트 변경
 

@@ -29,7 +29,9 @@ logger = logging.getLogger(__name__)
 # ── set_cell_style 상수 (document-format-editing-ax-v1-ko.md 7절 기준) ───────────
 
 # 1차 구현은 최대 200셀까지만 허용한다 (anchor.range 검증 시 사용).
+# set_number_format도 동일한 range 크기 제한을 재사용한다 (roadmap v1 5.2절).
 _STYLE_MAX_RANGE_CELLS = 200
+_FORMAT_MAX_RANGE_CELLS = _STYLE_MAX_RANGE_CELLS
 
 # patch에 허용된 키. expected_context는 DB 저장 시 patch에 병합되므로 함께 허용한다.
 _STYLE_ALLOWED_PATCH_KEYS = {
@@ -44,6 +46,50 @@ _STYLE_HORIZONTAL_ALIGNMENTS = {"left", "center", "right"}
 _STYLE_VERTICAL_ALIGNMENTS = {"top", "center", "bottom"}
 _STYLE_BORDER_STYLES = {"thin", "medium", "none"}
 _STYLE_FILL_COLOR_RE = re.compile(r"^[0-9A-Fa-f]{6}$")
+
+
+# ── set_number_format 상수 (roadmap v1 6.Phase2절 기준) ─────────────────────────
+
+_NUMBER_FORMAT_ALLOWED_PATCH_KEYS = {"number_format", "expected_context"}
+_NUMBER_FORMAT_WHITELIST = {
+    "yyyy-mm-dd",
+    "yyyy. mm. dd",
+    "#,##0",
+    "#,##0원",
+    "#,##0.00",
+    "0.0%",
+    "0.00%",
+}
+
+
+# ── set_formula 상수 (roadmap v1 6.Phase3절 기준) ───────────────────────────────
+
+# Excel 워크시트의 실제 최대 열/행 (XFD1048576) — expected_context 셀 참조가
+# "시트 범위 안의 그럴듯한 셀"인지 검증할 때 bounds로 사용한다.
+_XLSX_MAX_COLUMNS = 16384
+_XLSX_MAX_ROWS = 1048576
+
+_FORMULA_ALLOWED_PATCH_KEYS = {"formula", "expected_context"}
+_FORMULA_ALLOWED_FUNCTIONS = {"SUM", "AVERAGE", "COUNT", "COUNTA", "MIN", "MAX", "IF"}
+# 알려진 위험 함수는 whitelist에 없어도 별도로 명시해 더 구체적인 실패 사유를 준다
+# (외부 데이터 조회, 동적 참조, 임의 셀 실행 등 patch 검증을 우회할 수 있는 함수군).
+_FORMULA_FORBIDDEN_FUNCTIONS = {
+    "INDIRECT", "HYPERLINK", "WEBSERVICE", "IMPORTRANGE", "IMPORTDATA",
+    "IMPORTXML", "FILTERXML", "RTD", "EXEC", "CALL", "REGISTER", "SHELL", "CELL",
+}
+# 함수 호출 형태(이름 뒤 괄호)를 찾는 정규식 — 중첩 호출(IF 안의 SUM 등)도 함께 잡는다.
+_FORMULA_FUNCTION_CALL_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_.]*)\s*\(")
+# 허용 문자 집합: 영숫자, 괄호, 콤마, 콜론(range), 사칙연산, 비교연산, 따옴표, 공백.
+# '!'(시트 참조/외부 참조), '['/']'(외부 통합문서 참조), 'http/www'(URL), '&'(문자열 연결)는
+# 의도적으로 제외해 외부 참조·매크로 진입 경로를 charset 단계에서부터 차단한다.
+_FORMULA_CHARSET_RE = re.compile(r'^[A-Za-z0-9_()+\-*/:,.\s<>="]*$')
+_FORMULA_FORBIDDEN_SUBSTRING_RE = re.compile(
+    r"(https?://|www\.|\\\\|\[|\]|!|'|@|&)", re.IGNORECASE,
+)
+_FORMULA_CELL_REF_RE = re.compile(
+    r"\$?[A-Za-z]{1,3}\$?[0-9]{1,7}(?::\$?[A-Za-z]{1,3}\$?[0-9]{1,7})?"
+)
+_FORMULA_LITERAL_RE = re.compile(r"TRUE|FALSE", re.IGNORECASE)
 
 
 # ── 공용 결과 타입 ─────────────────────────────────────────────────────────────
@@ -90,6 +136,12 @@ def render_xlsx(original_bytes: bytes, changes: list) -> PatchResult:
     set_cell_style operation: anchor.sheet / anchor.range(cell_range)로 영역을 특정하고
     expected_context 검증 통과 시 patch whitelist 필드만 적용한다.
     검증 실패 → failed_items에 기록 (document-format-editing-ax-v1-ko.md 7-8절 기준).
+
+    set_number_format operation: set_cell_style과 동일한 anchor.range/expected_context
+    구조를 사용하며 patch.number_format이 whitelist에 있어야 적용한다.
+
+    set_formula operation: anchor.type=cell(단일 셀)만 허용하고, patch.formula가
+    보수적 whitelist(SUM/AVERAGE/COUNT/COUNTA/MIN/MAX/IF)를 통과해야 적용한다.
     """
     import openpyxl
 
@@ -106,31 +158,39 @@ def render_xlsx(original_bytes: bytes, changes: list) -> PatchResult:
     applied_ids: list[str] = []
     failed_items: list[dict] = []
 
+    _RANGE_OPS = {
+        "set_cell_style": (validate_xlsx_style_change, apply_xlsx_cell_style),
+        "set_number_format": (validate_xlsx_number_format_change, apply_xlsx_number_format),
+        "set_formula": (validate_xlsx_formula_change, apply_xlsx_formula),
+    }
+
     for change in changes:
-        if change.operation == "set_cell_style":
+        op_pair = _RANGE_OPS.get(change.operation)
+        if op_pair is not None:
+            validate_fn, apply_fn = op_pair
             # validate/apply 내부에서 예상치 못한 예외(예: 잘못된 셀 참조 파싱)가 나더라도
             # caller로 전파하지 않고 failed_items로 변환한다 (모듈 상단 render_* 규칙).
             try:
-                error = validate_xlsx_style_change(wb, change)
+                error = validate_fn(wb, change)
             except Exception as exc:
                 error = f"검증 중 예외 발생: {exc}"
             if error is not None:
                 failed_items.append({"operation_id": change.operation_id, "reason": error})
                 logger.warning(
-                    "render_xlsx: set_cell_style 검증 실패 | op=%s | reason=%s",
-                    change.operation_id, error,
+                    "render_xlsx: %s 검증 실패 | op=%s | reason=%s",
+                    change.operation, change.operation_id, error,
                 )
                 continue
             try:
-                apply_xlsx_cell_style(wb, change)
+                apply_fn(wb, change)
             except Exception as exc:
                 failed_items.append({
                     "operation_id": change.operation_id,
                     "reason": f"적용 중 예외 발생: {exc}",
                 })
                 logger.warning(
-                    "render_xlsx: set_cell_style 적용 실패 | op=%s | exc=%s",
-                    change.operation_id, exc,
+                    "render_xlsx: %s 적용 실패 | op=%s | exc=%s",
+                    change.operation, change.operation_id, exc,
                 )
                 continue
             applied_ids.append(change.operation_id)
@@ -182,38 +242,69 @@ def validate_xlsx_style_change(wb, change) -> str | None:
     expected_context는 서식 변경이 엉뚱한 영역에 적용되는 것을 막는 유일한 안전장치이므로
     (document-format-editing-ax-v1-ko.md 3.3절) 누락·빈 값이면 무조건 실패시킨다.
     """
-    from openpyxl.utils.cell import range_boundaries
-
     sheet_name = change.anchor.get("sheet", "")
     range_ref = change.anchor.get("range", "")
 
-    if sheet_name not in wb.sheetnames:
-        return f"시트 없음: {sheet_name}"
-
-    try:
-        min_col, min_row, max_col, max_row = range_boundaries(range_ref)
-        if min_col is None or min_row is None or max_col is None or max_row is None:
-            raise ValueError("range_boundaries가 None을 반환")
-    except (ValueError, TypeError, AttributeError):
-        return f"range 문법 오류: {range_ref!r}"
-
-    cell_count = (max_col - min_col + 1) * (max_row - min_row + 1)
-    if cell_count > _STYLE_MAX_RANGE_CELLS:
-        return f"range가 너무 큼: {cell_count}셀 (최대 {_STYLE_MAX_RANGE_CELLS}셀)"
+    range_error, bounds = _validate_xlsx_range(wb, sheet_name, range_ref, _STYLE_MAX_RANGE_CELLS)
+    if range_error is not None:
+        return range_error
+    min_col, min_row, max_col, max_row = bounds
 
     patch = change.patch or {}
     whitelist_error = _validate_xlsx_style_patch_whitelist(patch)
     if whitelist_error is not None:
         return whitelist_error
 
-    expected_context = patch.get("expected_context")
-    context_error = _validate_xlsx_style_expected_context(
-        expected_context, min_col, min_row, max_col, max_row,
+    return _validate_xlsx_range_expected_context(
+        wb[sheet_name], patch.get("expected_context"), "set_cell_style", min_col, min_row, max_col, max_row,
+    )
+
+
+def _validate_xlsx_range(
+    wb, sheet_name: str, range_ref: str, max_cells: int,
+) -> tuple[str | None, tuple[int, int, int, int] | None]:
+    """
+    anchor.sheet / anchor.range 공통 검증. set_cell_style과 set_number_format이 공유한다.
+
+    통과 시 (None, (min_col, min_row, max_col, max_row)), 실패 시 (사유 문자열, None).
+    """
+    from openpyxl.utils.cell import range_boundaries
+
+    if sheet_name not in wb.sheetnames:
+        return f"시트 없음: {sheet_name}", None
+
+    try:
+        min_col, min_row, max_col, max_row = range_boundaries(range_ref)
+        if min_col is None or min_row is None or max_col is None or max_row is None:
+            raise ValueError("range_boundaries가 None을 반환")
+    except (ValueError, TypeError, AttributeError):
+        return f"range 문법 오류: {range_ref!r}", None
+
+    cell_count = (max_col - min_col + 1) * (max_row - min_row + 1)
+    if cell_count > max_cells:
+        return f"range가 너무 큼: {cell_count}셀 (최대 {max_cells}셀)", None
+    if (
+        min_col < 1 or max_col > _XLSX_MAX_COLUMNS
+        or min_row < 1 or max_row > _XLSX_MAX_ROWS
+    ):
+        return f"range가 XLSX 허용 범위를 벗어남: {range_ref!r}", None
+
+    return None, (min_col, min_row, max_col, max_row)
+
+
+def _validate_xlsx_range_expected_context(
+    ws, expected_context, op_label: str, min_col: int, min_row: int, max_col: int, max_row: int,
+) -> str | None:
+    """
+    expected_context 존재·형식·셀 참조(anchor.range 내부)를 검증한 뒤 sample_values/
+    non_empty_cells를 워크북 실값과 대조한다. set_cell_style과 set_number_format이 공유한다.
+    """
+    context_error = _validate_xlsx_range_expected_context_shape(
+        expected_context, op_label, min_col, min_row, max_col, max_row,
     )
     if context_error is not None:
         return context_error
 
-    ws = wb[sheet_name]
     sample_values = expected_context.get("sample_values")
     for cell_ref, expected_value in sample_values.items():
         actual = ws[cell_ref].value
@@ -229,15 +320,16 @@ def validate_xlsx_style_change(wb, change) -> str | None:
     return None
 
 
-def _validate_xlsx_style_expected_context(
-    expected_context, min_col: int, min_row: int, max_col: int, max_row: int,
+def _validate_xlsx_range_expected_context_shape(
+    expected_context, op_label: str, min_col: int, min_row: int, max_col: int, max_row: int,
 ) -> str | None:
     """
     expected_context 존재 여부와 형식, 그리고 모든 셀 참조가 유효한 A1 단일 셀이면서
-    anchor.range 내부에 있는지 검증한다. set_cell_style은 expected_context 없이 적용할 수 없다.
+    anchor.range 내부에 있는지 검증한다. op_label로 지정된 operation은 expected_context
+    없이 적용할 수 없다.
     """
     if not isinstance(expected_context, dict) or not expected_context:
-        return "expected_context가 필요합니다 (set_cell_style은 검증 없이 적용할 수 없음)"
+        return f"expected_context가 필요합니다 ({op_label}은 검증 없이 적용할 수 없음)"
 
     sample_values = expected_context.get("sample_values")
     non_empty_cells = expected_context.get("non_empty_cells")
@@ -251,14 +343,14 @@ def _validate_xlsx_style_expected_context(
 
     all_refs = list(sample_values.keys()) + list(non_empty_cells)
     for cell_ref in all_refs:
-        ref_error = _validate_xlsx_style_context_cell_ref(cell_ref, min_col, min_row, max_col, max_row)
+        ref_error = _validate_xlsx_context_cell_ref(cell_ref, min_col, min_row, max_col, max_row)
         if ref_error is not None:
             return ref_error
 
     return None
 
 
-def _validate_xlsx_style_context_cell_ref(
+def _validate_xlsx_context_cell_ref(
     cell_ref, min_col: int, min_row: int, max_col: int, max_row: int,
 ) -> str | None:
     """단일 A1 셀 참조 문법인지, anchor.range 내부 좌표인지 검증한다."""
@@ -354,6 +446,269 @@ def apply_xlsx_cell_style(wb, change) -> None:
                 cell.border = Border() if border_style == "none" else Border(
                     left=side, right=side, top=side, bottom=side,
                 )
+
+
+# ── set_number_format ────────────────────────────────────────────────────────
+
+
+def validate_xlsx_number_format_change(wb, change) -> str | None:
+    """
+    set_number_format change를 검증한다. 통과 시 None, 실패 시 실패 사유 문자열을 반환한다.
+
+    검증 순서: 시트 존재 → range 문법/크기(set_cell_style과 동일 제한) → patch whitelist
+    (number_format이 whitelist 안에 있는지) → expected_context 존재·셀 참조 →
+    sample_values/non_empty_cells 실값 대조 (roadmap v1 6.Phase2절 "필수 설계" 기준).
+    """
+    sheet_name = change.anchor.get("sheet", "")
+    range_ref = change.anchor.get("range", "")
+
+    range_error, bounds = _validate_xlsx_range(wb, sheet_name, range_ref, _FORMAT_MAX_RANGE_CELLS)
+    if range_error is not None:
+        return range_error
+    min_col, min_row, max_col, max_row = bounds
+
+    patch = change.patch or {}
+    whitelist_error = _validate_xlsx_number_format_patch_whitelist(patch)
+    if whitelist_error is not None:
+        return whitelist_error
+
+    return _validate_xlsx_range_expected_context(
+        wb[sheet_name], patch.get("expected_context"), "set_number_format", min_col, min_row, max_col, max_row,
+    )
+
+
+def _validate_xlsx_number_format_patch_whitelist(patch: dict) -> str | None:
+    """patch에 허용되지 않은 키나 number_format이 whitelist 밖이면 실패 사유를 반환한다."""
+    unknown_keys = set(patch.keys()) - _NUMBER_FORMAT_ALLOWED_PATCH_KEYS
+    if unknown_keys:
+        return f"허용되지 않은 patch 필드: {sorted(unknown_keys)}"
+
+    number_format = patch.get("number_format")
+    if not number_format:
+        return "number_format이 필요합니다"
+    if number_format not in _NUMBER_FORMAT_WHITELIST:
+        return f"허용되지 않은 number_format: {number_format!r}"
+
+    return None
+
+
+def apply_xlsx_number_format(wb, change) -> None:
+    """검증을 통과한 set_number_format change를 워크북에 적용한다. 셀 값은 건드리지 않는다."""
+    from openpyxl.utils.cell import range_boundaries
+
+    ws = wb[change.anchor["sheet"]]
+    min_col, min_row, max_col, max_row = range_boundaries(change.anchor["range"])
+    number_format = (change.patch or {}).get("number_format")
+
+    for row in ws.iter_rows(min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col):
+        for cell in row:
+            cell.number_format = number_format
+
+
+# ── set_formula ──────────────────────────────────────────────────────────────
+
+
+def validate_xlsx_formula_change(wb, change) -> str | None:
+    """
+    set_formula change를 검증한다. 통과 시 None, 실패 시 실패 사유 문자열을 반환한다.
+
+    1차 범위는 단일 셀 수식 설정만 허용한다 (roadmap v1 6.Phase3절) — anchor.type이
+    cell_range면 range 대상이므로 무조건 거부한다.
+    검증 순서: anchor.type/시트/셀 문법 → patch whitelist → formula whitelist →
+    expected_context 존재·셀 참조 → sample_values/non_empty_cells 실값 대조.
+    """
+    from openpyxl.utils.cell import coordinate_to_tuple
+
+    anchor_type = change.anchor.get("type", "")
+    if anchor_type != "cell":
+        return f"set_formula는 단일 셀(anchor.type=cell)에만 적용 가능합니다: {anchor_type!r}"
+
+    sheet_name = change.anchor.get("sheet", "")
+    cell_ref = change.anchor.get("cell", "")
+
+    if sheet_name not in wb.sheetnames:
+        return f"시트 없음: {sheet_name}"
+
+    try:
+        row, col = coordinate_to_tuple(cell_ref)
+    except (ValueError, TypeError, AttributeError, KeyError):
+        return f"anchor.cell 문법 오류: {cell_ref!r}"
+    if not (1 <= row <= _XLSX_MAX_ROWS and 1 <= col <= _XLSX_MAX_COLUMNS):
+        return f"anchor.cell이 XLSX 허용 범위를 벗어남: {cell_ref!r}"
+
+    patch = change.patch or {}
+    unknown_keys = set(patch.keys()) - _FORMULA_ALLOWED_PATCH_KEYS
+    if unknown_keys:
+        return f"허용되지 않은 patch 필드: {sorted(unknown_keys)}"
+
+    formula = patch.get("formula")
+    formula_error = _validate_xlsx_formula(formula)
+    if formula_error is not None:
+        return formula_error
+
+    # set_formula의 expected_context는 대상 셀 자체가 아니라 수식이 참조하는 데이터
+    # 범위(예: 합계 대상 B2:B10)의 현재 값을 확인하는 용도다. 대상 셀은 수식을 넣기 전이라
+    # 보통 비어 있으므로, anchor.range 같은 bounds 제한 없이 시트 전체 범위에서
+    # 셀 참조 문법만 검증한다 (set_cell_style/set_number_format과 달리 범위 제한이 없음).
+    return _validate_xlsx_range_expected_context(
+        wb[sheet_name], patch.get("expected_context"), "set_formula",
+        1, 1, _XLSX_MAX_COLUMNS, _XLSX_MAX_ROWS,
+    )
+
+
+def _validate_xlsx_formula(formula) -> str | None:
+    """
+    보수적 whitelist 기반 수식 검증 (roadmap v1 6.Phase3절 "금지" 목록 기준).
+
+    허용 함수: SUM/AVERAGE/COUNT/COUNTA/MIN/MAX/IF (중첩 호출 포함).
+    금지: 외부 파일/시트 참조("!", "[", "]"), URL, 문자열 연결("&"), 암묵적 교차("@"),
+    작은따옴표(시트명 quoting), 그리고 whitelist 밖의 모든 함수(INDIRECT/HYPERLINK 등).
+    """
+    if not isinstance(formula, str) or not formula.strip():
+        return "formula는 비어 있지 않은 문자열이어야 함"
+
+    body = formula[1:] if formula.startswith("=") else formula
+    body = body.strip()
+    if not body:
+        return "formula가 비어 있음"
+
+    forbidden_match = _FORMULA_FORBIDDEN_SUBSTRING_RE.search(body)
+    if forbidden_match:
+        return f"formula에 금지된 패턴이 포함됨 (외부 참조/URL/시트 참조 등): {formula!r}"
+
+    if not _FORMULA_CHARSET_RE.match(body):
+        return f"formula에 허용되지 않은 문자가 포함됨: {formula!r}"
+
+    if body.count("(") != body.count(")"):
+        return f"formula 괄호가 일치하지 않음: {formula!r}"
+
+    calls = _FORMULA_FUNCTION_CALL_RE.findall(body)
+    if not calls:
+        return f"formula는 허용된 함수 호출을 포함해야 함: {formula!r}"
+
+    for name in calls:
+        upper = name.upper()
+        if upper in _FORMULA_FORBIDDEN_FUNCTIONS:
+            return f"금지된 함수: {name}"
+        if upper not in _FORMULA_ALLOWED_FUNCTIONS:
+            return f"알 수 없거나 허용되지 않은 함수: {name}"
+
+    token_error = _validate_xlsx_formula_tokens(body, formula)
+    if token_error is not None:
+        return token_error
+
+    # 함수명·셀참조·불리언 리터럴을 모두 제거했을 때 남는 알파벳이 있으면
+    # whitelist를 우회하는 미확인 토큰(연산자로 위장한 이름 등)으로 간주해 거부한다.
+    remainder = _FORMULA_FUNCTION_CALL_RE.sub("(", body)
+    remainder = _FORMULA_CELL_REF_RE.sub("_", remainder)
+    remainder = _FORMULA_LITERAL_RE.sub("_", remainder)
+    if re.search(r"[A-Za-z]", remainder):
+        return f"formula에 알 수 없는 토큰이 포함됨: {formula!r}"
+
+    return None
+
+
+def _validate_xlsx_formula_tokens(body: str, formula: str) -> str | None:
+    """
+    openpyxl 토크나이저로 수식의 큰 형태를 한 번 더 제한한다.
+
+    정규식 whitelist가 놓칠 수 있는 `=SUM(A1:A2) B1`, `=SUM(A1:A2)A1`,
+    `=SUM(A1 A2)` 같은 trailing/adjacent/intersection 참조를 차단한다.
+    """
+    try:
+        from openpyxl.formula.tokenizer import Tokenizer
+
+        raw_tokens = Tokenizer(f"={body}").items
+    except Exception as exc:
+        return f"formula 토큰화 실패: {exc}"
+
+    def is_value_start(token) -> bool:
+        return (
+            token.type == "OPERAND"
+            or (token.type == "FUNC" and token.subtype == "OPEN")
+            or (token.type == "PAREN" and token.subtype == "OPEN")
+        )
+
+    def is_value_end(token) -> bool:
+        return (
+            token.type == "OPERAND"
+            or (token.type == "FUNC" and token.subtype == "CLOSE")
+            or (token.type == "PAREN" and token.subtype == "CLOSE")
+        )
+
+    tokens = []
+    for idx, token in enumerate(raw_tokens):
+        if token.type != "WHITE-SPACE":
+            tokens.append(token)
+            continue
+
+        prev_token = next((t for t in reversed(raw_tokens[:idx]) if t.type != "WHITE-SPACE"), None)
+        next_token = next((t for t in raw_tokens[idx + 1:] if t.type != "WHITE-SPACE"), None)
+        if prev_token is not None and next_token is not None:
+            if is_value_end(prev_token) and is_value_start(next_token):
+                return f"formula 토큰 사이에 연산자 또는 구분자가 필요함: {formula!r}"
+
+    if not tokens:
+        return f"formula가 비어 있음: {formula!r}"
+
+    first = tokens[0]
+    if first.type != "FUNC" or first.subtype != "OPEN":
+        return f"formula는 허용된 함수 호출로 시작해야 함: {formula!r}"
+    if not is_value_end(tokens[-1]):
+        return f"formula가 완결된 값 표현식으로 끝나야 함: {formula!r}"
+
+    depth = 0
+    for idx, token in enumerate(tokens):
+        if token.type == "FUNC" and token.subtype == "OPEN":
+            depth += 1
+        elif token.type == "FUNC" and token.subtype == "CLOSE":
+            depth -= 1
+            if depth < 0:
+                return f"formula 괄호가 일치하지 않음: {formula!r}"
+        elif token.type == "PAREN" and token.subtype == "OPEN":
+            depth += 1
+        elif token.type == "PAREN" and token.subtype == "CLOSE":
+            depth -= 1
+            if depth < 0:
+                return f"formula 괄호가 일치하지 않음: {formula!r}"
+        elif token.type == "SEP" and depth <= 0:
+            return f"formula 인자 구분자는 함수 내부에서만 허용됨: {formula!r}"
+        elif token.type == "OPERATOR-INFIX" and token.value == ",":
+            return f"formula 인자 구분자는 함수 내부에서만 허용됨: {formula!r}"
+        elif token.type == "OPERAND" and token.subtype == "RANGE":
+            if str(token.value).startswith(":") or str(token.value).endswith(":"):
+                return f"formula 셀 범위 문법 오류: {formula!r}"
+
+        if idx > 0:
+            prev = tokens[idx - 1]
+            if is_value_end(prev) and is_value_start(token):
+                return f"formula 토큰 사이에 연산자 또는 구분자가 필요함: {formula!r}"
+            if token.type == "OPERATOR-INFIX":
+                if not is_value_end(prev):
+                    return f"formula 연산자 위치 오류: {formula!r}"
+                next_token = tokens[idx + 1] if idx + 1 < len(tokens) else None
+                if next_token is None or not is_value_start(next_token):
+                    return f"formula 연산자 위치 오류: {formula!r}"
+            if token.type == "SEP":
+                if not is_value_end(prev):
+                    return f"formula 인자 구분자 위치 오류: {formula!r}"
+                next_token = tokens[idx + 1] if idx + 1 < len(tokens) else None
+                if next_token is None or not is_value_start(next_token):
+                    return f"formula 인자 구분자 위치 오류: {formula!r}"
+
+    if depth != 0:
+        return f"formula 괄호가 일치하지 않음: {formula!r}"
+
+    return None
+
+
+def apply_xlsx_formula(wb, change) -> None:
+    """검증을 통과한 set_formula change를 워크북 단일 셀에 적용한다."""
+    ws = wb[change.anchor["sheet"]]
+    formula = (change.patch or {}).get("formula")
+    if not formula.startswith("="):
+        formula = f"={formula}"
+    ws[change.anchor["cell"]] = formula
 
 
 def render_docx(original_bytes: bytes, changes: list) -> PatchResult:
