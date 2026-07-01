@@ -442,7 +442,7 @@ function PdfViewer({ previewData, highlights = [], selectedHighlightId = null, o
 
     pdfjsLib.getDocument({ url: fileUrl }).promise
       .then(doc => {
-        if (cancelled) { doc.loadingTask.destroy(); return }
+        if (cancelled) { doc.loadingTask?.destroy(); return }
         setPdfDoc(doc)
         setNumPages(doc.numPages)
         setStatus('done')
@@ -460,7 +460,7 @@ function PdfViewer({ previewData, highlights = [], selectedHighlightId = null, o
 
   // 언마운트 시 PDF 문서 destroy — WASM 메모리 패턴과 동일한 정리 방식
   // pdfjs v6: destroy()는 PDFDocumentLoadingTask에 있음 (PDFDocumentProxy에는 없음)
-  useEffect(() => () => { pdfDoc?.loadingTask.destroy() }, [pdfDoc])
+  useEffect(() => () => { pdfDoc?.loadingTask?.destroy() }, [pdfDoc])
 
   // 페이지 이동 — 대상 div로 스크롤 후 현재 페이지 상태 업데이트
   const goToPage = useCallback((n) => {
