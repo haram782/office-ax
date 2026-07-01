@@ -13,7 +13,7 @@ import { api } from './client'
  * @returns {Promise<object>} 수정된 DocumentChange 전체
  */
 export async function patchDocumentChange(changeDbId, status) {
-  const { data } = await api.patch(`/documents/changes/${changeDbId}/`, { status })
+  const { data } = await api.patch(`/changes/${changeDbId}/`, { status })
   return data
 }
 
@@ -27,7 +27,7 @@ export async function patchDocumentChange(changeDbId, status) {
  */
 export async function triggerPatch(uploadId, versionId) {
   const { data } = await api.post(
-    `/documents/uploads/${uploadId}/versions/${versionId}/patch/`,
+    `/uploads/${uploadId}/versions/${versionId}/patch/`,
   )
   return data
 }
@@ -42,7 +42,7 @@ export async function triggerPatch(uploadId, versionId) {
  */
 export async function generatePatchPlan(uploadId, prompt) {
   const { data } = await api.post(
-    `/documents/uploads/${uploadId}/generate-patch-plan/`,
+    `/uploads/${uploadId}/generate-patch-plan/`,
     { prompt },
   )
   return data
@@ -59,7 +59,7 @@ export async function generatePatchPlan(uploadId, prompt) {
  */
 export async function acceptAllChanges(uploadId, versionId) {
   const { data } = await api.post(
-    `/documents/uploads/${uploadId}/versions/${versionId}/changes/accept-all/`,
+    `/uploads/${uploadId}/versions/${versionId}/changes/accept-all/`,
   )
   return data
 }
@@ -71,7 +71,7 @@ export async function acceptAllChanges(uploadId, versionId) {
  * @returns {Promise<Array<{ id, version_number, status, label, summary, applied_change_ids, created_at }>>}
  */
 export async function fetchDocumentVersions(uploadId) {
-  const { data } = await api.get(`/documents/uploads/${uploadId}/versions/`)
+  const { data } = await api.get(`/uploads/${uploadId}/versions/`)
   return data
 }
 
@@ -85,7 +85,7 @@ export async function fetchDocumentVersions(uploadId) {
  */
 export async function fetchVersionFileBlob(uploadId, versionId) {
   const response = await api.get(
-    `/documents/uploads/${uploadId}/versions/${versionId}/file/`,
+    `/uploads/${uploadId}/versions/${versionId}/file/`,
     { responseType: 'blob' },
   )
   return URL.createObjectURL(response.data)
