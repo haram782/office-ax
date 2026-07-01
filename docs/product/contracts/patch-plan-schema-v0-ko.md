@@ -153,14 +153,14 @@ redact_overlay
 regenerate
 ```
 
-v1에서 추가된 값 (XLSX 전용, 자세한 내용은 `document-format-editing-ax-v1-ko.md` 6-7절 참조):
+v1에서 추가된 값 (XLSX 전용, 자세한 내용은 `../feature-specs/document-format-editing-ax-v1-ko.md` 6-7절 참조):
 
 ```text
 set_cell_style
 ```
 
 다음 구현 로드맵에서 추가된 값 (XLSX 전용, 자세한 내용은
-`document-editing-ax-next-roadmap-v1-ko.md` 6.Phase2-3절 참조):
+`../roadmap/document-editing-ax-next-roadmap-v1-ko.md` 6.Phase2-3절 참조):
 
 ```text
 set_number_format
@@ -295,7 +295,7 @@ PPTX용.
 ### 7.6 cell_range anchor (XLSX 전용, v1)
 
 `set_cell_style` operation에서 사용한다. 자세한 검증 규칙은
-`document-format-editing-ax-v1-ko.md` 7.3-7.4절을 참조한다.
+`../feature-specs/document-format-editing-ax-v1-ko.md` 7.3-7.4절을 참조한다.
 
 ```json
 {
@@ -379,7 +379,7 @@ patch whitelist (그 외 필드는 거부):
 | `border` | string | `thin` \| `medium` \| `none` |
 
 `expected_context`는 DB에는 별도 필드가 없으므로 저장 시 `patch.expected_context`로 병합한다.
-검증 실패 조건과 backend 구현은 `document-format-editing-ax-v1-ko.md` 7.4, 8.3절을 참조한다.
+검증 실패 조건과 backend 구현은 `../feature-specs/document-format-editing-ax-v1-ko.md` 7.4, 8.3절을 참조한다.
 
 ### 8.1c XLSX 표시 형식 변경 (다음 로드맵, `set_number_format`)
 
@@ -454,7 +454,7 @@ anchor/range/expected_context 규칙은 `set_cell_style`(7.6절)과 동일하다
 - `expected_context`는 대상 셀이 아니라 수식이 참조하는 데이터의 현재 값을 확인하는
   용도다(대상 셀은 수식을 넣기 전이라 보통 비어 있다).
 
-검증 실패 조건과 backend 구현은 `document-editing-ax-next-roadmap-v1-ko.md`
+검증 실패 조건과 backend 구현은 `../roadmap/document-editing-ax-next-roadmap-v1-ko.md`
 6.Phase2-3절을 참조한다.
 
 ### 8.2 HWP 텍스트 변경
