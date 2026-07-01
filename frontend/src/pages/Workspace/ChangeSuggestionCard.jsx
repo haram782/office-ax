@@ -41,6 +41,32 @@ function styleSummaryLabel(patch) {
   return parts.join(' · ')
 }
 
+/**
+ * set_number_format patch를 "표시 형식 #,##0원로 변경" 형태로 요약한다.
+ * number_format이 없으면 빈 문자열을 반환한다.
+ */
+function numberFormatSummaryLabel(patch) {
+  if (!patch || !patch.number_format) return ''
+  return `표시 형식 ${patch.number_format}로 변경`
+}
+
+/**
+ * set_formula patch를 "수식 =SUM(D2:D10) 설정" 형태로 요약한다.
+ * formula가 없으면 빈 문자열을 반환한다.
+ */
+function formulaSummaryLabel(patch) {
+  if (!patch || !patch.formula) return ''
+  return `수식 ${patch.formula} 설정`
+}
+
+// operation → summary label 함수 매핑. original/replacement diff 대신 요약 문장을 보여주는
+// operation 집합이다 (roadmap v1 8절 UX 방향: operation별 표시 방식).
+const SUMMARY_LABEL_BY_OPERATION = {
+  set_cell_style:     styleSummaryLabel,
+  set_number_format:  numberFormatSummaryLabel,
+  set_formula:        formulaSummaryLabel,
+}
+
 // status → 뱃지 스타일
 const STATUS_BADGE = {
   pending:  { cls: 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400', label: '대기' },
@@ -95,10 +121,12 @@ export function ChangeSuggestionCard({ suggestion, status, isSelected, isPending
   const typeLabel       = CHANGE_TYPE_LABEL[changeType] ?? changeType ?? '변경'
   const location        = anchorLabel(anchor)
 
-  // set_cell_style은 original/replacement가 비어 있는 operation summary 타입이므로
-  // 빈 diff를 보여주지 않고 패치 내용을 요약 문장으로 표시한다 (9.2절).
-  const isStyleChange = operation === 'set_cell_style'
-  const styleSummary  = isStyleChange ? styleSummaryLabel(patch) : ''
+  // set_cell_style/set_number_format/set_formula는 original/replacement가 비어 있는
+  // operation summary 타입이므로 빈 diff를 보여주지 않고 패치 내용을 요약 문장으로
+  // 표시한다 (9.2절, document-editing-ax-next-roadmap-v1-ko.md 8절).
+  const summaryLabelFn = SUMMARY_LABEL_BY_OPERATION[operation]
+  const isStyleChange  = summaryLabelFn != null
+  const styleSummary   = isStyleChange ? summaryLabelFn(patch) : ''
 
   return (
     <div

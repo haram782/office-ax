@@ -68,6 +68,8 @@ patcher가 실제 파일을 수정할 때 이 스키마를 입력으로 사용�
 | `regenerate`      | PDF                    | 원본 내용 추출 후 새 PDF로 재생성 (대규모 구조 변경 시 사용)    |
 | `replace_shape`   | PPTX                   | 슬라이드 내 셰이프의 텍스트 교체. `anchor.type`은 `slide_shape` |
 | `set_cell_style`  | Excel                  | range 단위 셀 서식 변경(굵게/배경색/정렬/테두리). `anchor.type`은 `cell_range`. xlsx/excel 전용 |
+| `set_number_format` | Excel                | range 단위 표시 형식 변경(날짜/천단위/퍼센트 등). `anchor.type`은 `cell_range`. xlsx/excel 전용 |
+| `set_formula`     | Excel                  | 단일 셀에 수식 설정(SUM/AVERAGE/COUNT/COUNTA/MIN/MAX/IF whitelist). `anchor.type`은 `cell`. xlsx/excel 전용 |
 
 > **제약**: 포맷과 operation의 조합이 위 테이블에 없으면 patcher가 거부한다.
 
@@ -146,6 +148,30 @@ patcher가 실제 파일을 수정할 때 이 스키마를 입력으로 사용�
 `set_cell_style`의 `expected_context`(`sample_values`, `non_empty_cells`)와 `patch` whitelist
 (`font_bold`, `fill_color`, `horizontal_alignment`, `vertical_alignment`, `border`)는
 `patch-plan-schema-v0-ko.md` 8.1b절과 `document-format-editing-ax-v1-ko.md` 7절을 참조한다.
+
+`set_number_format`도 동일한 `cell_range` anchor와 `expected_context` 형식을 사용한다.
+`patch`는 `number_format` 하나만 허용하며 값은 다음 whitelist로 제한된다:
+`yyyy-mm-dd`, `yyyy. mm. dd`, `#,##0`, `#,##0원`, `#,##0.00`, `0.0%`, `0.00%`.
+자세한 내용은 `document-editing-ax-next-roadmap-v1-ko.md` 6.Phase2절을 참조한다.
+
+### cell anchor + expected_context (Excel 전용, `set_formula`)
+
+```json
+{
+  "type": "cell",
+  "sheet": "Sheet1",
+  "cell": "D5"
+}
+```
+
+`set_formula`는 range가 아닌 단일 셀만 대상으로 한다(`anchor.type`은 `cell`).
+`expected_context`는 대상 셀이 아니라 수식이 참조하는 데이터 범위의 현재 값을 확인하는
+용도이며(대상 셀은 수식을 넣기 전이라 보통 비어 있다), `sample_values`/`non_empty_cells`
+형식은 다른 XLSX 양식 operation과 동일하다.
+`patch`는 `formula` 하나만 허용하며 `SUM`/`AVERAGE`/`COUNT`/`COUNTA`/`MIN`/`MAX`/`IF`
+whitelist 함수만 사용할 수 있다(중첩 호출 허용). 외부 시트/통합문서 참조(`!`, `[...]`),
+URL, 문자열 연결(`&`), whitelist 밖 함수(`INDIRECT`, `HYPERLINK`, `WEBSERVICE` 등)는
+모두 거부된다. 자세한 내용은 `document-editing-ax-next-roadmap-v1-ko.md` 6.Phase3절을 참조한다.
 
 ### pdf_region anchor (PDF)
 

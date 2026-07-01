@@ -88,6 +88,67 @@ describe('ChangeSuggestionCard — set_cell_style', () => {
   })
 })
 
+describe('ChangeSuggestionCard — set_number_format', () => {
+  function makeFormatSuggestion(overrides = {}) {
+    return makeSuggestion({
+      id: 'op_format_1',
+      operation: 'set_number_format',
+      title: '금액 열 표시 형식 정리',
+      reason: '금액이 콤마 없이 표시되어 자릿수를 읽기 어렵습니다.',
+      anchor: { type: 'cell_range', sheet: 'Sheet1', range: 'D2:D10' },
+      patch: { number_format: '#,##0원' },
+      ...overrides,
+    })
+  }
+
+  it('원래/변경 diff 대신 표시 형식 요약 문장을 보여준다', () => {
+    renderCard(makeFormatSuggestion())
+    expect(screen.getByText(/표시 형식 #,##0원로 변경/)).toBeTruthy()
+    expect(screen.queryByText('→')).toBeNull()
+  })
+
+  it('range anchor 위치(D2:D10 · Sheet1)를 표시한다', () => {
+    renderCard(makeFormatSuggestion())
+    expect(screen.getByText('D2:D10 · Sheet1')).toBeTruthy()
+  })
+
+  it('patch가 비어 있으면 요약 줄을 렌더하지 않는다', () => {
+    renderCard(makeFormatSuggestion({ patch: {} }))
+    // title에도 "표시 형식"이 포함되므로 요약 줄 특유의 "로 변경" 접미사로 구분한다
+    expect(screen.queryByText(/로 변경/)).toBeNull()
+  })
+})
+
+describe('ChangeSuggestionCard — set_formula', () => {
+  function makeFormulaSuggestion(overrides = {}) {
+    return makeSuggestion({
+      id: 'op_formula_1',
+      operation: 'set_formula',
+      title: '금액 합계 셀 계산',
+      reason: '합계 행이 비어 있어 합계를 채워달라는 요청입니다.',
+      anchor: { type: 'cell', sheet: 'Sheet1', cell: 'D11' },
+      patch: { formula: '=SUM(D2:D10)' },
+      ...overrides,
+    })
+  }
+
+  it('원래/변경 diff 대신 수식 요약 문장을 보여준다', () => {
+    renderCard(makeFormulaSuggestion())
+    expect(screen.getByText(/수식 =SUM\(D2:D10\) 설정/)).toBeTruthy()
+    expect(screen.queryByText('→')).toBeNull()
+  })
+
+  it('cell anchor 위치(D11 · Sheet1)를 표시한다', () => {
+    renderCard(makeFormulaSuggestion())
+    expect(screen.getByText('D11 · Sheet1')).toBeTruthy()
+  })
+
+  it('patch가 비어 있으면 요약 줄을 렌더하지 않는다', () => {
+    renderCard(makeFormulaSuggestion({ patch: {} }))
+    expect(screen.queryByText(/수식/)).toBeNull()
+  })
+})
+
 describe('ChangeSuggestionCard — 기존 replace_cell UI 회귀 확인', () => {
   it('replace_cell suggestion은 여전히 original → replacement diff를 보여준다', () => {
     const suggestion = makeSuggestion({

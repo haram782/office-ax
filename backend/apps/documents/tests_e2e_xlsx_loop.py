@@ -11,12 +11,15 @@ XLSX 기준 사용자 루프 전체 E2E 통합 테스트.
   7. GET  .../versions/                 → version.status = "ready" 확인(polling 시뮬레이션)
   8. GET  .../versions/{id}/file/       → artifact 다운로드, openpyxl로 셀 값 검증
 
-4개 테스트:
+5개 테스트:
   happy path  — 1~8 전 단계 통과, 승인 change만 XLSX에 반영
   boundary    — operations 빈 배열 → 200 + version_id=null, 체인 자연 종료
   failure     — original 불일치 change는 status=failed, 나머지는 정상, version=ready
   regression  — 동일 upload에 두 번째 버전 생성 시 version_number 자동 증가,
                 첫 번째 버전 artifact_file 영향 없음
+  sales scenario — set_cell_style + set_number_format + set_formula가 한 매출표에서
+                함께 적용되고, 의도적으로 잘못된 operation 1건은 개별 실패로 격리된다
+                (document-editing-ax-next-roadmap-v1-ko.md 6.Phase5절 기준)
 """
 import io
 import shutil
@@ -550,3 +553,186 @@ class XlsxE2EVersionNumberRegressionTest(TestCase):
         self.assertEqual(resp.status_code, 200)
         version_numbers = [v["version_number"] for v in resp.data]
         self.assertEqual(sorted(version_numbers), [1, 2, 3], "버전 목록에 1·2·3이 모두 존재해야 한다")
+
+
+# ── 업무 시나리오: 매출표 헤더 강조 + 표시 형식 + 합계 수식 ─────────────────────
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA)
+class XlsxE2ESalesScenarioTest(TestCase):
+    """
+    roadmap v1 6.Phase5절 대표 시나리오:
+      업로드된 매출표에서 1) 헤더를 강조하고 2) 금액 열 표시 형식을 정리하고
+      3) 합계 셀에 수식을 넣고 4) 수정본을 다운로드한다.
+
+    네 번째 operation(op_sales_004)은 의도적으로 허용되지 않은 number_format을 사용해
+    개별 change 실패로 격리되는지, 나머지 세 operation은 정상 적용되는지 함께 검증한다.
+
+    XLSX 레이아웃 (sheet="정산내역"):
+      A1:D1 = 헤더("항목"/"수량"/"단가"/"금액")
+      A2:D2 = "사무용품"/10/1000/10000
+      D5    = 합계 대상(수식 설정 전 비어 있음)
+    """
+
+    _SALES_PLAN = _patch_plan([
+        {
+            "operation_id": "op_sales_001",
+            "format": "excel",
+            "operation": "set_cell_style",
+            "title": "표 헤더 강조",
+            "reason": "헤더 영역이 일반 셀처럼 보여 표의 구분이 어렵습니다.",
+            "confidence": 0.9,
+            "anchor": {"type": "cell_range", "sheet": "정산내역", "range": "A1:D1"},
+            "expected_context": {
+                "sample_values": {"A1": "항목", "D1": "금액"},
+                "non_empty_cells": ["A1", "B1", "C1", "D1"],
+            },
+            "patch": {"font_bold": True},
+            "risk": {"level": "low"},
+        },
+        {
+            "operation_id": "op_sales_002",
+            "format": "excel",
+            "operation": "set_number_format",
+            "title": "금액 열 표시 형식 정리",
+            "reason": "금액이 콤마 없이 표시되어 자릿수를 읽기 어렵습니다.",
+            "confidence": 0.88,
+            "anchor": {"type": "cell_range", "sheet": "정산내역", "range": "D2:D2"},
+            "expected_context": {
+                "sample_values": {"D2": "10000"},
+                "non_empty_cells": ["D2"],
+            },
+            "patch": {"number_format": "#,##0원"},
+            "risk": {"level": "low"},
+        },
+        {
+            "operation_id": "op_sales_003",
+            "format": "excel",
+            "operation": "set_formula",
+            "title": "금액 합계 셀 계산",
+            "reason": "합계 행이 비어 있어 합계를 채워달라는 요청입니다.",
+            "confidence": 0.82,
+            "anchor": {"type": "cell", "sheet": "정산내역", "cell": "D5"},
+            "expected_context": {
+                "sample_values": {"D2": "10000"},
+                "non_empty_cells": ["D2"],
+            },
+            "patch": {"formula": "=SUM(D2:D2)"},
+            "risk": {"level": "low"},
+        },
+        {
+            # 의도적으로 허용되지 않은 number_format — 개별 실패 격리 검증용
+            "operation_id": "op_sales_004",
+            "format": "excel",
+            "operation": "set_number_format",
+            "title": "수량 열 표시 형식 정리(잘못된 patch)",
+            "reason": "허용되지 않은 형식을 사용한 실패 시나리오",
+            "confidence": 0.5,
+            "anchor": {"type": "cell_range", "sheet": "정산내역", "range": "B2:B2"},
+            "expected_context": {
+                "sample_values": {"B2": "10"},
+                "non_empty_cells": ["B2"],
+            },
+            "patch": {"number_format": "0.000"},
+            "risk": {"level": "low"},
+        },
+    ])
+
+    def setUp(self):
+        self.user = _make_user("e2e_sales_user")
+        self.client = _authed(self.user)
+
+    @patch("apps.documents.views._generate_patch_plan")
+    @patch("apps.documents.views.current_app.send_task")
+    def test_sales_table_scenario_partial_failure_preserves_success(self, mock_send_task, mock_gen_plan):
+        """헤더 강조·표시 형식·수식은 성공, 잘못된 number_format은 개별 실패로 격리된다."""
+        mock_send_task.return_value = MagicMock(id="fake-sales-task-id")
+        mock_gen_plan.return_value = self._SALES_PLAN
+
+        # ── 1. 업로드 ───────────────────────────────────────────────────────
+        xlsx_bytes = _make_xlsx_bytes(
+            sheet_name="정산내역",
+            data={
+                "A1": "항목", "B1": "수량", "C1": "단가", "D1": "금액",
+                "A2": "사무용품", "B2": 10, "C2": 1000, "D2": 10000,
+            },
+        )
+        uploaded = SimpleUploadedFile(
+            "sales.xlsx",
+            xlsx_bytes,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        resp = self.client.post("/api/v1/uploads/", {"file": uploaded}, format="multipart")
+        self.assertEqual(resp.status_code, 202)
+        upload_id = resp.data["upload_id"]
+
+        # ── 2. 분석 완료 시뮬레이션 ─────────────────────────────────────────
+        notify_analysis_complete(upload_id, {
+            "source_type": "excel", "summary": "매출표 수정 요청", "errors": [],
+        })
+
+        # ── 3. patch plan 생성 ──────────────────────────────────────────────
+        resp = self.client.post(
+            f"/api/v1/uploads/{upload_id}/generate-patch-plan/",
+            {"prompt": "헤더 강조하고 금액 표시 형식 정리하고 합계 셀에 수식 넣어줘"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        version_id = resp.data["version_id"]
+        changes = resp.data["changes"]
+        self.assertEqual(len(changes), 4, "4개 operation이 change로 저장되어야 한다")
+
+        # patch.expected_context 병합이 set_cell_style 외 operation에도 적용됐는지 확인
+        style_change = next(c for c in changes if c["operation_id"] == "op_sales_001")
+        format_change = next(c for c in changes if c["operation_id"] == "op_sales_002")
+        formula_change = next(c for c in changes if c["operation_id"] == "op_sales_003")
+        self.assertIn("expected_context", style_change["patch"])
+        self.assertIn("expected_context", format_change["patch"])
+        self.assertIn("expected_context", formula_change["patch"])
+
+        # ── 4. 전체 accept-all ──────────────────────────────────────────────
+        resp = self.client.post(
+            f"/api/v1/uploads/{upload_id}/versions/{version_id}/changes/accept-all/",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.data["applied"]), 4)
+
+        # ── 5. patch 트리거 (동기 실행) ───────────────────────────────────
+        resp = self.client.post(
+            f"/api/v1/uploads/{upload_id}/versions/{version_id}/patch/",
+        )
+        self.assertEqual(resp.status_code, 202)
+
+        # ── 6. DB 상태 검증 — 3건 성공, 1건 실패 ────────────────────────────
+        version = DocumentVersion.objects.get(pk=version_id)
+        self.assertEqual(version.status, DocumentVersion.Status.READY, "일부 성공이므로 ready여야 한다")
+
+        change_map = {c.operation_id: c for c in DocumentChange.objects.filter(version=version)}
+        self.assertEqual(change_map["op_sales_001"].status, DocumentChange.Status.APPLIED)
+        self.assertEqual(change_map["op_sales_002"].status, DocumentChange.Status.APPLIED)
+        self.assertEqual(change_map["op_sales_003"].status, DocumentChange.Status.APPLIED)
+        self.assertEqual(
+            change_map["op_sales_004"].status, DocumentChange.Status.FAILED,
+            "허용되지 않은 number_format은 개별 실패로 격리되어야 한다",
+        )
+
+        # ── 7. 버전 목록으로 status 확인 (polling 시뮬레이션) ──────────────
+        resp = self.client.get(f"/api/v1/uploads/{upload_id}/versions/")
+        self.assertEqual(resp.status_code, 200)
+        patched = next(v for v in resp.data if v["id"] == version_id)
+        self.assertEqual(patched["status"], "ready")
+
+        # ── 8. artifact 다운로드 및 openpyxl 검증 ───────────────────────────
+        resp = self.client.get(
+            f"/api/v1/uploads/{upload_id}/versions/{version_id}/file/",
+        )
+        self.assertEqual(resp.status_code, 200)
+        file_bytes = b"".join(resp.streaming_content) if hasattr(resp, "streaming_content") else resp.content
+
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=False)
+        ws = wb["정산내역"]
+
+        self.assertTrue(ws["A1"].font.bold, "헤더 강조(set_cell_style)가 반영되어야 한다")
+        self.assertEqual(ws["D2"].number_format, "#,##0원", "금액 표시 형식이 반영되어야 한다")
+        self.assertEqual(ws["D5"].value, "=SUM(D2:D2)", "합계 수식이 반영되어야 한다")
+        # 실패한 operation의 대상 셀(B2)은 원본 number_format(General)이 유지되어야 한다
+        self.assertNotEqual(ws["B2"].number_format, "0.000", "실패한 operation은 반영되지 않아야 한다")

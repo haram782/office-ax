@@ -792,18 +792,24 @@ class LLMParseError(Exception):
 
 # ── LLM 시스템 프롬프트 ───────────────────────────────────────────────────────
 
+# XLSX 양식 operation(cell_range/cell 대상, expected_context 필수) — patch.expected_context
+# 병합 대상을 판단할 때 사용한다 (document-editing-ax-next-roadmap-v1-ko.md 6.Phase4절).
+_XLSX_FORMAT_OPERATIONS = {"set_cell_style", "set_number_format", "set_formula"}
+
+
 _PATCH_PLAN_SYSTEM_PROMPT = """You are a document correction AI. Given a file's context and a user's edit request, generate a structured PatchPlan JSON.
 
 Rules:
 - Return ONLY valid JSON. No explanation text, no markdown code blocks.
 - The JSON must have: schema, plan_id, summary, operations (array).
 - operation_id: numbered "op_001", "op_002", ...
-- Allowed operations: replace_cell, replace_text, annotate, set_cell_style (XLSX/excel only — see set_cell_style rules below) (NOT redact_overlay or regenerate)
+- Allowed operations: replace_cell, replace_text, annotate, set_cell_style, set_number_format, set_formula (XLSX/excel only — see rules below) (NOT redact_overlay or regenerate)
 - Each operation must include: operation_id, format, operation, title, original, replacement, reason, confidence (0.0-1.0), anchor, patch
 - anchor for XLSX: {"type": "cell", "sheet": "...", "cell": "A1"}
 - anchor for text-based: {"type": "text_match", "target_text": "...", "occurrence": 1}
 - risk: {"level": "low"|"medium"|"high"}
 - If no changes are needed, return operations as empty array []
+- Only generate a formatting/number-format/formula operation when the user explicitly asked for that kind of change within a range/cell you are confident about. If you are not confident about the exact range, the current cell values, or the target cell, do not generate the operation at all — an unconfident operation will simply be rejected by validation, so it is always safer to omit it.
 
 set_cell_style (XLSX/Excel ONLY — never use this operation when format/source_type is not xlsx or excel):
 - Only generate set_cell_style when the file's format/source_type is "xlsx" or "excel" AND the user explicitly asked for a formatting/style change (e.g. "헤더 보기 좋게 정리해줘"). Do not invent style changes the user did not ask for.
@@ -811,7 +817,21 @@ set_cell_style (XLSX/Excel ONLY — never use this operation when format/source_
 - anchor: {"type": "cell_range", "sheet": "...", "range": "A1:D1"}. Keep the range as small as possible (max 200 cells) — never select an entire sheet or an oversized range.
 - expected_context is required and must include: "sample_values" (a dict of a few cell refs in the range mapped to their current text value, used to confirm you picked the right area) and "non_empty_cells" (a list of cell refs in the range that must not be blank, e.g. header cells).
 - patch may ONLY contain these whitelisted keys — never add any other key, never use raw openpyxl/CSS property names: "font_bold" (boolean), "fill_color" (6-hex RRGGBB, no "#"), "horizontal_alignment" ("left"|"center"|"right"), "vertical_alignment" ("top"|"center"|"bottom"), "border" ("thin"|"medium"|"none").
-- If you are not confident about the exact range or the current cell values, do not generate the operation at all.
+
+set_number_format (XLSX/Excel ONLY):
+- Only generate set_number_format when the user explicitly asked for a display-format change (e.g. "금액 열에 천 단위 콤마 붙여줘", "날짜 형식 통일해줘", "비율을 퍼센트로 표시해줘").
+- operation_id, format="xlsx", operation="set_number_format", title, reason, confidence, anchor, expected_context, patch are all required. original and replacement may be empty strings.
+- anchor: {"type": "cell_range", "sheet": "...", "range": "A1:D1"}, same 200-cell max as set_cell_style.
+- expected_context is required, same shape as set_cell_style: "sample_values" and "non_empty_cells".
+- patch may ONLY contain "number_format" (one of the following exact strings — never invent a different pattern) and "expected_context": "yyyy-mm-dd", "yyyy. mm. dd", "#,##0", "#,##0원", "#,##0.00", "0.0%", "0.00%".
+
+set_formula (XLSX/Excel ONLY):
+- Only generate set_formula when the user explicitly asked for a simple calculation (sum/average/count/min/max/simple conditional) to be written into ONE specific cell (e.g. "합계 행에 금액 합계를 넣어줘"). Never use it for row/column insertion or multi-cell formulas.
+- operation_id, format="xlsx", operation="set_formula", title, reason, confidence, anchor, expected_context, patch are all required. original and replacement may be empty strings.
+- anchor MUST be a single cell: {"type": "cell", "sheet": "...", "cell": "D5"}. Never use anchor.type="cell_range" for set_formula.
+- expected_context is required and describes the data the formula reads (NOT the target cell, which is usually still empty): "sample_values" (a dict of a few cell refs the formula will sum/average/etc. mapped to their current value) and "non_empty_cells" (cell refs that must not be blank, typically the same data cells).
+- patch may ONLY contain "formula" and "expected_context". formula must be a plain Excel formula string starting with "=" and MUST use only these whitelisted functions: SUM, AVERAGE, COUNT, COUNTA, MIN, MAX, IF (nesting is allowed, e.g. "=IF(COUNT(B2:B10)>0,SUM(B2:B10),0)").
+- NEVER generate a formula containing: other-sheet or other-workbook references ("!" or "[...]"), URLs, string concatenation ("&"), or any function outside the whitelist (INDIRECT, HYPERLINK, WEBSERVICE, IMPORTRANGE, etc. are always forbidden). Such formulas will always be rejected — do not attempt them.
 
 Return only JSON, starting with {"""
 
@@ -972,9 +992,11 @@ class GeneratePatchPlanView(APIView):
         for op in operations:
             risk = op.get("risk") or {}
             patch = dict(op.get("patch") or {})
-            # set_cell_style의 expected_context는 DocumentChange에 별도 필드가 없으므로
-            # patch.expected_context로 병합해 저장한다 (document-format-editing-ax-v1-ko.md 8.1절).
-            if op.get("operation") == "set_cell_style" and op.get("expected_context"):
+            # XLSX 양식 operation(set_cell_style/set_number_format/set_formula)의
+            # expected_context는 DocumentChange에 별도 필드가 없으므로 patch.expected_context로
+            # 병합해 저장한다 (document-format-editing-ax-v1-ko.md 8.1절,
+            # document-editing-ax-next-roadmap-v1-ko.md 4절).
+            if op.get("operation") in _XLSX_FORMAT_OPERATIONS and op.get("expected_context"):
                 patch["expected_context"] = op.get("expected_context")
             change = DocumentChange.objects.create(
                 version=version,
