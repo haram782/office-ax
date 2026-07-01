@@ -17,19 +17,26 @@ reviewer=codex, tester=claude, validator=claude. Reviewer default provider is no
 codex (this task's reviewer ran under claude — note for next routing decision, not
 a retroactive problem).
 
-## 2. Commit/merge/push implications (changed — important)
+## 2. Commit/merge/push implications (superseded — PR flow, no local merge)
 
-`~/.codex/docs/merge-policy.md` describes **local-merge only**: commit on worktree
-branch → merge worktree branch into current branch → delete worktree. It has **no
-push/PR/gh step**. This differs from `~/.claude/rules/merge.md`, which this task's
-earlier work implicitly assumed (push + `gh pr create` + user-approved `gh pr merge`).
+Prior guidance in this section described a local-merge-only path per
+`~/.codex/docs/merge-policy.md` (commit → local `git merge` into current branch →
+delete worktree, no push/PR step). The user has since corrected this: the active
+flow for this task is **push + PR, with no local merge and no worktree deletion**.
+This matches `~/.claude/rules/merge.md`'s remote path, not the local-only path.
 
-Action: do not push or open a PR under the refreshed orchestrator profile unless the
-user explicitly asks for a remote flow. Default path: user approves merge → `git
-merge` worktree branch into `main` locally → delete worktree (Worktree Cleanup
-Rule). Validator sign-off already obtained (`.agents/AGENT_VALIDATION.md`: PASS) —
-orchestrator still must get explicit user merge approval before merging (profile
-line 42), regardless of local vs remote path.
+Current state:
+
+- Worktree branch `work/next-roadmap-xlsx-ops` is committed at `98d5006`
+  (`feat: add xlsx set_number_format/set_formula ops with hardened validation`).
+- **Next gate**: push `work/next-roadmap-xlsx-ops` to `origin`, then open a GitHub
+  PR against `main` via `gh pr create`. Do **not** run `git merge` into any local
+  branch and do **not** delete this worktree — it stays live for tracking until the
+  PR is merged (remotely) and the user explicitly asks for cleanup.
+- Validator sign-off already obtained (`.agents/AGENT_VALIDATION.md`: PASS).
+  Orchestrator/workers still must not merge the PR without the user's explicit
+  approval after it's opened — pushing the branch and opening the PR is the
+  authorized action here, merging the PR is a separate, still-gated step.
 
 ## 3. Authoritative agent files
 
@@ -43,17 +50,19 @@ line 42), regardless of local vs remote path.
 
 ## 4. Exact relay text for active workers
 
-> Harness note: orchestrator coordination now follows
+> Harness note: orchestrator coordination follows
 > `~/.codex/profiles/orchestrator.md` + `~/.codex/docs/merge-policy.md`. Your own
 > role profile is unchanged — keep using `~/.claude/profiles/<your-role>.md` and
-> writing to `.agents/*.md` as before. One change that affects you: merge will be a
-> **local `git merge` into the current branch**, not a pushed PR — do not assume a
-> PR will be opened. Treat `.agents/AGENT_REVIEW.md` / `AGENT_TEST_REPORT.md` /
+> writing to `.agents/*.md` as before. Corrected flow (supersedes the earlier
+> local-merge note): this task ships as a **pushed branch + GitHub PR against
+> main**, not a local `git merge`. Do not merge locally and do not delete the
+> worktree. Treat `.agents/AGENT_REVIEW.md` / `AGENT_TEST_REPORT.md` /
 > `AGENT_VALIDATION.md` as the only authoritative artifacts for this task; ignore
 > same-named files at the repo root (already-merged, unrelated prior task).
 
 ## 5. Open item for orchestrator
 
-Validator already returned PASS. Per refreshed profile: request user's explicit
-merge approval next, then perform local merge + worktree deletion — no push step
-unless the user asks for one.
+Validator already returned PASS. Branch is committed and pushed to `origin`; a
+PR against `main` has been opened via `gh pr create` (see PR URL reported to the
+user). Next gate is the user's explicit approval to merge the PR — do not merge
+the PR or delete the worktree until that approval is given.
