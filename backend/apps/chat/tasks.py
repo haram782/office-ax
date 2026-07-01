@@ -3,6 +3,7 @@ from celery.utils.log import get_task_logger
 
 from apps.documents.models import UploadLog
 from apps.documents.services import ensure_original_version
+from apps.documents.services.patch_plan import LLMParseError, PatchPlanService
 from .change_highlights import corrections_to_change_highlights
 
 logger = get_task_logger(__name__)
@@ -37,6 +38,12 @@ def notify_chat_response(chat_message_id: int, result: dict) -> None:
 
         # ── 1-b. 원본 DocumentVersion 자동 생성 (idempotent — 중복 생성 방지) ──
         ensure_original_version(user_message.upload_log)
+
+    # ── 1-c. patch_intent: PatchPlanService를 호출해 수정 계획을 생성한다 ────
+    result_type = result.get("type")
+    if result_type == "patch_intent":
+        _handle_patch_intent(user_message, result)
+        return
 
     # ── 2. 어시스턴트 응답 내용 구성 ──────────────────────────────────────────
     summary = result.get("summary", "분석을 완료하였습니다.")
@@ -164,4 +171,117 @@ def notify_chat_response(chat_message_id: int, result: dict) -> None:
         user_message.session_id,
         chat_message_id,
         artifact_url or "없음",
+    )
+
+
+def _handle_patch_intent(user_message, result: dict) -> None:
+    """
+    type="patch_intent" 결과를 받아 PatchPlanService로 수정 계획을 생성하고
+    어시스턴트 ChatMessage를 저장한다.
+
+    예측 가능한 실패(upload 없음, 권한 오류, 미완료 상태, LLM 실패)는
+    로그 기록 후 오류 내용 ChatMessage로 처리한다.
+    예외를 전파하지 않아 채팅 태스크가 실패로 처리되지 않도록 보장한다.
+    """
+    from .models import ChatMessage
+
+    upload_id = result.get("upload_id")
+    refined_prompt = result.get("refined_prompt", "")
+    user = user_message.session.user
+    session = user_message.session
+
+    if not upload_id or not refined_prompt:
+        # upload_id 또는 refined_prompt가 없으면 수정 계획 생성 불가
+        ChatMessage.objects.create(
+            session=session,
+            role=ChatMessage.Role.ASSISTANT,
+            content="수정 요청을 처리하려면 문서가 열려 있어야 합니다. 문서를 업로드한 후 다시 시도해 주세요.",
+        )
+        return
+
+    try:
+        patch_result = PatchPlanService.generate(
+            upload_id=upload_id,
+            prompt=refined_prompt,
+            user=user,
+        )
+    except UploadLog.DoesNotExist:
+        logger.error(
+            "patch_intent 처리 실패: UploadLog 없음 | upload_id=%s | session=%s",
+            upload_id, session.pk,
+        )
+        ChatMessage.objects.create(
+            session=session,
+            role=ChatMessage.Role.ASSISTANT,
+            content="문서를 찾을 수 없습니다. 파일을 다시 업로드해 주세요.",
+        )
+        return
+    except (PermissionError, ValueError) as exc:
+        logger.warning(
+            "patch_intent 처리 실패: %s | upload_id=%s | session=%s",
+            exc, upload_id, session.pk,
+        )
+        ChatMessage.objects.create(
+            session=session,
+            role=ChatMessage.Role.ASSISTANT,
+            content=f"수정 요청을 처리할 수 없습니다: {exc}",
+        )
+        return
+    except LLMParseError as exc:
+        logger.error(
+            "patch_intent LLM 오류 | upload_id=%s | session=%s | %s",
+            upload_id, session.pk, exc,
+        )
+        ChatMessage.objects.create(
+            session=session,
+            role=ChatMessage.Role.ASSISTANT,
+            content="수정 계획 생성에 실패했습니다. 요청을 더 구체적으로 작성해 주세요.",
+        )
+        return
+    except Exception as exc:
+        logger.exception(
+            "patch_intent 예기치 않은 오류 | upload_id=%s | session=%s",
+            upload_id, session.pk,
+        )
+        ChatMessage.objects.create(
+            session=session,
+            role=ChatMessage.Role.ASSISTANT,
+            content="내부 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+        )
+        return
+
+    # 수정 계획 생성 성공 — patch_plan snippet_data로 ChatMessage 저장
+    version_id = patch_result.get("version_id")
+    changes = patch_result.get("changes", [])
+    plan_id = patch_result.get("plan_id", "")
+
+    if version_id is None:
+        # operations 빈 배열 → 수정할 항목 없음 안내
+        content = "요청하신 내용에 해당하는 수정 항목을 찾지 못했습니다. 더 구체적인 내용으로 다시 요청해 주세요."
+        ChatMessage.objects.create(
+            session=session,
+            role=ChatMessage.Role.ASSISTANT,
+            content=content,
+        )
+        return
+
+    snippet_data = {
+        "type":        "patch_plan",
+        "version_id":  version_id,
+        "upload_id":   upload_id,
+        "plan_id":     plan_id,
+        "changes":     changes,
+    }
+
+    ChatMessage.objects.create(
+        session=session,
+        role=ChatMessage.Role.ASSISTANT,
+        content=f"수정 계획이 생성되었습니다. {len(changes)}개의 변경 항목을 확인해 주세요.",
+        has_snippet=True,
+        snippet_data=snippet_data,
+    )
+
+    logger.info(
+        "patch_intent 처리 완료 | upload_id=%s | version_id=%s | changes=%d건 | session=%s",
+        upload_id, version_id, len(changes), session.pk,
     )

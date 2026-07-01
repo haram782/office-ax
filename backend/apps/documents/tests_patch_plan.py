@@ -25,7 +25,7 @@ from apps.documents.models import (
     FileStructure,
     UploadLog,
 )
-from apps.documents.views import LLMParseError
+from apps.documents.services.patch_plan import LLMParseError
 
 User = get_user_model()
 
@@ -120,7 +120,7 @@ class GeneratePatchPlanTest(TestCase):
         self.client = _authed(self.user)
         self.upload = _make_done_upload(self.user)
 
-    @patch("apps.documents.views._generate_patch_plan", return_value=_MOCK_PATCH_PLAN)
+    @patch("apps.documents.services.patch_plan._generate_patch_plan", return_value=_MOCK_PATCH_PLAN)
     def test_creates_draft_document_version(self, _mock):
         """유효한 prompt + upload_id → DocumentVersion(draft)이 생성된다."""
         resp = self.client.post(
@@ -137,7 +137,7 @@ class GeneratePatchPlanTest(TestCase):
             "draft 상태의 DocumentVersion이 생성되어야 한다",
         )
 
-    @patch("apps.documents.views._generate_patch_plan", return_value=_MOCK_PATCH_PLAN)
+    @patch("apps.documents.services.patch_plan._generate_patch_plan", return_value=_MOCK_PATCH_PLAN)
     def test_creates_document_changes(self, _mock):
         """유효한 prompt + upload_id → DocumentChange 행들이 생성된다."""
         resp = self.client.post(
@@ -154,7 +154,7 @@ class GeneratePatchPlanTest(TestCase):
             "operations 2개에 해당하는 DocumentChange 행이 생성되어야 한다",
         )
 
-    @patch("apps.documents.views._generate_patch_plan", return_value=_MOCK_PATCH_PLAN)
+    @patch("apps.documents.services.patch_plan._generate_patch_plan", return_value=_MOCK_PATCH_PLAN)
     def test_response_contains_change_db_id(self, _mock):
         """응답 changes 항목에 id(changeDbId)가 포함된다."""
         resp = self.client.post(
@@ -201,7 +201,7 @@ class GeneratePatchPlanTest(TestCase):
         self.assertEqual(resp.status_code, 400)
 
     @patch(
-        "apps.documents.views._generate_patch_plan",
+        "apps.documents.services.patch_plan._generate_patch_plan",
         side_effect=LLMParseError("JSON 파싱 실패"),
     )
     def test_llm_parse_error_returns_400(self, _mock):
@@ -214,7 +214,7 @@ class GeneratePatchPlanTest(TestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertIn("detail", resp.data)
 
-    @patch("apps.documents.views._generate_patch_plan", return_value=_MOCK_EMPTY_PLAN)
+    @patch("apps.documents.services.patch_plan._generate_patch_plan", return_value=_MOCK_EMPTY_PLAN)
     def test_empty_operations_returns_200_with_empty_changes(self, _mock):
         """operations가 빈 배열이면 200 + changes=[]를 반환한다."""
         resp = self.client.post(
