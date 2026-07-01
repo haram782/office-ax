@@ -15,18 +15,25 @@ logger = get_task_logger(__name__)
 
 def _build_patch_plan_prompt(prompt: str, file_context: dict) -> str:
     """파일 컨텍스트와 사용자 요청을 LLM 입력 텍스트로 조립한다."""
-    context_json = json.dumps(
-        file_context.get("corrections") or file_context.get("snippet_data") or {},
-        ensure_ascii=False,
-        indent=2,
-    )
-    return (
-        f"파일명: {file_context.get('filename', '알 수 없음')}\n"
-        f"형식: {file_context.get('source_type', '알 수 없음')}\n"
-        f"요약: {file_context.get('summary', '')}\n"
-        f"컨텍스트:\n{context_json}\n"
-        f"수정 요청: {prompt}"
-    )
+    # corrections가 빈 배열([])이면 falsy이므로 명시적으로 비어있는지 확인
+    corrections = file_context.get("corrections") or []
+    snippet = file_context.get("snippet_data") or {}
+    context_data = corrections or snippet or {}
+    context_json = json.dumps(context_data, ensure_ascii=False, indent=2)
+
+    summary = file_context.get("summary", "")
+
+    lines = [
+        f"파일명: {file_context.get('filename', '알 수 없음')}",
+        f"형식: {file_context.get('source_type', '알 수 없음')}",
+    ]
+    if summary:
+        lines.append(f"문서 요약:\n{summary}")
+    if context_data:
+        lines.append(f"세부 컨텍스트:\n{context_json}")
+    lines.append(f"수정 요청: {prompt}")
+
+    return "\n".join(lines)
 
 
 def _strip_code_fence(raw: str) -> str:
