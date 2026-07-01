@@ -98,11 +98,11 @@ def _run_text_chat(
             chat_message_id=chat_message_id,
         )
 
-        raw_reply = result.summary or "(응답 없음)"
-
         if upload_id:
-            # 의도 판별 모드 — JSON 파싱 후 type 필드 포함 결과 반환
-            intent = _parse_intent_response(raw_reply)
+            # 의도 판별 모드 — parsed_data에서 type을 직접 읽어 분기
+            # (result.summary는 reply/summary 키만 추출하므로 patch_intent 응답에서 ""가 됨)
+            intent = result.parsed_data if result.parsed_data.get("type") in ("qa", "patch_intent") \
+                else _parse_intent_response(result.summary or "")
             intent_type = intent.get("type", "qa")
 
             if intent_type == "patch_intent":
@@ -117,7 +117,7 @@ def _run_text_chat(
                 }
             else:
                 # qa 또는 파싱 실패 폴백
-                reply = intent.get("reply", raw_reply)
+                reply = intent.get("reply", "") or result.summary or "(응답 없음)"
                 output = {
                     "type":        "qa",
                     "summary":     reply,
@@ -129,10 +129,11 @@ def _run_text_chat(
         else:
             # 일반 Q&A 모드 — 기존 형식 유지 (하위 호환)
             output = {
-                "summary":     raw_reply,
-                "errors":      [],
-                "source_type": "chat",
-                "model_used":  result.model_used,
+                "chat_message_id": chat_message_id,
+                "summary":         result.summary or "(응답 없음)",
+                "errors":          [],
+                "source_type":     "chat",
+                "model_used":      result.model_used,
             }
 
         _send_callback(task_self, chat_message_id, output)

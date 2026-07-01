@@ -55,21 +55,21 @@ class TestGeminiClientNormal(unittest.TestCase):
         self.assertTrue(result.model_used.startswith("gemini/"))
 
     @patch("subprocess.run")
-    def test_stdin_contains_system_and_user_prompt(self, mock_run):
-        """stdin에 system_prompt와 masked_text가 모두 포함되는지 검증."""
+    def test_cmd_contains_system_and_user_prompt(self, mock_run):
+        """CLI -p 인자에 system_prompt와 masked_text가 모두 포함되는지 검증."""
         mock_run.return_value = _make_proc(stdout=_VALID_JSON)
 
         client = GeminiClient()
         client.analyze("사용자 입력", "시스템 지시")
 
-        call_kwargs = mock_run.call_args
-        stdin_text = call_kwargs.kwargs.get("input") or call_kwargs.args[1] if len(call_kwargs.args) > 1 else call_kwargs.kwargs.get("input", "")
-        # subprocess.run의 input 인자 확인
-        actual_input = mock_run.call_args.kwargs.get("input", "")
-        self.assertIn("시스템 지시", actual_input)
-        self.assertIn("사용자 입력", actual_input)
+        # GeminiClient는 subprocess.run(cmd, ...) 형태로 호출하며
+        # 프롬프트는 cmd 리스트의 -p 플래그 다음 인자로 전달된다 (stdin 미사용)
+        cmd = mock_run.call_args.args[0]
+        prompt_arg = " ".join(cmd)
+        self.assertIn("시스템 지시", prompt_arg)
+        self.assertIn("사용자 입력", prompt_arg)
         # JSON 강제 지시 포함 여부
-        self.assertIn("JSON", actual_input)
+        self.assertIn("JSON", prompt_arg)
 
     @patch("subprocess.run")
     def test_image_source_type_passes_file_path_as_arg(self, mock_run):
