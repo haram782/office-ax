@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import FileStructure, InboundEmail, IngestionWorkflow, UploadLog
+from .models import FileStructure, InboundEmail, IngestionWorkflow, UploadLog, UsageEvent
 
 
 @admin.register(UploadLog)
@@ -46,3 +46,19 @@ class IngestionWorkflowAdmin(admin.ModelAdmin):
     list_filter   = ["is_active", "is_suggested", "notification_channel"]
     search_fields = ["user__username", "inbound_email"]
     readonly_fields = ["inbound_email", "activated_at", "suggested_at"]
+
+
+@admin.register(UsageEvent)
+class UsageEventAdmin(admin.ModelAdmin):
+    list_display = [
+        "id", "user", "event_type", "provider", "model", "status",
+        "input_tokens", "output_tokens", "estimated_cost", "created_at",
+    ]
+    list_filter = ["user", "event_type", "provider", "status", "created_at"]
+    search_fields = ["user__username", "provider", "model"]
+    readonly_fields = [
+        "user", "upload_log", "document_version", "chat_session", "event_type",
+        "provider", "model", "input_tokens", "output_tokens", "token_source",
+        "estimated_cost", "latency_ms", "status", "metadata", "created_at",
+    ]
+    ordering = ["-created_at"]

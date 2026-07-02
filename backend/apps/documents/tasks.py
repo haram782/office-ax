@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import os
 from datetime import date, timedelta
 
 from celery import shared_task
 from celery.utils.log import get_task_logger
 from django.utils import timezone
 
-from .models import DocumentVersion, IngestionWorkflow, UploadLog
+from .models import DocumentVersion, IngestionWorkflow, UploadLog, UsageEvent
 from .patcher import (
     _set_failed,
     collect_applied_changes,
@@ -18,6 +19,7 @@ from .patcher import (
     render_xlsx,
 )
 from .services import ensure_original_version
+from .services.usage import record_usage_event, usage_metadata_from_result
 
 logger = get_task_logger(__name__)
 
@@ -126,6 +128,15 @@ def notify_analysis_complete(upload_id: int, result: dict) -> None:
     upload_log.result = result
     upload_log.status = UploadLog.Status.DONE
     upload_log.save(update_fields=["result", "status"])
+
+    # ── 1-a. 사용량 이벤트 기록 (best-effort) ───────────────────────────────
+    record_usage_event(
+        user=upload_log.user,
+        upload_log=upload_log,
+        event_type=UsageEvent.EventType.DOCUMENT_ANALYSIS,
+        status=UsageEvent.Status.SUCCESS,
+        metadata=usage_metadata_from_result(result, source="analysis_callback"),
+    )
 
     # ── 1-b. 원본 DocumentVersion 자동 생성 (idempotent — 중복 생성 방지) ──
     ensure_original_version(upload_log)
@@ -263,6 +274,10 @@ def patch_document_version(version_id: int) -> None:
     if not upload_log.file or not upload_log.file.storage.exists(upload_log.file.name):
         _set_failed(version, "원본 파일(upload_log.file)이 존재하지 않습니다.")
         logger.error("patch_document_version: 원본 파일 없음 | version_id=%s", version_id)
+        _record_patch_artifact_event(
+            version, upload_log, UsageEvent.Status.FAILED,
+            reason="source_file_missing",
+        )
         return
 
     source_type = upload_log.file_structure.source_type if upload_log.file_structure else ""
@@ -270,6 +285,10 @@ def patch_document_version(version_id: int) -> None:
     if render_fn is None:
         # 지원하지 않는 포맷 — 예측 가능한 업무 실패이므로 Result 패턴(_set_failed)으로 처리
         _set_failed(version, f"지원하지 않는 포맷: {source_type}")
+        _record_patch_artifact_event(
+            version, upload_log, UsageEvent.Status.FAILED,
+            reason="unsupported_format", source_type=source_type,
+        )
         return
 
     # ── 1단계: collect ─────────────────────────────────────────────────────
@@ -283,6 +302,10 @@ def patch_document_version(version_id: int) -> None:
     except Exception as exc:
         logger.error("patch_document_version: 원본 파일 읽기 실패 | version_id=%s | %s", version_id, exc)
         _set_failed(version, f"원본 파일 읽기 실패: {exc}")
+        _record_patch_artifact_event(
+            version, upload_log, UsageEvent.Status.FAILED,
+            reason="source_file_read_error", source_type=source_type,
+        )
         return
 
     # render 함수 내부에서 처리하지 못한 예외(fitz.save 실패 등)를 여기서 잡아
@@ -296,11 +319,41 @@ def patch_document_version(version_id: int) -> None:
             version_id, source_type,
         )
         _set_failed(version, f"render 실패: {exc}")
+        _record_patch_artifact_event(
+            version, upload_log, UsageEvent.Status.FAILED,
+            reason="render_exception", source_type=source_type,
+        )
         return
 
     # ── 3단계: persist ─────────────────────────────────────────────────────
     ext = _ARTIFACT_EXT_BY_SOURCE_TYPE.get(source_type, "")
     persist_patch_result(version, result, ext, changes)
+
+    # persist_patch_result가 version.status를 READY/FAILED로 확정한 뒤 기록한다
+    final_status = (
+        UsageEvent.Status.SUCCESS
+        if version.status == DocumentVersion.Status.READY
+        else UsageEvent.Status.FAILED
+    )
+    _record_patch_artifact_event(
+        version, upload_log, final_status,
+        source_type=source_type,
+        applied_changes=len(result.applied_ids),
+        failed_changes=len(result.failed_items),
+        error_message=version.error_message if final_status == UsageEvent.Status.FAILED else None,
+    )
+
+
+def _record_patch_artifact_event(version, upload_log, status: str, **metadata) -> None:
+    """patch_document_version 각 단계 종료 시점에 UsageEvent를 best-effort로 기록한다."""
+    record_usage_event(
+        user=upload_log.user,
+        upload_log=upload_log,
+        document_version=version,
+        event_type=UsageEvent.EventType.PATCH_ARTIFACT_GENERATION,
+        status=status,
+        metadata={"version_id": version.pk, **{k: v for k, v in metadata.items() if v is not None}},
+    )
 
 # ── 핵심 알고리즘 ─────────────────────────────────────────────────────────────
 
