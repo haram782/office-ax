@@ -213,10 +213,7 @@ _OPERATIONS_BY_FORMAT: dict[str, list[str]] = {
     "pptx":  ["replace_text"],
     "hwp":   ["replace_text"],
     "hwpx":  ["replace_text"],
-    # replace_text: PDF readable에서 짧은 텍스트 치환 시 LLM이 생성한다.
-    # render_pdf는 annotate가 아닌 operation을 모두 redact_overlay 방식으로
-    # 처리하므로(patcher.py render_pdf) collect 필터에도 포함해야 한다.
-    "pdf":   ["annotate", "redact_overlay", "replace_text"],
+    "pdf":   ["annotate", "redact_overlay"],
 }
 
 # source_type → render 함수 매핑 (patcher.py로 이전)
