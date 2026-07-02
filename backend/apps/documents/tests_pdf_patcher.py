@@ -1,11 +1,12 @@
 """
-PDF annotate / redact_overlay 패처 테스트.
+PDF annotate / redact_overlay / replace_text 패처 테스트.
 
 커버 범위:
   patch_document_version Celery 태스크 (동기 직접 호출)
   - pdf_bbox anchor + annotate → 하이라이트 주석이 생성된다
   - text_match anchor + annotate → search_for로 rect를 찾아 주석이 생성된다
   - pdf_bbox anchor + redact_overlay → artifact에 replacement 텍스트가 포함된다
+  - text_match anchor + replace_text → 짧은 한글 텍스트가 치환되고 추출 가능하다
   - anchor 해석 실패(텍스트 없음) → change.status=failed
   - 모든 항목 실패 → version.status=failed
   - 하나라도 성공 → version.status=ready + artifact_file 생성
@@ -47,14 +48,33 @@ def _build_pdf_bytes(text: str = "샘플 텍스트") -> bytes:
     """
     지정 텍스트가 포함된 단일 페이지 PDF 바이트를 fitz로 생성한다.
 
-    fitz 기본 내장 폰트는 라틴 문자만 지원하므로
+    fitz 기본 내장 폰트(helv)는 라틴 문자만 지원하므로
     CJK 텍스트는 display 깨짐이 발생할 수 있으나 bytes 인코딩은 유효하다.
+    text_match anchor로 CJK 원문을 검색해야 하는 테스트는
+    _build_pdf_bytes_cjk를 사용한다.
     """
     import fitz
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)  # A4 크기
     # Helvetica 기본 폰트로 텍스트 삽입
     page.insert_text((72, 100), text, fontsize=12, color=(0, 0, 0))
+    buf = io.BytesIO()
+    doc.save(buf)
+    doc.close()
+    return buf.getvalue()
+
+
+def _build_pdf_bytes_cjk(text: str) -> bytes:
+    """
+    CJK 문자가 포함된 텍스트를 "korea-s" 폰트로 삽입한 단일 페이지 PDF를 생성한다.
+
+    Helvetica는 한글 글리프가 없어 삽입해도 검색 불가능한 텍스트가 되므로
+    text_match anchor로 한글 원문을 찾아야 하는 테스트는 이 헬퍼를 사용한다.
+    """
+    import fitz
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)  # A4 크기
+    page.insert_text((72, 100), text, fontsize=12, fontname="korea-s", color=(0, 0, 0))
     buf = io.BytesIO()
     doc.save(buf)
     doc.close()
@@ -301,6 +321,87 @@ class PdfRedactOverlayTest(TestCase):
             "계약일자",
             full_text,
             "한글 replacement 텍스트가 Helvetica fallback으로 깨지지 않고 추출돼야 한다",
+        )
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA)
+class PdfReplaceTextTest(TestCase):
+    """PDF replace_text 패처 테스트 (readable PDF 짧은 텍스트 치환)."""
+
+    def setUp(self):
+        self.user = _make_user("pdf_replace_user")
+        # 단일 한글 단어를 target_text로 사용한다 — 여러 단어를 섞으면
+        # PyMuPDF search_for()가 단어 경계마다 rect를 분할 반환해 occurrence
+        # 카운팅이 불안정해지므로 이 테스트의 목적(짧은 한글 치환 검증)에는
+        # 단일 단어 anchor가 적합하다.
+        self.pdf_bytes = _build_pdf_bytes_cjk("접수번호")
+        self.upload = _make_upload(self.user, "replace.pdf", self.pdf_bytes, "pdf_replace_hash")
+        self.version = _make_version(self.upload, self.user)
+
+    def test_replace_text_via_task_sets_version_ready(self):
+        """
+        patch_document_version 태스크로 text_match anchor + replace_text 처리 시
+        version.status=ready가 되어야 한다.
+
+        PatchPlan 스키마(patch-plan-schema-v0-ko.md 6절)는 PDF readable의
+        replace_text를 "짧은 overlay 치환"으로 명시적으로 허용하고,
+        render_pdf는 annotate가 아닌 operation을 모두 redact_overlay 방식으로
+        처리하므로 collect 단계의 operation 필터에도 replace_text가 포함되어야 한다.
+        """
+        _make_change(
+            self.version,
+            operation_id="op_replace_01",
+            operation="replace_text",
+            anchor={
+                "type": "text_match",
+                "target_text": "접수번호",
+                "page": 1,
+                "occurrence": 1,
+            },
+            original="접수번호",
+            replacement="접수완료",
+        )
+        patch_document_version(self.version.pk)
+
+        self.version.refresh_from_db()
+        self.assertEqual(
+            self.version.status,
+            DocumentVersion.Status.READY,
+            "text_match + replace_text 성공 후 version.status는 READY여야 한다",
+        )
+
+    def test_replace_text_korean_short_replacement_is_extractable(self):
+        """text_match anchor로 찾은 짧은 한글 텍스트를 replace_text로 교체하면 깨지지 않고 추출된다."""
+        import fitz
+
+        _make_change(
+            self.version,
+            operation_id="op_replace_02",
+            operation="replace_text",
+            anchor={
+                "type": "text_match",
+                "target_text": "접수번호",
+                "page": 1,
+                "occurrence": 1,
+            },
+            original="접수번호",
+            replacement="접수완료",
+        )
+        patch_document_version(self.version.pk)
+
+        self.version.refresh_from_db()
+        self.assertEqual(self.version.status, DocumentVersion.Status.READY)
+
+        with self.version.artifact_file.open("rb") as f:
+            result_bytes = f.read()
+        doc = fitz.open(stream=result_bytes, filetype="pdf")
+        full_text = "".join(page.get_text() for page in doc)
+        doc.close()
+
+        self.assertIn(
+            "접수완료",
+            full_text,
+            "replace_text로 치환된 한글 텍스트가 깨지지 않고 추출돼야 한다",
         )
 
 
