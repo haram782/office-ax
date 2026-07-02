@@ -83,16 +83,16 @@ export async function sendChatMessage(sessionId, content, file = null, uploadId 
   return data  // { message_id, session_id, status }
 }
 
-// ── Dashboard / Pipeline / Email / RAG — BE 미완성 구간 더미 데이터 ─────────────
-// BE 완성 후 아래 함수들을 실제 api 호출로 교체한다.
+// ── Dashboard ─────────────────────────────────────────────────────────────
 
+/** 이번 달 UsageEvent 기반 대시보드 통계 조회 */
 export async function getDashboardStats() {
-  return {
-    tokens:    { used: 716000, total: 2000000, percent: 64, daysLeft: 18 },
-    balance:   { remaining: 312000, total: 500000, used: 188000 },
-    processed: { count: 1842, errors: 327, corrected: 1515, chart: [40, 65, 52, 78, 60, 88, 72] },
-  }
+  const { data } = await api.get('/dashboard/stats/')
+  return data
 }
+
+// ── Pipeline / Email / RAG — BE 미완성 구간 더미 데이터 ─────────────────────
+// BE 완성 후 아래 함수들을 실제 api 호출로 교체한다.
 
 // ── Pipeline CRUD ────────────────────────────────────────────────────────────
 

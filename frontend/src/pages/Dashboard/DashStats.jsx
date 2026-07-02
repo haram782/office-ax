@@ -43,7 +43,8 @@ function CardHead({ icon, label }) {
 }
 
 /**
- * 대시보드 상단 3개 통계 카드 (토큰 / 잔고 / 처리 건수).
+ * 대시보드 상단 3개 통계 카드 (토큰 사용량 / 예상 비용 / 자동 처리 건수).
+ * /dashboard/stats/ 응답(UsageEvent 실집계) 필드를 그대로 사용한다.
  */
 export function DashStats() {
   const [stats, setStats] = useState(null)
@@ -54,72 +55,65 @@ export function DashStats() {
 
   if (!stats) return null
 
-  const { tokens, balance, processed } = stats
+  const {
+    ai_calls,
+    processed_documents,
+    generated_revisions,
+    failed_jobs,
+    input_tokens,
+    output_tokens,
+    total_tokens,
+    estimated_cost,
+    monthly_token_limit,
+    monthly_cost_limit,
+    token_usage_percent,
+    cost_usage_percent,
+  } = stats
 
   return (
     <div className="grid grid-cols-3 gap-4 mb-6">
-      {/* 토큰 잔여량 */}
+      {/* 토큰 사용량 */}
       <StatCard>
-        <CardHead icon="coins" label="잔여 토큰량" />
+        <CardHead icon="coins" label="이번 달 토큰 사용량" />
         <div className="flex items-end gap-4">
-          <Donut pct={tokens.percent} />
+          <Donut pct={token_usage_percent} />
           <div>
             <div className="text-[36px] leading-none font-bold tracking-tight text-zinc-800 dark:text-zinc-100">
-              {tokens.used.toLocaleString()}
+              {total_tokens.toLocaleString()}
             </div>
-            <div className="text-[18px] text-zinc-400 mt-1 font-medium">/ {tokens.total.toLocaleString()} 토큰</div>
-            <div className="text-xs text-emerald-600 dark:text-emerald-400 mt-2">예상 소진 D-{tokens.daysLeft}</div>
+            <div className="text-[18px] text-zinc-400 mt-1 font-medium">/ {monthly_token_limit.toLocaleString()} 토큰 (이번 달 한도)</div>
+            <div className="text-xs text-zinc-500 dark:text-zinc-400 mt-2">
+              입력 {input_tokens.toLocaleString()} · 출력 {output_tokens.toLocaleString()}
+            </div>
           </div>
         </div>
       </StatCard>
 
-      {/* 결제 잔고 */}
+      {/* 예상 비용 */}
       <StatCard>
-        <CardHead icon="wallet" label="결제 잔고 / 예치금" />
+        <CardHead icon="wallet" label="이번 달 예상 사용량" />
         <div className="text-[36px] leading-none font-bold tracking-tight text-zinc-800 dark:text-zinc-100">
-          ₩ {balance.remaining.toLocaleString()}
+          ₩ {estimated_cost.toLocaleString()}
         </div>
         <div className="text-[18px] text-zinc-400 mt-1 font-medium">
-          예치금 ₩ {balance.total.toLocaleString()} · 이번 달 사용 ₩ {balance.used.toLocaleString()}
+          이번 달 한도 ₩ {monthly_cost_limit.toLocaleString()} · {cost_usage_percent}% 사용
         </div>
         <div className="mt-3 h-1.5 rounded-full bg-zinc-100 dark:bg-zinc-800 overflow-hidden">
           <div
             className="h-full bg-blue-600 rounded-full"
-            style={{ width: `${Math.round(balance.remaining / balance.total * 100)}%` }}
+            style={{ width: `${cost_usage_percent}%` }}
           />
         </div>
-        <button className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-3 py-1.5">
-          <Ic name="plus" className="w-3.5 h-3.5" />
-          충전하기
-        </button>
       </StatCard>
 
       {/* 자동 처리 건수 */}
       <StatCard>
         <CardHead icon="zap" label="이번 달 자동 처리" />
         <div className="text-[36px] leading-none font-bold tracking-tight text-zinc-800 dark:text-zinc-100">
-          {processed.count.toLocaleString()} 건
+          {ai_calls.toLocaleString()} 건
         </div>
         <div className="text-[18px] text-zinc-400 mt-1 font-medium">
-          오류 검출 {processed.errors.toLocaleString()} · 자동 보정 {processed.corrected.toLocaleString()}
-        </div>
-        {/* 바 차트 — 최고값 바만 blue-600, 나머지는 zinc */}
-        <div className="flex gap-1.5 mt-4 items-end h-10">
-          {(() => {
-            const maxVal = Math.max(...processed.chart)
-            let maxUsed = false
-            return processed.chart.map((v, i) => {
-              const isMax = v === maxVal && !maxUsed
-              if (isMax) maxUsed = true
-              return (
-                <div
-                  key={i}
-                  className={'flex-1 rounded-sm ' + (isMax ? 'bg-blue-600' : 'bg-zinc-200 dark:bg-zinc-700')}
-                  style={{ height: `${v}%` }}
-                />
-              )
-            })
-          })()}
+          문서 분석 {processed_documents.toLocaleString()} · 수정본 생성 {generated_revisions.toLocaleString()} · 실패 {failed_jobs.toLocaleString()}
         </div>
       </StatCard>
     </div>
