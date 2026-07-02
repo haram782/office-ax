@@ -1,6 +1,6 @@
 # Office-AX 문서 양식 수정 AX v1
 
-문서 상태: v1 POC 배경 문서. XLSX `set_cell_style`과 양식 수정의 제품/기술 가설을 설명하며, 현재 MVP 전체 범위는 `mvp-scope-and-gap-v1-ko.md`를 우선한다.
+문서 상태: v1 POC 배경 문서. XLSX `set_cell_style`과 양식 수정의 제품/기술 가설을 설명하며, 현재 MVP 전체 범위는 `../strategy/mvp-scope-and-gap-v1-ko.md`를 우선한다.
 
 ## 1. 문서의 위치
 
@@ -8,9 +8,9 @@
 
 v0 문서:
 
-- `viewer-first-workflow-automation-v0-ko.md`
-- `document-workflow-implementation-design-v0-ko.md`
-- `patch-plan-schema-v0-ko.md`
+- `../strategy/viewer-first-workflow-automation-v0-ko.md`
+- `../architecture/document-workflow-implementation-design-v0-ko.md`
+- `../contracts/patch-plan-schema-v0-ko.md`
 
 v0의 핵심은 다음이었다.
 
@@ -744,7 +744,7 @@ UI 원칙:
 
 작업:
 
-- `patch-plan-schema-v0-ko.md`에 `xlsx.set_cell_style` 섹션 추가
+- `../contracts/patch-plan-schema-v0-ko.md`에 `xlsx.set_cell_style` 섹션 추가
 - allowed operation 표 업데이트
 - expected_context 규칙 추가
 - regenerate는 별도 트랙임을 명시
@@ -917,7 +917,7 @@ v1 patcher와 섞지 않는다.
 
 다음 작업:
 
-1. `patch-plan-schema-v0-ko.md`에 `xlsx.set_cell_style` 추가
+1. `../contracts/patch-plan-schema-v0-ko.md`에 `xlsx.set_cell_style` 추가
 2. backend `render_xlsx`에 style operation 구현
 3. frontend `ChangeSuggestionCard`에 operation별 표시 추가
 4. XLSX 샘플로 E2E 검증

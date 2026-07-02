@@ -4,11 +4,33 @@
 
 새 작업을 시작할 때는 이 파일을 먼저 보고, 목적에 맞는 문서만 이어서 읽는다.
 
-## 1. 현재 기준 문서
+## 1. 디렉토리 구조
+
+```text
+docs/product/
+  README.md
+  strategy/       제품 방향, MVP 범위, 장기 포지셔닝
+  roadmap/        구현 순서와 작업 묶음
+  architecture/   시스템 설계, 라이브러리/스택 판단
+  contracts/      LLM, 백엔드, patcher, 프론트가 공유하는 계약
+  feature-specs/  특정 기능 단위 상세 기획
+```
+
+문서를 찾을 때는 다음 순서로 본다.
+
+```text
+왜 하는가       → strategy/
+무엇부터 하는가 → roadmap/
+어떻게 구성할까 → architecture/
+무엇을 주고받나 → contracts/
+기능별 세부사항 → feature-specs/
+```
+
+## 2. 현재 기준 문서
 
 ### MVP 전체 범위
 
-- `mvp-scope-and-gap-v1-ko.md`
+- `strategy/mvp-scope-and-gap-v1-ko.md`
 
 Office-AX MVP의 현재 기준 문서다.
 
@@ -24,7 +46,7 @@ Office-AX MVP의 현재 기준 문서다.
 
 ### 문서 수정 로드맵
 
-- `document-editing-ax-next-roadmap-v1-ko.md`
+- `roadmap/document-editing-ax-next-roadmap-v1-ko.md`
 
 문서 수정 AX의 다음 구현 순서를 다룬다.
 
@@ -38,17 +60,25 @@ Office-AX MVP의 현재 기준 문서다.
 
 ### PatchPlan 계약
 
-- `patch-plan-schema-v0-ko.md`
+- `contracts/patch-plan-schema-v0-ko.md`
 
 LLM, 백엔드, patcher, 프론트가 공유하는 구조화된 변경 계약이다.
 
 새 operation을 추가하거나 `DocumentChange` 저장 구조를 바꿀 때 반드시 함께 갱신한다.
 
-## 2. 배경 및 세부 설계 문서
+### 스택/라이브러리 판단
+
+- `architecture/stack-library-audit-v1-ko.md`
+
+현재 사용하는 라이브러리와 대체/보강 후보를 정리한 아키텍처 판단 문서다.
+
+PDF, HWP, LLM gateway, Office 고충실도 뷰어처럼 교체 비용이 큰 결정을 하기 전에 읽는다.
+
+## 3. 배경 및 세부 설계 문서
 
 ### 문서 양식 수정 AX v1
 
-- `document-format-editing-ax-v1-ko.md`
+- `feature-specs/document-format-editing-ax-v1-ko.md`
 
 XLSX `set_cell_style` 중심으로 "텍스트 치환을 넘어 양식 수정이 가능하다"는 제품/기술 가설을 정리한 문서다.
 
@@ -56,26 +86,26 @@ XLSX `set_cell_style` 중심으로 "텍스트 치환을 넘어 양식 수정이 
 
 ### 문서 수정 및 업무 흐름 추론 구현 설계 v0
 
-- `document-workflow-implementation-design-v0-ko.md`
+- `architecture/document-workflow-implementation-design-v0-ko.md`
 
 초기 구현 설계 문서다.
 
 `DocumentChange`, activity capture, workflow inference, pipeline draft 같은 장기 구조를 볼 때 참고한다.
 
-현재 구현과 일부 이름이나 우선순위가 다를 수 있으므로, 최신 스코프는 `mvp-scope-and-gap-v1-ko.md`, 최신 PatchPlan 계약은 `patch-plan-schema-v0-ko.md`를 우선한다.
+현재 구현과 일부 이름이나 우선순위가 다를 수 있으므로, 최신 스코프는 `strategy/mvp-scope-and-gap-v1-ko.md`, 최신 PatchPlan 계약은 `contracts/patch-plan-schema-v0-ko.md`를 우선한다.
 
 ### 뷰어 중심 문서 업무 자동화 v0
 
-- `viewer-first-workflow-automation-v0-ko.md`
-- `viewer-first-workflow-automation-v0.md`
+- `strategy/viewer-first-workflow-automation-v0-ko.md`
+- `strategy/viewer-first-workflow-automation-v0.md`
 
 초기 제품 방향과 장기 자동화 가설을 정리한 문서다.
 
 한국어 문서를 기준으로 보고, 영어 문서는 보존용 mirror로 둔다.
 
-현재 MVP 구현 범위는 `mvp-scope-and-gap-v1-ko.md`를 우선한다.
+현재 MVP 구현 범위는 `strategy/mvp-scope-and-gap-v1-ko.md`를 우선한다.
 
-## 3. 현재 MVP 구현 흐름
+## 4. 현재 MVP 구현 흐름
 
 현재 MVP는 다음 흐름을 닫는 것을 목표로 한다.
 
@@ -100,20 +130,21 @@ PDF/HWP는 한국 업무 문서에서 중요하지만, MVP에서는 제한적 �
 
 DOCX/PPTX는 정식 수정 지원보다 미리보기/검토/후속 확장 대상으로 본다.
 
-## 4. 문서 갱신 규칙
+## 5. 문서 갱신 규칙
 
 새 기획을 추가할 때:
 
-- 제품 전체 범위가 바뀌면 `mvp-scope-and-gap-v1-ko.md`를 갱신한다.
-- PatchPlan operation이나 anchor가 바뀌면 `patch-plan-schema-v0-ko.md`를 갱신한다.
-- 구현 순서나 작업 묶음이 바뀌면 `document-editing-ax-next-roadmap-v1-ko.md`를 갱신한다.
+- 제품 전체 범위가 바뀌면 `strategy/mvp-scope-and-gap-v1-ko.md`를 갱신한다.
+- PatchPlan operation이나 anchor가 바뀌면 `contracts/patch-plan-schema-v0-ko.md`를 갱신한다.
+- 구현 순서나 작업 묶음이 바뀌면 `roadmap/document-editing-ax-next-roadmap-v1-ko.md`를 갱신한다.
+- 라이브러리, 런타임, 외부 도구 판단이 바뀌면 `architecture/stack-library-audit-v1-ko.md`를 갱신한다.
 - 장기 자동화나 workflow inference 아이디어는 v0 문서를 직접 고치기보다 새 문서로 분리한다.
 
 중복 문서를 만들지 않는다.
 
 이미 있는 문서가 배경 문서가 되었으면 삭제하기보다 상단 상태를 갱신한다.
 
-## 5. 다음 세부 문서 후보
+## 6. 다음 세부 문서 후보
 
 아직 별도 문서로 쪼개지 않은 후보:
 
