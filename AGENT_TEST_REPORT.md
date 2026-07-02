@@ -119,3 +119,45 @@ operation 필터 변경과 인과관계가 없다. orchestrator 지시에 따라
 - anchor 해석 실패 사유는 기존 코드에서 이미 명확함
   (`f"PDF anchor 해석 실패: {change.anchor}"`, 기존
   `test_anchor_miss_sets_change_failed`로 커버).
+
+## Tester 독립 검증 (commit a356bfe)
+
+구현자 리포트와 독립적으로 아래 명령을 재실행해 결과를 확인했다.
+
+### 백엔드
+
+```
+cd backend
+.venv/bin/python manage.py test apps.documents.tests_pdf_patcher apps.documents.tests_version_api --settings=config.settings_test
+```
+
+결과: `Ran 27 tests in 2.995s` / `OK`. 리뷰어가 확인한 `config.settings_test`
+경로 사용(환경변수 probing 불필요). anchor 실패 케이스(`op_fail_*`,
+`op_partial_01`)의 stderr 로그 출력은 의도된 실패 경로 로깅이며 테스트
+실패가 아님.
+
+### 프론트엔드
+
+```
+cd frontend
+npm test
+```
+
+결과: `Test Files 1 failed | 16 passed (17)` / `Tests 104 passed (104)`.
+실패한 1개 파일은 보고서에 기재된 것과 동일한 `tests/PdfViewer.test.jsx`
+샌드박스 제약 재현: `Denied ID
+/Users/haram/Desktop/office-ax/frontend/node_modules/@rhwp/core/rhwp_bg.wasm`
+— 워크트리 `node_modules`가 메인 체크아웃을 참조하며 해당 경로가 워크트리
+샌드박스 밖이라 vite가 모듈 로드를 거부한다(테스트 0개 실행, 실질 assertion
+실패 아님). 이번 변경(`tasks.py` 필터 1줄, PDF 테스트 파일)과 무관.
+
+### 결론
+
+**PASS** — Required Tests(`tests_pdf_patcher`, `tests_version_api`) 27/27
+통과, 프론트엔드 실질 테스트 104/104 통과. `PdfViewer.test.jsx` 실행 불가는
+알려진 환경 제약(샌드박스 경로 제한)이며 코드 결함이 아니므로 병합 게이트로
+간주하지 않는다. XLSX e2e 4건 실패는 별도 이슈로 이미 범위 외 처리되어
+있으며 재확인하지 않았다(PDF 변경과 무관함이 코드상 명백 — `tasks.py` diff가
+`_OPERATIONS_BY_FORMAT["pdf"]` 한 줄만 수정).
+
+블로커 없음.
