@@ -8,6 +8,7 @@ from pathlib import Path
 from celery import current_app
 from celery.result import AsyncResult
 from django.db import transaction
+from django.db.models import Count, Q, Sum
 from drf_spectacular.utils import extend_schema, OpenApiResponse, OpenApiExample
 from rest_framework import status
 from rest_framework.authentication import TokenAuthentication
@@ -18,8 +19,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import DocumentChange, DocumentVersion, FileStructure, InboundEmail, IngestionWorkflow, UploadLog, compute_file_structure_hash, pdf_structure_hash
+from .models import DocumentChange, DocumentVersion, FileStructure, InboundEmail, IngestionWorkflow, UploadLog, UsageEvent, compute_file_structure_hash, pdf_structure_hash
 from .services.patch_plan import LLMParseError, PatchPlanService
+from .services.usage import record_usage_event, usage_metadata_from_result
 from .tasks import patch_document_version
 from .serializers import (
     DocumentChangeSerializer,
@@ -371,42 +373,75 @@ class EmailInboxAttachmentView(APIView):
 class DashboardStatsView(APIView):
     """
     GET /api/v1/dashboard/stats/
-    대시보드 통계 응답.
-    - 토큰/잔액 필드: 현재 결제 모델 없으므로 하드코딩 (추후 결제 앱 연동 시 대체)
-    - monthly_processed/errors: UploadLog DB 집계 (이번 달, 본인 것만)
+    UsageEvent 기반 이번 달 사용량 통계 응답.
     """
 
     permission_classes = [IsAuthenticated]
-
-    # 토큰·결제 관련 필드는 결제 모델 구현 전 임시 고정값
-    _HARDCODED = {
-        "token_used":    716000,
-        "token_total":   2000000,
-        "balance":       312000,
-        "deposit":       500000,
-        "monthly_spent": 188000,
-    }
+    MONTHLY_TOKEN_LIMIT = 2_000_000
+    MONTHLY_COST_LIMIT = 500_000
 
     def get(self, request):
         from django.utils import timezone
 
         now = timezone.now()
-        # 이번 달 1일 00:00:00 기준으로 필터링
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
-        base_qs = UploadLog.objects.filter(
+        usage_qs = UsageEvent.objects.filter(
             user=request.user,
-            uploaded_at__gte=month_start,
+            created_at__gte=month_start,
         )
-        monthly_processed = base_qs.filter(status=UploadLog.Status.DONE).count()
-        monthly_errors = base_qs.filter(status=UploadLog.Status.FAILED).count()
-        monthly_corrected = monthly_processed - monthly_errors
+
+        totals = usage_qs.aggregate(
+            ai_calls=Count("id"),
+            input_tokens=Sum("input_tokens"),
+            output_tokens=Sum("output_tokens"),
+            estimated_cost=Sum("estimated_cost"),
+            failed_jobs=Count("id", filter=Q(status=UsageEvent.Status.FAILED)),
+            processed_documents=Count(
+                "upload_log",
+                filter=Q(event_type=UsageEvent.EventType.DOCUMENT_ANALYSIS, status=UsageEvent.Status.SUCCESS),
+                distinct=True,
+            ),
+            generated_revisions=Count(
+                "document_version",
+                filter=Q(event_type=UsageEvent.EventType.PATCH_ARTIFACT_GENERATION, status=UsageEvent.Status.SUCCESS),
+                distinct=True,
+            ),
+        )
+        input_tokens = totals["input_tokens"] or 0
+        output_tokens = totals["output_tokens"] or 0
+        total_tokens = input_tokens + output_tokens
+        estimated_cost = totals["estimated_cost"] or 0
+        token_percent = min(round(total_tokens / self.MONTHLY_TOKEN_LIMIT * 100), 100)
+        cost_percent = min(round(float(estimated_cost) / self.MONTHLY_COST_LIMIT * 100), 100)
 
         return Response({
-            **self._HARDCODED,
-            "monthly_processed": monthly_processed,
-            "monthly_errors":    monthly_errors,
-            "monthly_corrected": monthly_corrected,
+            "month_start": month_start.date().isoformat(),
+            "ai_calls": totals["ai_calls"] or 0,
+            "processed_documents": totals["processed_documents"] or 0,
+            "generated_revisions": totals["generated_revisions"] or 0,
+            "failed_jobs": totals["failed_jobs"] or 0,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "token_source_counts": {
+                source: usage_qs.filter(token_source=source).count()
+                for source, _label in UsageEvent.TokenSource.choices
+            },
+            "estimated_cost": int(estimated_cost),
+            "monthly_token_limit": self.MONTHLY_TOKEN_LIMIT,
+            "monthly_cost_limit": self.MONTHLY_COST_LIMIT,
+            "token_usage_percent": token_percent,
+            "cost_usage_percent": cost_percent,
+            # 기존 프론트/테스트 호환 필드. 값은 더 이상 하드코딩이 아니다.
+            "token_used": total_tokens,
+            "token_total": self.MONTHLY_TOKEN_LIMIT,
+            "balance": max(self.MONTHLY_COST_LIMIT - int(estimated_cost), 0),
+            "deposit": self.MONTHLY_COST_LIMIT,
+            "monthly_spent": int(estimated_cost),
+            "monthly_processed": totals["processed_documents"] or 0,
+            "monthly_errors": totals["failed_jobs"] or 0,
+            "monthly_corrected": totals["generated_revisions"] or 0,
         })
 
 
@@ -775,12 +810,27 @@ def _sync_task_result(upload_log: UploadLog) -> None:
     """Celery 결과 백엔드에서 태스크 상태를 DB로 동기화."""
     result = AsyncResult(upload_log.ax_task_id)
     if result.successful():
-        upload_log.result = result.get()
+        payload = result.get()
+        upload_log.result = payload
         upload_log.status = UploadLog.Status.DONE
         upload_log.save(update_fields=["result", "status"])
+        record_usage_event(
+            user=upload_log.user,
+            upload_log=upload_log,
+            event_type=UsageEvent.EventType.DOCUMENT_ANALYSIS,
+            status=UsageEvent.Status.SUCCESS,
+            metadata=usage_metadata_from_result(payload, source="upload_result_polling"),
+        )
     elif result.failed():
         upload_log.status = UploadLog.Status.FAILED
         upload_log.save(update_fields=["status"])
+        record_usage_event(
+            user=upload_log.user,
+            upload_log=upload_log,
+            event_type=UsageEvent.EventType.DOCUMENT_ANALYSIS,
+            status=UsageEvent.Status.FAILED,
+            metadata={"source": "upload_result_polling", "task_id": upload_log.ax_task_id},
+        )
 
 
 # ── Patch Plan 관련 상수/오류 타입은 services.patch_plan으로 이전 ──────────────
@@ -808,6 +858,7 @@ class GeneratePatchPlanView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, upload_id: int):
+        upload_log = UploadLog.objects.filter(pk=upload_id).select_related("user").first()
         # 소유권 사전 검증 — PermissionError/DoesNotExist는 서비스에서 raise
         try:
             result = PatchPlanService.generate(
@@ -816,12 +867,39 @@ class GeneratePatchPlanView(APIView):
                 user=request.user,
             )
         except UploadLog.DoesNotExist:
+            record_usage_event(
+                user=request.user,
+                event_type=UsageEvent.EventType.PATCH_PLAN_GENERATION,
+                status=UsageEvent.Status.FAILED,
+                metadata={"upload_id": upload_id, "reason": "upload_not_found", "source": "api"},
+            )
             raise NotFound()
         except PermissionError:
+            record_usage_event(
+                user=request.user,
+                upload_log=upload_log,
+                event_type=UsageEvent.EventType.PATCH_PLAN_GENERATION,
+                status=UsageEvent.Status.FAILED,
+                metadata={"upload_id": upload_id, "reason": "permission_denied", "source": "api"},
+            )
             raise PermissionDenied()
         except ValueError as exc:
+            record_usage_event(
+                user=request.user,
+                upload_log=upload_log,
+                event_type=UsageEvent.EventType.PATCH_PLAN_GENERATION,
+                status=UsageEvent.Status.FAILED,
+                metadata={"upload_id": upload_id, "reason": str(exc), "source": "api"},
+            )
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except LLMParseError:
+            record_usage_event(
+                user=request.user,
+                upload_log=upload_log,
+                event_type=UsageEvent.EventType.PATCH_PLAN_GENERATION,
+                status=UsageEvent.Status.FAILED,
+                metadata={"upload_id": upload_id, "reason": "llm_parse_error", "source": "api"},
+            )
             return Response(
                 {"detail": "LLM이 유효한 patch plan을 생성하지 못했습니다."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -831,6 +909,21 @@ class GeneratePatchPlanView(APIView):
         # 서비스는 빈 prompt를 LLM에 전달 후 빈 operations를 반환할 것이므로
         # 여기서는 status code 결정만 담당한다.
         if result["version_id"] is None:
+            record_usage_event(
+                user=request.user,
+                upload_log=upload_log,
+                event_type=UsageEvent.EventType.PATCH_PLAN_GENERATION,
+                status=UsageEvent.Status.SUCCESS,
+                metadata={"upload_id": upload_id, "version_id": None, "changes": 0, "source": "api"},
+            )
             return Response(result, status=status.HTTP_200_OK)
 
+        record_usage_event(
+            user=request.user,
+            upload_log=upload_log,
+            document_version=DocumentVersion.objects.filter(pk=result["version_id"]).first(),
+            event_type=UsageEvent.EventType.PATCH_PLAN_GENERATION,
+            status=UsageEvent.Status.SUCCESS,
+            metadata={"upload_id": upload_id, "version_id": result["version_id"], "changes": len(result.get("changes", [])), "source": "api"},
+        )
         return Response(result, status=status.HTTP_201_CREATED)

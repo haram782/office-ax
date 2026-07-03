@@ -1,9 +1,10 @@
 from celery import current_app, shared_task
 from celery.utils.log import get_task_logger
 
-from apps.documents.models import UploadLog
+from apps.documents.models import DocumentVersion, UploadLog, UsageEvent
 from apps.documents.services import ensure_original_version
 from apps.documents.services.patch_plan import LLMParseError, PatchPlanService
+from apps.documents.services.usage import record_usage_event, usage_metadata_from_result
 from .change_highlights import corrections_to_change_highlights
 
 logger = get_task_logger(__name__)
@@ -138,6 +139,16 @@ def notify_chat_response(chat_message_id: int, result: dict) -> None:
         artifact_url=artifact_url,
         has_snippet=has_snippet,
         snippet_data=snippet_data,
+    )
+
+    # ── 2-b. 사용량 이벤트 기록 (best-effort) ───────────────────────────────
+    record_usage_event(
+        user=user_message.session.user,
+        upload_log=user_message.upload_log,
+        chat_session=user_message.session,
+        event_type=UsageEvent.EventType.CHAT_QA,
+        status=UsageEvent.Status.SUCCESS,
+        metadata=usage_metadata_from_result(result, source="chat_qa"),
     )
 
     # ── 3. 행동 로그 (sLLM 파인튜닝 데이터셋 축적) ───────────────────────────
@@ -309,6 +320,7 @@ def notify_patch_plan_generated(
 
     session = user_message.session
     user = session.user
+    upload_log_ref = UploadLog.objects.filter(pk=upload_id).first()
 
     if result.get("type") == "patch_plan_error" or result.get("error"):
         logger.error(
@@ -319,6 +331,14 @@ def notify_patch_plan_generated(
             session=session,
             role=ChatMessage.Role.ASSISTANT,
             content="수정 계획 생성에 실패했습니다. 요청을 더 구체적으로 작성해 주세요.",
+        )
+        record_usage_event(
+            user=user,
+            upload_log=upload_log_ref,
+            chat_session=session,
+            event_type=UsageEvent.EventType.PATCH_PLAN_GENERATION,
+            status=UsageEvent.Status.FAILED,
+            metadata={"upload_id": upload_id, "reason": "ax_engine_error", "source": "chat"},
         )
         return
 
@@ -344,6 +364,13 @@ def notify_patch_plan_generated(
             role=ChatMessage.Role.ASSISTANT,
             content="문서를 찾을 수 없습니다. 파일을 다시 업로드해 주세요.",
         )
+        record_usage_event(
+            user=user,
+            chat_session=session,
+            event_type=UsageEvent.EventType.PATCH_PLAN_GENERATION,
+            status=UsageEvent.Status.FAILED,
+            metadata={"upload_id": upload_id, "reason": "upload_not_found", "source": "chat"},
+        )
         return
     except (PermissionError, ValueError) as exc:
         logger.warning(
@@ -354,6 +381,14 @@ def notify_patch_plan_generated(
             session=session,
             role=ChatMessage.Role.ASSISTANT,
             content=f"수정 요청을 처리할 수 없습니다: {exc}",
+        )
+        record_usage_event(
+            user=user,
+            upload_log=upload_log_ref,
+            chat_session=session,
+            event_type=UsageEvent.EventType.PATCH_PLAN_GENERATION,
+            status=UsageEvent.Status.FAILED,
+            metadata={"upload_id": upload_id, "reason": str(exc), "source": "chat"},
         )
         return
     except LLMParseError as exc:
@@ -366,6 +401,14 @@ def notify_patch_plan_generated(
             role=ChatMessage.Role.ASSISTANT,
             content="수정 계획 형식이 올바르지 않습니다. 요청을 더 구체적으로 작성해 주세요.",
         )
+        record_usage_event(
+            user=user,
+            upload_log=upload_log_ref,
+            chat_session=session,
+            event_type=UsageEvent.EventType.PATCH_PLAN_GENERATION,
+            status=UsageEvent.Status.FAILED,
+            metadata={"upload_id": upload_id, "reason": "llm_parse_error", "source": "chat"},
+        )
         return
     except Exception:
         logger.exception(
@@ -376,6 +419,14 @@ def notify_patch_plan_generated(
             session=session,
             role=ChatMessage.Role.ASSISTANT,
             content="내부 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+        )
+        record_usage_event(
+            user=user,
+            upload_log=upload_log_ref,
+            chat_session=session,
+            event_type=UsageEvent.EventType.PATCH_PLAN_GENERATION,
+            status=UsageEvent.Status.FAILED,
+            metadata={"upload_id": upload_id, "reason": "unexpected_error", "source": "chat"},
         )
         return
 
@@ -391,6 +442,14 @@ def notify_patch_plan_generated(
             session=session,
             role=ChatMessage.Role.ASSISTANT,
             content=content,
+        )
+        record_usage_event(
+            user=user,
+            upload_log=upload_log_ref,
+            chat_session=session,
+            event_type=UsageEvent.EventType.PATCH_PLAN_GENERATION,
+            status=UsageEvent.Status.SUCCESS,
+            metadata={"upload_id": upload_id, "version_id": None, "changes": 0, "source": "chat"},
         )
         return
 
@@ -408,6 +467,16 @@ def notify_patch_plan_generated(
         content=f"수정 계획이 생성되었습니다. {len(changes)}개의 변경 항목을 확인해 주세요.",
         has_snippet=True,
         snippet_data=snippet_data,
+    )
+
+    record_usage_event(
+        user=user,
+        upload_log=upload_log_ref,
+        document_version=DocumentVersion.objects.filter(pk=version_id).first(),
+        chat_session=session,
+        event_type=UsageEvent.EventType.PATCH_PLAN_GENERATION,
+        status=UsageEvent.Status.SUCCESS,
+        metadata={"upload_id": upload_id, "version_id": version_id, "changes": len(changes), "source": "chat"},
     )
 
     logger.info(

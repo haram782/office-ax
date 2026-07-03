@@ -350,6 +350,81 @@ class DocumentChange(models.Model):
         return f"{self.operation_id[:12]}… [{self.operation}] {self.status}"
 
 
+class UsageEvent(models.Model):
+    """AI 호출과 문서 처리 사용량을 월별로 집계하기 위한 원천 이벤트."""
+
+    class EventType(models.TextChoices):
+        DOCUMENT_ANALYSIS = "document_analysis", "문서 분석"
+        CHAT_QA = "chat_qa", "채팅 Q&A"
+        PATCH_PLAN_GENERATION = "patch_plan_generation", "수정 계획 생성"
+        PATCH_ARTIFACT_GENERATION = "patch_artifact_generation", "수정본 생성"
+
+    class TokenSource(models.TextChoices):
+        PROVIDER_REPORTED = "provider_reported", "공급자 보고"
+        ESTIMATED = "estimated", "추정"
+        UNAVAILABLE = "unavailable", "확인 불가"
+
+    class Status(models.TextChoices):
+        SUCCESS = "success", "성공"
+        FAILED = "failed", "실패"
+
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name="usage_events"
+    )
+    upload_log = models.ForeignKey(
+        UploadLog,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="usage_events",
+    )
+    document_version = models.ForeignKey(
+        DocumentVersion,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="usage_events",
+    )
+    chat_session = models.ForeignKey(
+        "chat.ChatSession",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="usage_events",
+    )
+    event_type = models.CharField(max_length=40, choices=EventType.choices, db_index=True)
+    provider = models.CharField(max_length=50, blank=True, default="")
+    model = models.CharField(max_length=100, blank=True, default="")
+    input_tokens = models.PositiveIntegerField(default=0)
+    output_tokens = models.PositiveIntegerField(default=0)
+    token_source = models.CharField(
+        max_length=20,
+        choices=TokenSource.choices,
+        default=TokenSource.UNAVAILABLE,
+    )
+    estimated_cost = models.DecimalField(max_digits=12, decimal_places=6, default=0)
+    latency_ms = models.PositiveIntegerField(null=True, blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.SUCCESS)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        verbose_name = "사용량 이벤트"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user", "created_at"]),
+            models.Index(fields=["user", "event_type", "created_at"]),
+            models.Index(fields=["user", "status", "created_at"]),
+        ]
+
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+    def __str__(self) -> str:
+        return f"{self.user_id} | {self.event_type} | {self.status} | {self.created_at:%Y-%m-%d}"
+
+
 # ── storage 파일 정리 시그널 ───────────────────────────────────────────────────
 #
 # 모델 delete() 오버라이드 대신 pre_delete 시그널을 쓰는 이유:
