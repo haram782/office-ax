@@ -43,6 +43,17 @@ def notify_chat_response(chat_message_id: int, result: dict) -> None:
     # ── 1-c. patch_intent: ax-engine에 PatchPlan 생성을 요청한다 ─────────────
     result_type = result.get("type")
     if result_type == "patch_intent":
+        # patch_intent로 분기되면 이후 CHAT_QA 기록 경로를 타지 않아 의도 분류
+        # LLM 호출(upload_id 있는 요청에서 CHAT_INTENT_SYSTEM_PROMPT로 수행됨)의
+        # 사용량이 그대로 유실된다. 분기 직전에 별도로 기록해 둔다.
+        record_usage_event(
+            user=user_message.session.user,
+            upload_log=user_message.upload_log,
+            chat_session=user_message.session,
+            event_type=UsageEvent.EventType.INTENT_CLASSIFICATION,
+            status=UsageEvent.Status.SUCCESS,
+            metadata=usage_metadata_from_result(result, source="chat_intent_classification"),
+        )
         _handle_patch_intent(user_message, result)
         return
 

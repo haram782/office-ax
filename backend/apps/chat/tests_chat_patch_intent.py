@@ -29,6 +29,7 @@ from apps.documents.models import (
     DocumentVersion,
     FileStructure,
     UploadLog,
+    UsageEvent,
 )
 
 User = get_user_model()
@@ -227,6 +228,46 @@ class ChatPatchIntentHappyPathTest(TestCase):
         ).last()
         self.assertIsNotNone(assistant_msg)
         self.assertIn("시작하지 못했습니다", assistant_msg.content)
+
+
+# ── 의도 분류 사용량 기록 ───────────────────────────────────────────────────────
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA)
+class ChatIntentClassificationUsageEventTest(TestCase):
+    """
+    upload_id 있는 채팅 요청은 ax-engine이 의도 분류 LLM 호출을 수행한다.
+    patch_intent로 분기되는 경우, 해당 LLM 호출의 사용량이 누락되지 않고
+    INTENT_CLASSIFICATION 이벤트로 기록되어야 한다.
+    """
+
+    def setUp(self):
+        self.user = _make_user("intent_usage_user")
+        self.session = _make_session(self.user)
+        self.upload = _make_done_upload(self.user)
+        self.user_msg = _make_user_message(self.session, upload_log=self.upload)
+
+    @patch("apps.chat.tasks.current_app.send_task")
+    def test_patch_intent_records_intent_classification_usage_event(self, _mock_send_task):
+        """patch_intent 분기에서도 의도 분류 호출의 UsageEvent가 기록된다."""
+        result = {
+            "type": "patch_intent",
+            "refined_prompt": "A2 셀 날짜를 2026-01-01로 교체",
+            "upload_id": self.upload.pk,
+            "summary": "",
+            "errors": [],
+            "source_type": "chat",
+            "model_used": "claude-sonnet-4-6",
+        }
+
+        notify_chat_response(self.user_msg.pk, result)
+
+        event = UsageEvent.objects.filter(
+            user=self.user,
+            event_type=UsageEvent.EventType.INTENT_CLASSIFICATION,
+        ).first()
+        self.assertIsNotNone(event, "patch_intent 분기에서도 의도 분류 UsageEvent가 기록되어야 한다")
+        self.assertEqual(event.upload_log_id, self.upload.pk)
+        self.assertEqual(event.chat_session_id, self.session.pk)
 
 
 # ── boundary ─────────────────────────────────────────────────────────────────

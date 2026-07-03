@@ -122,6 +122,12 @@ CELERY_TASK_ROUTES = {
 MEDIA_ROOT = BASE_DIR / "media"
 FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10 MB
 
+# ── 대시보드 월 사용량 한도 ────────────────────────────────────────────────────
+# MVP 단계에서는 전역 고정값. 추후 User→Plan→limit 구조로 교체될 예정이며,
+# 뷰 쪽에서 조회 로직을 메서드로 분리해 두어 교체 시 이 값만 갈아끼우면 되게 한다.
+MONTHLY_TOKEN_LIMIT = int(os.environ.get("MONTHLY_TOKEN_LIMIT", 2_000_000))
+MONTHLY_COST_LIMIT_KRW = int(os.environ.get("MONTHLY_COST_LIMIT_KRW", 500_000))
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 LANGUAGE_CODE = "ko-kr"
 TIME_ZONE = "Asia/Seoul"

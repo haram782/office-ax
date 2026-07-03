@@ -10,7 +10,7 @@ Dashboard 통계 API 테스트.
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -160,6 +160,14 @@ class DashboardStatsTest(TestCase):
         self.assertEqual(counts[UsageEvent.TokenSource.PROVIDER_REPORTED], 1)
         self.assertEqual(counts[UsageEvent.TokenSource.UNAVAILABLE], 1)
         self.assertEqual(counts[UsageEvent.TokenSource.ESTIMATED], 0)
+
+    @override_settings(MONTHLY_TOKEN_LIMIT=100, MONTHLY_COST_LIMIT_KRW=50)
+    def test_monthly_limits_come_from_settings(self):
+        """월 한도가 하드코딩이 아닌 settings 값에서 온다."""
+        response = self.client.get("/api/v1/dashboard/stats/")
+        self.assertEqual(response.data["monthly_token_limit"], 100)
+        self.assertEqual(response.data["token_total"], 100)
+        self.assertEqual(response.data["deposit"], 50)
 
     def test_all_legacy_fields_are_integers(self):
         """모든 레거시 호환 필드 값이 정수형이어야 한다."""
