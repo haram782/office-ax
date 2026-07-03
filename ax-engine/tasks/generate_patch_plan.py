@@ -64,7 +64,16 @@ def _coerce_patch_plan(result: AnalysisResult) -> dict:
             f"plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:6]}"
         )
 
+    # 하위 호환용 — 신규 소비자는 usage/model/provider를 사용한다
     plan["model_used"] = result.model_used
+    # backend usage_metadata_from_result()가 UsageEvent 기록에 사용하는 계약 키
+    plan["usage"] = {
+        "input_tokens": result.input_tokens,
+        "output_tokens": result.output_tokens,
+        "token_source": result.token_source,
+    }
+    plan["model"] = result.model_used
+    plan["provider"] = result.provider
     return plan
 
 

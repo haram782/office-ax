@@ -29,4 +29,6 @@ class OpenAIClient(BaseLLMClient):
             model_used=response.model,
             input_tokens=response.usage.prompt_tokens if response.usage else 0,
             output_tokens=response.usage.completion_tokens if response.usage else 0,
+            provider="openai",
+            token_source="provider_reported",
         )

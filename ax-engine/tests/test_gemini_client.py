@@ -126,6 +126,41 @@ class TestGeminiClientNormal(unittest.TestCase):
 
         self.assertEqual(result.model_used, "gemini/gemini-1.5-pro")
 
+    @patch("subprocess.run")
+    def test_provider_is_gemini(self, mock_run):
+        """provider 필드는 "gemini"로 채워진다."""
+        mock_run.return_value = _make_proc(stdout=_VALID_JSON)
+
+        client = GeminiClient()
+        result = client.analyze("내용", "프롬프트")
+
+        self.assertEqual(result.provider, "gemini")
+
+    @patch("subprocess.run")
+    def test_token_source_is_estimated(self, mock_run):
+        """gemini CLI는 실제 토큰 수를 반환하지 않으므로 token_source는 "estimated"."""
+        mock_run.return_value = _make_proc(stdout=_VALID_JSON)
+
+        client = GeminiClient()
+        result = client.analyze("내용", "프롬프트")
+
+        self.assertEqual(result.token_source, "estimated")
+
+    @patch("subprocess.run")
+    def test_token_estimate_is_nonzero_and_length_based(self, mock_run):
+        """입력 프롬프트/출력 텍스트 길이 기반으로 0이 아닌 추정 토큰 수를 계산한다."""
+        mock_run.return_value = _make_proc(stdout=_VALID_JSON)
+
+        client = GeminiClient()
+        result = client.analyze("내용" * 30, "프롬프트")
+
+        self.assertGreater(result.input_tokens, 0)
+        self.assertGreater(result.output_tokens, 0)
+        # 입력 텍스트를 늘리면 추정 입력 토큰도 늘어나야 한다 (길이 비례)
+        client2 = GeminiClient()
+        result2 = client2.analyze("내용", "프롬프트")
+        self.assertGreater(result.input_tokens, result2.input_tokens)
+
 
 class TestGeminiClientErrors(unittest.TestCase):
     """에러 케이스."""

@@ -7,6 +7,7 @@ GeminiClient: gemini CLI subprocess를 사용하는 LLM 클라이언트.
 """
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -23,6 +24,9 @@ _JSON_BLOCK_RE = re.compile(
 
 # 멀티모달 경로가 필요한 source_type
 _MULTIMODAL_SOURCE_TYPES = {"image", "pdf_image"}
+
+# 토큰 추정 기준: 한국어 문서 특성상 평균 3자 ≈ 1 token으로 근사
+_ESTIMATED_CHARS_PER_TOKEN = 3
 
 # JSON만 반환하도록 CLI에 강제하는 지시문
 _JSON_ONLY_INSTRUCTION = (
@@ -47,15 +51,27 @@ class GeminiClient(BaseLLMClient):
         cmd = self._build_cmd(context, prompt)
         stdout = self._run_cli(cmd)
         parsed = self._extract_json(stdout)
+        summary = parsed.get("summary", parsed.get("reply", ""))
 
         return AnalysisResult(
-            summary=parsed.get("summary", parsed.get("reply", "")),
+            summary=summary,
             detected_errors=parsed.get("errors", []),
             model_used=f"gemini/{self._model}",
+            input_tokens=self._estimate_tokens(prompt),
+            output_tokens=self._estimate_tokens(summary),
+            provider="gemini",
+            token_source="estimated",
             parsed_data=parsed,
         )
 
     # ── 내부 헬퍼 ──────────────────────────────────────────────────────────────
+
+    def _estimate_tokens(self, text: str) -> int:
+        """
+        gemini CLI는 subprocess 기반이라 API가 토큰 수를 반환하지 않는다.
+        한국어 기준 평균 3자 ≈ 1 token으로 근사해 텍스트 길이로 추정한다.
+        """
+        return math.ceil(len(text) / _ESTIMATED_CHARS_PER_TOKEN) if text else 0
 
     def _build_cmd(self, context: dict, prompt: str) -> list[str]:
         """source_type과 file_path에 따라 CLI 명령어를 조립한다."""

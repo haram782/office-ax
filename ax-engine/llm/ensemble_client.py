@@ -66,6 +66,10 @@ class EnsembleClient(BaseLLMClient):
             summary=summary,
             detected_errors=errors,
             model_used=model_used,
+            input_tokens=sum(r.input_tokens for r in results),
+            output_tokens=sum(r.output_tokens for r in results),
+            provider=",".join(r.provider for r in results if r.provider),
+            token_source=self._aggregate_token_source(results),
         )
 
     # ── 내부 헬퍼 ──────────────────────────────────────────────────────────────
@@ -90,6 +94,12 @@ class EnsembleClient(BaseLLMClient):
                     logger.warning("앙상블 클라이언트 '%s' 실패: %s", name, exc)
 
         return results
+
+    def _aggregate_token_source(self, results: list[AnalysisResult]) -> str:
+        """참여 클라이언트 중 하나라도 추정치를 썼다면 앙상블 결과 전체를 estimated로 표시한다."""
+        if any(r.token_source == "estimated" for r in results):
+            return "estimated"
+        return "provider_reported"
 
     def _select_summary(self, results: list[AnalysisResult]) -> str:
         """summary 문자열이 가장 긴 결과를 반환한다."""

@@ -83,6 +83,26 @@ class GeneratePatchPlanTaskTest(unittest.TestCase):
         mock_get_client.assert_called_once()
         mock_client.analyze.assert_called_once()
 
+    def test_coerce_patch_plan_contains_usage_keys(self):
+        """PatchPlan 결과 dict에 usage/model/provider 계약 키가 채워진다."""
+        result = AnalysisResult(
+            summary="",
+            model_used="gemini/gemini-2.0-flash",
+            input_tokens=90,
+            output_tokens=40,
+            provider="gemini",
+            token_source="estimated",
+            parsed_data=dict(_PLAN),
+        )
+
+        plan = _coerce_patch_plan(result)
+
+        self.assertEqual(plan["usage"]["input_tokens"], 90)
+        self.assertEqual(plan["usage"]["output_tokens"], 40)
+        self.assertEqual(plan["usage"]["token_source"], "estimated")
+        self.assertEqual(plan["model"], "gemini/gemini-2.0-flash")
+        self.assertEqual(plan["provider"], "gemini")
+
     def test_coerce_patch_plan_parses_summary_json_fallback(self):
         """parsed_data가 없을 때 summary JSON 문자열을 PatchPlan으로 파싱한다."""
         result = AnalysisResult(

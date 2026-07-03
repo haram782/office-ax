@@ -25,6 +25,19 @@ def _make_result(reply: str = "안녕하세요!") -> AnalysisResult:
     )
 
 
+def _make_usage_result(reply: str = "응답", parsed_data: dict | None = None) -> AnalysisResult:
+    return AnalysisResult(
+        summary=reply,
+        detected_errors=[],
+        model_used="gpt-4o",
+        input_tokens=150,
+        output_tokens=60,
+        provider="openai",
+        token_source="provider_reported",
+        parsed_data=parsed_data or {},
+    )
+
+
 class TestTextChatTask(unittest.TestCase):
     """text_chat 태스크 동작 테스트."""
 
@@ -119,6 +132,73 @@ class TestTextChatTask(unittest.TestCase):
             self._call_task(task_self, content="질문", chat_message_id=7, session_history=[])
 
         task_self.retry.assert_called()
+
+    @patch("tasks.text_chat.get_llm_client")
+    @patch("tasks.text_chat._send_callback")
+    def test_general_qa_result_contains_usage_keys(self, mock_callback, mock_get_client):
+        """upload_id 없는 일반 Q&A 결과 dict에 usage/model/provider가 채워진다."""
+        mock_client = MagicMock()
+        mock_client.analyze.return_value = _make_usage_result("응답")
+        mock_get_client.return_value = mock_client
+
+        task_self = MagicMock()
+        task_self.app.send_task = MagicMock()
+
+        self._call_task(task_self, content="질문", chat_message_id=1, session_history=[])
+
+        call_args = mock_callback.call_args
+        result = call_args.kwargs.get("result") or call_args.args[2]
+        self.assertEqual(result["usage"]["input_tokens"], 150)
+        self.assertEqual(result["usage"]["output_tokens"], 60)
+        self.assertEqual(result["usage"]["token_source"], "provider_reported")
+        self.assertEqual(result["model"], "gpt-4o")
+        self.assertEqual(result["provider"], "openai")
+
+    @patch("tasks.text_chat.get_llm_client")
+    @patch("tasks.text_chat._send_callback")
+    def test_qa_with_upload_id_result_contains_usage_keys(self, mock_callback, mock_get_client):
+        """upload_id 있는 qa 의도 판별 결과 dict에도 usage/model/provider가 채워진다."""
+        mock_client = MagicMock()
+        mock_client.analyze.return_value = _make_usage_result(
+            "응답", parsed_data={"type": "qa", "reply": "답변입니다"},
+        )
+        mock_get_client.return_value = mock_client
+
+        task_self = MagicMock()
+        task_self.app.send_task = MagicMock()
+
+        self._call_task(
+            task_self, content="질문", chat_message_id=1, session_history=[], upload_id=5,
+        )
+
+        call_args = mock_callback.call_args
+        result = call_args.kwargs.get("result") or call_args.args[2]
+        self.assertEqual(result["usage"]["input_tokens"], 150)
+        self.assertEqual(result["model"], "gpt-4o")
+        self.assertEqual(result["provider"], "openai")
+
+    @patch("tasks.text_chat.get_llm_client")
+    @patch("tasks.text_chat._send_callback")
+    def test_patch_intent_result_contains_usage_keys(self, mock_callback, mock_get_client):
+        """patch_intent 의도 판별 결과 dict에도 usage/model/provider가 채워진다."""
+        mock_client = MagicMock()
+        mock_client.analyze.return_value = _make_usage_result(
+            "", parsed_data={"type": "patch_intent", "refined_prompt": "A2 수정"},
+        )
+        mock_get_client.return_value = mock_client
+
+        task_self = MagicMock()
+        task_self.app.send_task = MagicMock()
+
+        self._call_task(
+            task_self, content="A2를 고쳐줘", chat_message_id=1, session_history=[], upload_id=5,
+        )
+
+        call_args = mock_callback.call_args
+        result = call_args.kwargs.get("result") or call_args.args[2]
+        self.assertEqual(result["usage"]["input_tokens"], 150)
+        self.assertEqual(result["model"], "gpt-4o")
+        self.assertEqual(result["provider"], "openai")
 
 
 if __name__ == "__main__":

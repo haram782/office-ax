@@ -47,6 +47,19 @@ def _send_callback(task_self, chat_message_id: int, result: dict) -> None:
     )
 
 
+def _usage_fields(result) -> dict:
+    """backend usage_metadata_from_result()가 UsageEvent 기록에 사용하는 계약 키를 만든다."""
+    return {
+        "usage": {
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+            "token_source": result.token_source,
+        },
+        "model": result.model_used,
+        "provider": result.provider,
+    }
+
+
 def _parse_intent_response(raw: str) -> dict:
     """
     의도 판별 LLM 응답을 파싱한다.
@@ -114,6 +127,7 @@ def _run_text_chat(
                     "errors":         [],
                     "source_type":    "chat",
                     "model_used":     result.model_used,
+                    **_usage_fields(result),
                 }
             else:
                 # qa 또는 파싱 실패 폴백
@@ -125,6 +139,7 @@ def _run_text_chat(
                     "errors":      [],
                     "source_type": "chat",
                     "model_used":  result.model_used,
+                    **_usage_fields(result),
                 }
         else:
             # 일반 Q&A 모드 — 기존 형식 유지 (하위 호환)
@@ -134,6 +149,7 @@ def _run_text_chat(
                 "errors":          [],
                 "source_type":     "chat",
                 "model_used":      result.model_used,
+                **_usage_fields(result),
             }
 
         _send_callback(task_self, chat_message_id, output)

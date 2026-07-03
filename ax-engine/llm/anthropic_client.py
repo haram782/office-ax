@@ -26,4 +26,6 @@ class AnthropicClient(BaseLLMClient):
             model_used=response.model,
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
+            provider="anthropic",
+            token_source="provider_reported",
         )
