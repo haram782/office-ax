@@ -7,6 +7,7 @@ from pathlib import Path
 
 from celery import current_app
 from celery.result import AsyncResult
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Count, Q, Sum
 from drf_spectacular.utils import extend_schema, OpenApiResponse, OpenApiExample
@@ -377,12 +378,20 @@ class DashboardStatsView(APIView):
     """
 
     permission_classes = [IsAuthenticated]
-    MONTHLY_TOKEN_LIMIT = 2_000_000
-    MONTHLY_COST_LIMIT = 500_000
+
+    def _get_monthly_limits(self, user):
+        """
+        이번 달 토큰/비용 한도를 반환한다.
+
+        MVP에서는 settings의 전역 고정값을 쓰지만, 메서드로 분리해 두어
+        추후 User→Plan→limit 구조로 교체할 때 이 메서드만 바꾸면 되게 한다.
+        """
+        return settings.MONTHLY_TOKEN_LIMIT, settings.MONTHLY_COST_LIMIT_KRW
 
     def get(self, request):
         from django.utils import timezone
 
+        monthly_token_limit, monthly_cost_limit = self._get_monthly_limits(request.user)
         now = timezone.now()
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
@@ -412,8 +421,8 @@ class DashboardStatsView(APIView):
         output_tokens = totals["output_tokens"] or 0
         total_tokens = input_tokens + output_tokens
         estimated_cost = totals["estimated_cost"] or 0
-        token_percent = min(round(total_tokens / self.MONTHLY_TOKEN_LIMIT * 100), 100)
-        cost_percent = min(round(float(estimated_cost) / self.MONTHLY_COST_LIMIT * 100), 100)
+        token_percent = min(round(total_tokens / monthly_token_limit * 100), 100)
+        cost_percent = min(round(float(estimated_cost) / monthly_cost_limit * 100), 100)
 
         return Response({
             "month_start": month_start.date().isoformat(),
@@ -429,15 +438,15 @@ class DashboardStatsView(APIView):
                 for source, _label in UsageEvent.TokenSource.choices
             },
             "estimated_cost": int(estimated_cost),
-            "monthly_token_limit": self.MONTHLY_TOKEN_LIMIT,
-            "monthly_cost_limit": self.MONTHLY_COST_LIMIT,
+            "monthly_token_limit": monthly_token_limit,
+            "monthly_cost_limit": monthly_cost_limit,
             "token_usage_percent": token_percent,
             "cost_usage_percent": cost_percent,
             # 기존 프론트/테스트 호환 필드. 값은 더 이상 하드코딩이 아니다.
             "token_used": total_tokens,
-            "token_total": self.MONTHLY_TOKEN_LIMIT,
-            "balance": max(self.MONTHLY_COST_LIMIT - int(estimated_cost), 0),
-            "deposit": self.MONTHLY_COST_LIMIT,
+            "token_total": monthly_token_limit,
+            "balance": max(monthly_cost_limit - int(estimated_cost), 0),
+            "deposit": monthly_cost_limit,
             "monthly_spent": int(estimated_cost),
             "monthly_processed": totals["processed_documents"] or 0,
             "monthly_errors": totals["failed_jobs"] or 0,

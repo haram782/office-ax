@@ -179,6 +179,71 @@ class TokenSourceTest(TestCase):
         self.assertEqual(event.token_source, UsageEvent.TokenSource.ESTIMATED)
 
 
+class EstimatedCostPricingFallbackTest(TestCase):
+    """estimated_cost 미지정 시 pricing.py 가격표로 자동 계산되는지 검증."""
+
+    def setUp(self):
+        self.user = _make_user("pricing_fallback_user")
+
+    def test_uses_pricing_table_when_cost_not_provided(self):
+        """metadata/estimated_cost 모두 없으면 model+tokens로 pricing.py가 계산한다."""
+        from apps.documents.services.pricing import estimate_cost_krw
+
+        event = record_usage_event(
+            user=self.user,
+            event_type=UsageEvent.EventType.CHAT_QA,
+            model="claude-sonnet-4-6",
+            input_tokens=1000,
+            output_tokens=500,
+        )
+        expected = estimate_cost_krw("claude-sonnet-4-6", 1000, 500)
+        self.assertEqual(event.estimated_cost, expected)
+        self.assertGreater(event.estimated_cost, Decimal("0"))
+
+    def test_explicit_estimated_cost_overrides_pricing_table(self):
+        """estimated_cost가 명시적으로 전달되면 pricing.py 계산값보다 우선한다."""
+        event = record_usage_event(
+            user=self.user,
+            event_type=UsageEvent.EventType.CHAT_QA,
+            model="claude-sonnet-4-6",
+            input_tokens=1000,
+            output_tokens=500,
+            estimated_cost=Decimal("999"),
+        )
+        self.assertEqual(event.estimated_cost, Decimal("999"))
+
+    def test_unknown_model_falls_back_to_zero(self):
+        """가격표에 없는 모델은 예외 없이 0으로 저장된다."""
+        event = record_usage_event(
+            user=self.user,
+            event_type=UsageEvent.EventType.CHAT_QA,
+            model="unknown-model-xyz",
+            input_tokens=1000,
+            output_tokens=500,
+        )
+        self.assertEqual(event.estimated_cost, Decimal("0"))
+
+
+class IntentClassificationEventTypeTest(TestCase):
+    """EventType.INTENT_CLASSIFICATION 추가 검증 — 의도 분류 LLM 호출 기록용."""
+
+    def test_intent_classification_choice_exists(self):
+        self.assertIn(
+            "intent_classification",
+            dict(UsageEvent.EventType.choices),
+        )
+
+    def test_can_record_intent_classification_event(self):
+        user = _make_user("intent_classification_user")
+        event = record_usage_event(
+            user=user,
+            event_type=UsageEvent.EventType.INTENT_CLASSIFICATION,
+            metadata={"source": "chat"},
+        )
+        self.assertIsNotNone(event)
+        self.assertEqual(event.event_type, "intent_classification")
+
+
 class UsageMetadataFromResultTest(TestCase):
     """usage_metadata_from_result 헬퍼 검증."""
 

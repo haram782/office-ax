@@ -358,6 +358,7 @@ class UsageEvent(models.Model):
         CHAT_QA = "chat_qa", "채팅 Q&A"
         PATCH_PLAN_GENERATION = "patch_plan_generation", "수정 계획 생성"
         PATCH_ARTIFACT_GENERATION = "patch_artifact_generation", "수정본 생성"
+        INTENT_CLASSIFICATION = "intent_classification", "의도 분류"
 
     class TokenSource(models.TextChoices):
         PROVIDER_REPORTED = "provider_reported", "공급자 보고"

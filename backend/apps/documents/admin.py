@@ -52,9 +52,9 @@ class IngestionWorkflowAdmin(admin.ModelAdmin):
 class UsageEventAdmin(admin.ModelAdmin):
     list_display = [
         "id", "user", "event_type", "provider", "model", "status",
-        "input_tokens", "output_tokens", "estimated_cost", "created_at",
+        "total_tokens", "estimated_cost", "token_source", "created_at",
     ]
-    list_filter = ["user", "event_type", "provider", "status", "created_at"]
+    list_filter = ["event_type", "provider", "status", "token_source", "user", "created_at"]
     search_fields = ["user__username", "provider", "model"]
     readonly_fields = [
         "user", "upload_log", "document_version", "chat_session", "event_type",
