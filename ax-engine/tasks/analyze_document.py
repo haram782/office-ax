@@ -144,8 +144,17 @@ def analyze_document(
             "upload_id":    upload_id,
             "summary":      result.summary,
             "errors":       result.detected_errors,
+            # 하위 호환용 — 신규 소비자는 usage/model/provider를 사용한다
             "model_used":   result.model_used,
             "tokens":       {"input": result.input_tokens, "output": result.output_tokens},
+            # backend usage_metadata_from_result()가 UsageEvent 기록에 사용하는 계약 키
+            "usage": {
+                "input_tokens": result.input_tokens,
+                "output_tokens": result.output_tokens,
+                "token_source": result.token_source,
+            },
+            "model":        result.model_used,
+            "provider":     result.provider,
             "pii_redacted": pii_counts,
             "source_type":  source_type,
             "action_tag":   _ACTION_TAGS.get(source_type, "#문서_분석"),

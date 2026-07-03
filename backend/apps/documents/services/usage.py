@@ -7,6 +7,7 @@ from typing import Any
 from django.contrib.auth import get_user_model
 
 from apps.documents.models import DocumentVersion, UploadLog, UsageEvent
+from apps.documents.services.pricing import estimate_cost_krw
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,15 @@ def record_usage_event(
         if not source:
             source = UsageEvent.TokenSource.PROVIDER_REPORTED if input_value or output_value else UsageEvent.TokenSource.UNAVAILABLE
 
+        resolved_model = model or str(_lookup(metadata, "model") or _lookup(usage, "model") or "")
+        cost_value = _coerce_optional_decimal(
+            estimated_cost,
+            _lookup(metadata, "estimated_cost") or _lookup(usage, "estimated_cost") or _lookup(usage, "cost"),
+        )
+        if cost_value is None:
+            # 명시적 비용 정보가 없으면 pricing.py 가격표로 계산한 값을 스냅샷으로 저장한다.
+            cost_value = estimate_cost_krw(resolved_model, input_value, output_value)
+
         return UsageEvent.objects.create(
             user=user,
             upload_log=upload_log,
@@ -56,14 +66,11 @@ def record_usage_event(
             chat_session=chat_session,
             event_type=event_type,
             provider=provider or str(_lookup(metadata, "provider") or _lookup(usage, "provider") or ""),
-            model=model or str(_lookup(metadata, "model") or _lookup(usage, "model") or ""),
+            model=resolved_model,
             input_tokens=input_value,
             output_tokens=output_value,
             token_source=source,
-            estimated_cost=_coerce_decimal(
-                estimated_cost,
-                _lookup(metadata, "estimated_cost") or _lookup(usage, "estimated_cost") or _lookup(usage, "cost"),
-            ),
+            estimated_cost=cost_value,
             latency_ms=_coerce_optional_int(latency_ms, _lookup(metadata, "latency_ms") or _lookup(usage, "latency_ms")),
             status=status,
             metadata=metadata or {},
@@ -122,3 +129,17 @@ def _coerce_decimal(primary: Any, fallback: Any = None) -> Decimal:
         return Decimal(str(value or "0"))
     except (InvalidOperation, TypeError, ValueError):
         return Decimal("0")
+
+
+def _coerce_optional_decimal(primary: Any, fallback: Any = None) -> Decimal | None:
+    """
+    명시적으로 전달된 비용 값이 없거나 파싱 불가능하면 None을 반환한다.
+    호출 측은 None일 때 pricing.py 가격표로 비용을 다시 계산한다.
+    """
+    value = primary if primary is not None else fallback
+    if value in (None, ""):
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None

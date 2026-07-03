@@ -19,17 +19,33 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from llm.base import AnalysisResult
 
 
-def _make_result(summary: str, errors: list[str], model: str = "mock") -> AnalysisResult:
-    return AnalysisResult(summary=summary, detected_errors=errors, model_used=model)
+def _make_result(
+    summary: str, errors: list[str], model: str = "mock",
+    provider: str = "", input_tokens: int = 0, output_tokens: int = 0,
+    token_source: str = "provider_reported",
+) -> AnalysisResult:
+    return AnalysisResult(
+        summary=summary, detected_errors=errors, model_used=model,
+        provider=provider, input_tokens=input_tokens, output_tokens=output_tokens,
+        token_source=token_source,
+    )
 
 
-def _make_mock_client(summary: str, errors: list[str], fail: bool = False):
+def _make_mock_client(
+    summary: str, errors: list[str], fail: bool = False,
+    provider: str = "", input_tokens: int = 0, output_tokens: int = 0,
+    token_source: str = "provider_reported",
+):
     """가짜 LLM 클라이언트 생성 헬퍼."""
     client = MagicMock()
     if fail:
         client.analyze.side_effect = RuntimeError("클라이언트 오류")
     else:
-        client.analyze.return_value = _make_result(summary, errors)
+        client.analyze.return_value = _make_result(
+            summary, errors, provider=provider,
+            input_tokens=input_tokens, output_tokens=output_tokens,
+            token_source=token_source,
+        )
     return client
 
 
@@ -113,6 +129,61 @@ class TestEnsembleClientSuccess(unittest.TestCase):
         self.assertEqual(result.summary, "정상 요약")
         # 오류1은 하나의 클라이언트만 감지 → candidate
         self.assertIn("[후보] 오류1", result.detected_errors)
+
+    def test_tokens_summed_across_successful_clients(self):
+        """토큰 수는 성공한 클라이언트들의 값을 합산한다."""
+        client_a = _make_mock_client(
+            summary="요약A", errors=[], provider="openai",
+            input_tokens=100, output_tokens=50, token_source="provider_reported",
+        )
+        client_b = _make_mock_client(
+            summary="요약B", errors=[], provider="gemini",
+            input_tokens=80, output_tokens=30, token_source="estimated",
+        )
+
+        ensemble = self._make_client([("openai", client_a), ("gemini", client_b)])
+        result = ensemble.analyze("내용", "프롬프트")
+
+        self.assertEqual(result.input_tokens, 180)
+        self.assertEqual(result.output_tokens, 80)
+
+    def test_provider_lists_all_participating_providers(self):
+        """provider 필드는 참여한 클라이언트들의 provider를 콤마로 나열한다."""
+        client_a = _make_mock_client(summary="요약A", errors=[], provider="openai")
+        client_b = _make_mock_client(summary="요약B", errors=[], provider="gemini")
+
+        ensemble = self._make_client([("openai", client_a), ("gemini", client_b)])
+        result = ensemble.analyze("내용", "프롬프트")
+
+        self.assertEqual(result.provider, "openai,gemini")
+
+    def test_token_source_estimated_when_any_client_estimated(self):
+        """참여 클라이언트 중 하나라도 estimated이면 앙상블 결과도 estimated로 표시한다."""
+        client_a = _make_mock_client(
+            summary="요약A", errors=[], provider="openai", token_source="provider_reported",
+        )
+        client_b = _make_mock_client(
+            summary="요약B", errors=[], provider="gemini", token_source="estimated",
+        )
+
+        ensemble = self._make_client([("openai", client_a), ("gemini", client_b)])
+        result = ensemble.analyze("내용", "프롬프트")
+
+        self.assertEqual(result.token_source, "estimated")
+
+    def test_token_source_provider_reported_when_all_reported(self):
+        """모든 참여 클라이언트가 provider_reported면 앙상블 결과도 provider_reported."""
+        client_a = _make_mock_client(
+            summary="요약A", errors=[], provider="openai", token_source="provider_reported",
+        )
+        client_b = _make_mock_client(
+            summary="요약B", errors=[], provider="anthropic", token_source="provider_reported",
+        )
+
+        ensemble = self._make_client([("openai", client_a), ("anthropic", client_b)])
+        result = ensemble.analyze("내용", "프롬프트")
+
+        self.assertEqual(result.token_source, "provider_reported")
 
     def test_all_clients_fail_raises_runtime_error(self):
         """모든 클라이언트 실패 → RuntimeError."""

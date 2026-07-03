@@ -9,6 +9,10 @@ class AnalysisResult:
     model_used: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
+    # LLM 공급자 식별자 ("anthropic" | "openai" | "gemini" 등) — backend UsageEvent 기록용
+    provider: str = ""
+    # 토큰 수 출처: provider가 실제 반환한 값인지, 텍스트 길이로 추정한 값인지 구분
+    token_source: str = "provider_reported"
     # LLM이 생성한 보정 파일 절대 경로 (없으면 빈 문자열)
     artifact_path: str = ""
     # LLM 응답 전체 파싱 결과 — 의도 판별 등 summary 외 필드가 필요한 경우 사용
