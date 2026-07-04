@@ -13,6 +13,7 @@ Google OAuth 인증 API 테스트.
   9. [회귀] email 중복 유저 존재 시 MultipleObjectsReturned 방어 처리
   10. [회귀] 기존 유저의 first_name이 비어 있으면 Google name으로 업데이트
 """
+import os
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -116,6 +117,63 @@ class GoogleAuthViewTest(TestCase):
             r2 = self.client.post(self.url, {"access_token": "token-b"}, format="json")
 
         self.assertEqual(r1.data["token"], r2.data["token"])
+
+
+class BetaAllowlistTest(TestCase):
+    """
+    클로즈드 베타 이메일 allowlist 테스트.
+
+    BETA_ALLOWED_EMAILS 환경변수(콤마 구분 목록)가 설정되면
+    목록에 없는 이메일의 Google OAuth 로그인을 403으로 거부한다.
+    미설정 시에는 기존 동작(전체 허용)을 유지한다.
+    상세: docs/product/strategy/closed-beta-launch-plan-v1-ko.md 2.2절 결정 17
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.url = "/api/v1/auth/google/"
+
+    def _login(self, email="tester@example.com"):
+        payload = {**_GOOGLE_USERINFO_OK, "email": email}
+        with patch("apps.accounts.views.requests.get", return_value=_mock_google_ok(payload)):
+            return self.client.post(self.url, {"access_token": "tok"}, format="json")
+
+    def test_unlisted_email_returns_403(self):
+        """allowlist에 없는 이메일은 403으로 거부한다."""
+        with patch.dict(os.environ, {"BETA_ALLOWED_EMAILS": "invited@example.com"}):
+            response = self._login(email="stranger@example.com")
+        self.assertEqual(response.status_code, 403)
+
+    def test_unlisted_email_does_not_create_user(self):
+        """거부된 로그인 시도는 유저 레코드를 생성하지 않아야 한다."""
+        with patch.dict(os.environ, {"BETA_ALLOWED_EMAILS": "invited@example.com"}):
+            self._login(email="stranger@example.com")
+        self.assertFalse(User.objects.filter(email="stranger@example.com").exists())
+
+    def test_listed_email_returns_200(self):
+        """allowlist에 있는 이메일은 정상 로그인된다."""
+        with patch.dict(os.environ, {"BETA_ALLOWED_EMAILS": "invited@example.com,tester@example.com"}):
+            response = self._login(email="tester@example.com")
+        self.assertEqual(response.status_code, 200)
+
+    def test_allowlist_is_case_and_space_insensitive(self):
+        """대소문자·공백 차이는 무시하고 매칭한다 (경계 케이스)."""
+        with patch.dict(os.environ, {"BETA_ALLOWED_EMAILS": " Invited@Example.com , Tester@EXAMPLE.com "}):
+            response = self._login(email="tester@example.com")
+        self.assertEqual(response.status_code, 200)
+
+    def test_unset_allowlist_allows_all(self):
+        """[회귀] 환경변수 미설정 시 기존 전체 허용 동작을 유지한다."""
+        env = {k: v for k, v in os.environ.items() if k != "BETA_ALLOWED_EMAILS"}
+        with patch.dict(os.environ, env, clear=True):
+            response = self._login(email="anyone@example.com")
+        self.assertEqual(response.status_code, 200)
+
+    def test_empty_allowlist_allows_all(self):
+        """[경계] 환경변수가 빈 문자열이면 전체 허용으로 취급한다."""
+        with patch.dict(os.environ, {"BETA_ALLOWED_EMAILS": "  "}):
+            response = self._login(email="anyone@example.com")
+        self.assertEqual(response.status_code, 200)
 
 
 class MeViewTest(TestCase):
