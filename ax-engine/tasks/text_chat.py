@@ -13,6 +13,7 @@ from celery import shared_task
 from celery.utils.log import get_task_logger
 
 from llm import get_llm_client
+from masking.pii_masker import mask_pii
 from prompts.chat import CHAT_INTENT_SYSTEM_PROMPT, CHAT_SYSTEM_PROMPT
 
 logger = get_task_logger(__name__)
@@ -97,7 +98,12 @@ def _run_text_chat(
         session_history: 최근 대화 이력
         upload_id: 현재 열람 중인 UploadLog PK (None이면 일반 Q&A 모드)
     """
-    prompt_text = _build_prompt(content, session_history)
+    # LLM 전송 전 PII 마스킹 — analyze_document와 동일 정책.
+    # 질문과 session_history(문서 발췌가 남아 있을 수 있음)를 조합한 뒤 일괄 마스킹한다.
+    # 상세: closed-beta-launch-plan-v1-ko.md 결정 11
+    prompt_text, pii_counts = mask_pii(_build_prompt(content, session_history))
+    if pii_counts:
+        logger.info("text_chat PII 마스킹 | chat_message_id=%s | counts=%s", chat_message_id, pii_counts)
 
     # upload_id 있으면 의도 판별 프롬프트 사용
     system_prompt = CHAT_INTENT_SYSTEM_PROMPT if upload_id else CHAT_SYSTEM_PROMPT
