@@ -57,5 +57,75 @@ class TestAnalyzeDocumentUsageKeys(unittest.TestCase):
         self.assertEqual(output["provider"], "openai")
 
 
+class TestScannedDocumentGuidance(unittest.TestCase):
+    """
+    스캔본 PDF·이미지 업로드 안내 테스트.
+
+    closed-beta-launch-plan-v1-ko.md 갭 6 / M1:
+      OCR이 미구현이므로 스캔본·이미지는 LLM 호출 없이
+      "지원하지 않음" 안내를 분석 결과로 반환한다 (깨진 분석 결과 방지).
+    """
+
+    @patch("tasks.analyze_document.get_llm_client")
+    def test_scanned_pdf_returns_guidance_without_llm(self, mock_get_client):
+        """스캔 PDF(추출 텍스트 거의 없음)는 안내 문구를 반환하고 LLM을 호출하지 않는다."""
+        mock_client = MagicMock()
+        mock_client.analyze.return_value = _make_result()
+        mock_get_client.return_value = mock_client
+
+        from tasks.analyze_document import _SUFFIX_DISPATCH, analyze_document
+
+        # 텍스트가 거의 없는 PDF → pdf_image 판별 경로
+        mock_parse_pdf = MagicMock(return_value=("  ", {"pages": 1}))
+        with patch.dict(_SUFFIX_DISPATCH, {".pdf": (mock_parse_pdf, None)}), \
+             patch("parsers.ocr_parser.ocr_extract", return_value=("", {"ocr_engine": "unavailable"})), \
+             patch.object(analyze_document.app, "send_task"):
+            output = analyze_document.run(file_path="/tmp/scan.pdf", upload_id=7)
+
+        self.assertIn("스캔", output["summary"])
+        self.assertIn("지원하지 않", output["summary"])
+        self.assertEqual(output["source_type"], "pdf_image")
+        # LLM 미호출 — 비용·크레딧이 발생하면 안 된다
+        mock_client.analyze.assert_not_called()
+
+    @patch("tasks.analyze_document.get_llm_client")
+    def test_image_upload_returns_guidance_without_llm(self, mock_get_client):
+        """이미지 파일도 동일하게 안내 문구를 반환하고 LLM을 호출하지 않는다."""
+        mock_client = MagicMock()
+        mock_client.analyze.return_value = _make_result()
+        mock_get_client.return_value = mock_client
+
+        from tasks.analyze_document import _SUFFIX_DISPATCH, analyze_document
+
+        mock_parse_image = MagicMock(return_value=("", {}))
+        with patch.dict(_SUFFIX_DISPATCH, {".png": (mock_parse_image, "image")}), \
+             patch.object(analyze_document.app, "send_task"):
+            output = analyze_document.run(file_path="/tmp/photo.png", upload_id=8)
+
+        self.assertIn("지원하지 않", output["summary"])
+        mock_client.analyze.assert_not_called()
+
+    @patch("tasks.analyze_document.get_llm_client")
+    @patch("tasks.analyze_document.mask_pii")
+    def test_digital_pdf_still_analyzed(self, mock_mask_pii, mock_get_client):
+        """[회귀] 텍스트가 충분한 디지털 PDF는 기존대로 LLM 분석을 수행한다."""
+        mock_mask_pii.return_value = ("마스킹된 본문", {})
+        mock_client = MagicMock()
+        mock_client.analyze.return_value = _make_result()
+        mock_get_client.return_value = mock_client
+
+        from tasks.analyze_document import _SUFFIX_DISPATCH, analyze_document
+
+        mock_parse_pdf = MagicMock(return_value=("충분히 긴 디지털 PDF 본문 " * 50, {"pages": 3}))
+        with patch.dict(_SUFFIX_DISPATCH, {".pdf": (mock_parse_pdf, None)}), \
+             patch.object(analyze_document.app, "send_task"):
+            output = analyze_document.run(file_path="/tmp/digital.pdf", upload_id=9)
+
+        self.assertEqual(output["source_type"], "pdf_digital")
+        self.assertEqual(output["summary"], "분석 완료")
+        mock_client.analyze.assert_called_once()
+
+
+
 if __name__ == "__main__":
     unittest.main()
