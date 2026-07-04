@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import logging
+import os
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from django.contrib.auth import get_user_model
+from django.utils import timezone
+from rest_framework import status as http_status
+from rest_framework.response import Response
 
 from apps.documents.models import DocumentVersion, UploadLog, UsageEvent
 from apps.documents.services.pricing import estimate_cost_krw
@@ -12,6 +16,63 @@ from apps.documents.services.pricing import estimate_cost_krw
 logger = logging.getLogger(__name__)
 
 User = get_user_model()
+
+# 크레딧 차감 대상 이벤트 — closed-beta-launch-plan-v1-ko.md 6절
+# (chat_qa·intent_classification은 사용자 표시 단순화를 위해 차감하지 않는다)
+CREDIT_EVENT_TYPES = (
+    UsageEvent.EventType.DOCUMENT_ANALYSIS,
+    UsageEvent.EventType.PATCH_PLAN_GENERATION,
+    UsageEvent.EventType.PATCH_ARTIFACT_GENERATION,
+)
+
+# 월간 기본 크레딧 — env BETA_MONTHLY_CREDITS로 조정, 0 이하면 무제한
+DEFAULT_MONTHLY_CREDITS = 200
+
+
+def get_monthly_credit_status(user) -> dict:
+    """
+    이번 달 크레딧 사용량과 한도를 반환한다.
+
+    실패(FAILED) 이벤트는 차감하지 않는다 — 사용자 잘못이 아닌 호출 실패에
+    크레딧을 물리지 않기 위함. 월 기준은 대시보드 집계와 동일(달력 월 시작).
+    """
+    try:
+        limit = int(os.environ.get("BETA_MONTHLY_CREDITS", DEFAULT_MONTHLY_CREDITS))
+    except ValueError:
+        limit = DEFAULT_MONTHLY_CREDITS
+
+    month_start = timezone.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    used = UsageEvent.objects.filter(
+        user=user,
+        created_at__gte=month_start,
+        status=UsageEvent.Status.SUCCESS,
+        event_type__in=CREDIT_EVENT_TYPES,
+    ).count()
+
+    # limit <= 0 은 무제한 — 운영자 계정이나 개발 환경에서 사용
+    exceeded = limit > 0 and used >= limit
+    return {"used": used, "limit": limit, "exceeded": exceeded}
+
+
+def credit_limit_response(user) -> Response | None:
+    """
+    크레딧 소진 시 429 Response를, 여유가 있으면 None을 반환한다.
+
+    비싼 endpoint(업로드·채팅 전송·PatchPlan 생성·patch 실행) 진입부에서
+    호출한다. 동시 요청 간 경합은 베타 규모에서 무시 가능한 수준으로 판단해
+    잠금 없이 즉석 집계로 처리한다.
+    """
+    credit = get_monthly_credit_status(user)
+    if not credit["exceeded"]:
+        return None
+    return Response(
+        {
+            "error": "이번 달 사용량을 모두 썼어요. 다음 달에 초기화되며, 한도 상향은 운영자에게 문의해주세요.",
+            "credits_used": credit["used"],
+            "credits_limit": credit["limit"],
+        },
+        status=http_status.HTTP_429_TOO_MANY_REQUESTS,
+    )
 
 
 def record_usage_event(
