@@ -12,6 +12,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 import { api } from '../src/api/client'
+import CreditLimitModal from '../src/components/CreditLimitModal'
 
 /** 등록된 axios response 인터셉터의 rejected 핸들러를 찾는다 */
 function findRejectedHandler() {
@@ -52,5 +53,33 @@ describe('429 응답 인터셉터', () => {
 
     expect(listener).not.toHaveBeenCalled()
     window.removeEventListener('ax:credit-exhausted', listener)
+  })
+})
+
+describe('CreditLimitModal', () => {
+  it('이벤트 수신 전에는 아무것도 렌더링하지 않는다', () => {
+    const { container } = render(<CreditLimitModal />)
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('이벤트를 받으면 안내 문구와 함께 모달을 띄운다', async () => {
+    render(<CreditLimitModal />)
+    window.dispatchEvent(new CustomEvent('ax:credit-exhausted', { detail: '한도 안내 문구' }))
+
+    await waitFor(() => {
+      expect(screen.getByText('한도 안내 문구')).toBeInTheDocument()
+    })
+    expect(screen.getByText(/이번 달 사용량 소진/)).toBeInTheDocument()
+  })
+
+  it('확인 버튼을 누르면 모달이 닫힌다', async () => {
+    render(<CreditLimitModal />)
+    window.dispatchEvent(new CustomEvent('ax:credit-exhausted', { detail: '닫힘 테스트' }))
+    await waitFor(() => {
+      expect(screen.getByText('닫힘 테스트')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByText('확인'))
+    expect(screen.queryByText('닫힘 테스트')).toBeNull()
   })
 })

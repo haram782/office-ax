@@ -1,4 +1,5 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
+import CreditLimitModal from './components/CreditLimitModal'
 import Login      from './pages/Login'
 import Dashboard  from './pages/Dashboard'
 import Workspace  from './pages/Workspace'
@@ -21,6 +22,8 @@ function RequireAuth({ children }) {
 export default function App() {
   return (
     <div className="min-h-screen bg-zinc-100 dark:bg-zinc-950 text-zinc-800 dark:text-zinc-300">
+      {/* 크레딧 소진(429) 전역 안내 — api/client.js 인터셉터 이벤트 수신 */}
+      <CreditLimitModal />
       <Routes>
         <Route path="/login" element={<Login />} />
         {/* 대시보드만 인증 필수 */}
