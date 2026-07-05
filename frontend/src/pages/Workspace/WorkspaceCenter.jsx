@@ -190,7 +190,8 @@ export function WorkspaceCenter({
         ? `${filename.slice(0, dot)}_v${selected.version_number}${filename.slice(dot)}`
         : `${filename}_v${selected.version_number}`
       saveAs(blobUrl, versioned)
-      URL.revokeObjectURL(blobUrl)
+      // 즉시 revoke하면 브라우저가 Blob을 읽기 전에 무효화될 수 있어 지연 해제한다
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 10_000)
     } catch {
       // 다운로드 실패 — 뷰어 상태는 건드리지 않는다 (재시도 가능)
     }

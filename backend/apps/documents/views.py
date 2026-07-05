@@ -600,7 +600,7 @@ class DocumentChangeAcceptAllView(APIView):
         change_ids = request.data.get("change_ids")
         if change_ids is not None and (
             not isinstance(change_ids, list)
-            or not all(isinstance(cid, int) for cid in change_ids)
+            or not all(isinstance(cid, int) and not isinstance(cid, bool) for cid in change_ids)
         ):
             return Response(
                 {"error": "change_ids는 정수 리스트여야 합니다."},
