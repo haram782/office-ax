@@ -44,10 +44,8 @@ services:
       dockerfile: backend/Dockerfile
     restart: unless-stopped
     # 시작 시 마이그레이션 + collectstatic — 베타 단일 인스턴스라 경합 없음
-    command: >
-      sh -c "python manage.py migrate --noinput
-             && python manage.py collectstatic --noinput
-             && gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 180"
+    # (YAML folded scalar는 개행을 남겨 sh -c를 깨뜨리므로 한 줄로 유지한다)
+    command: sh -c "python manage.py migrate --noinput && python manage.py collectstatic --noinput && exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 180"
     env_file: .env.beta
     environment:
       TMPDIR: /shared-tmp
