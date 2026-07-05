@@ -1,19 +1,11 @@
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route } from 'react-router-dom'
 import CreditLimitModal from './components/CreditLimitModal'
+import { RequireAuth } from './components/RequireAuth'
 import Login      from './pages/Login'
 import Dashboard  from './pages/Dashboard'
 import Workspace  from './pages/Workspace'
 import Pipeline   from './pages/Pipeline'
 import PreviewPage from './pages/PreviewPage'
-
-/**
- * 인증 가드 — localStorage에 auth_token이 없으면 /login으로 리다이렉트한다.
- */
-function RequireAuth({ children }) {
-  const token = localStorage.getItem('auth_token')
-  if (!token) return <Navigate to="/login" replace />
-  return children
-}
 
 /**
  * 라우트 정의.
@@ -26,11 +18,11 @@ export default function App() {
       <CreditLimitModal />
       <Routes>
         <Route path="/login" element={<Login />} />
-        {/* 대시보드만 인증 필수 */}
+        {/* 게스트 토큰 제거 이후 모든 사용자 페이지는 인증 필수 — 비로그인 시 깨진 화면 대신 로그인으로 유도 */}
         <Route path="/"             element={<RequireAuth><Dashboard /></RequireAuth>} />
-        <Route path="/workspace"    element={<Workspace />} />
-        <Route path="/pipeline/:id" element={<Pipeline />} />
-        <Route path="/preview"      element={<PreviewPage />} />
+        <Route path="/workspace"    element={<RequireAuth><Workspace /></RequireAuth>} />
+        <Route path="/pipeline/:id" element={<RequireAuth><Pipeline /></RequireAuth>} />
+        <Route path="/preview"      element={<RequireAuth><PreviewPage /></RequireAuth>} />
       </Routes>
     </div>
   )
