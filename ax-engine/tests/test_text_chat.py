@@ -275,5 +275,88 @@ class TestTextChatMasking(unittest.TestCase):
 
 
 
+
+class TestTextChatRagContext(unittest.TestCase):
+    """
+    RAG 자산 프롬프트 주입 테스트 (점검 발견 A-2).
+
+    rag_files(백엔드가 소유 검증 후 전달한 파일 목록)의 텍스트를
+    LLM 프롬프트에 참고 자료로 주입한다. 임베딩 검색 없이 전문 주입 —
+    베타 규모(자산 소수·소용량)에서 충분하며, 마스킹 이후 단계가 아니라
+    마스킹 이전에 주입해 PII 정책을 그대로 적용받는다.
+    """
+
+    def _call_task(self, task_self, **kwargs):
+        from tasks.text_chat import _run_text_chat
+        return _run_text_chat(task_self, **kwargs)
+
+    def _analyze_prompt(self, mock_client):
+        call = mock_client.analyze.call_args
+        return call.args[0] if call.args else ""
+
+    @patch("tasks.text_chat.get_llm_client")
+    @patch("tasks.text_chat._send_callback")
+    def test_rag_file_text_is_injected_into_prompt(self, mock_callback, mock_get_client):
+        """rag_files의 파일 내용과 그룹명이 프롬프트에 포함된다."""
+        import tempfile
+
+        mock_client = MagicMock()
+        mock_client.analyze.return_value = _make_result("응답")
+        mock_get_client.return_value = mock_client
+        task_self = MagicMock()
+
+        with tempfile.NamedTemporaryFile(suffix=".csv", mode="w", delete=False) as f:
+            f.write("항목,내용\n어투,정중한 보고체로 작성합니다")
+            rag_path = f.name
+
+        self._call_task(
+            task_self,
+            content="이 어투로 요약해줘",
+            chat_message_id=1,
+            session_history=[],
+            rag_files=[{"kind": "tone", "group_name": "보고서_어투", "path": rag_path}],
+        )
+
+        prompt = self._analyze_prompt(mock_client)
+        self.assertIn("보고서_어투", prompt)
+        self.assertIn("정중한 보고체", prompt)
+        self.assertIn("이 어투로 요약해줘", prompt)
+
+    @patch("tasks.text_chat.get_llm_client")
+    @patch("tasks.text_chat._send_callback")
+    def test_missing_rag_file_is_skipped_without_failure(self, mock_callback, mock_get_client):
+        """[실패 격리] 없는 파일 경로는 건너뛰고 채팅은 정상 진행된다."""
+        mock_client = MagicMock()
+        mock_client.analyze.return_value = _make_result("응답")
+        mock_get_client.return_value = mock_client
+        task_self = MagicMock()
+
+        output = self._call_task(
+            task_self,
+            content="질문",
+            chat_message_id=2,
+            session_history=[],
+            rag_files=[{"kind": "form", "group_name": "없는_자산", "path": "/no/such/file.csv"}],
+        )
+
+        self.assertEqual(output["source_type"], "chat")
+        self.assertIn("질문", self._analyze_prompt(mock_client))
+
+    @patch("tasks.text_chat.get_llm_client")
+    @patch("tasks.text_chat._send_callback")
+    def test_without_rag_files_prompt_unchanged(self, mock_callback, mock_get_client):
+        """[회귀] rag_files 없으면 기존 프롬프트 형태를 유지한다."""
+        mock_client = MagicMock()
+        mock_client.analyze.return_value = _make_result("응답")
+        mock_get_client.return_value = mock_client
+        task_self = MagicMock()
+
+        self._call_task(task_self, content="일반 질문", chat_message_id=3, session_history=[])
+        prompt = self._analyze_prompt(mock_client)
+        self.assertNotIn("참고 자산", prompt)
+        self.assertIn("[사용자] 일반 질문", prompt)
+
+
+
 if __name__ == "__main__":
     unittest.main()
