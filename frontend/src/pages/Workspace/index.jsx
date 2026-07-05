@@ -57,8 +57,8 @@ export default function Workspace() {
   const handleAcceptAllReady = useCallback((fn) => {
     acceptAllFnRef.current = fn
   }, [])
-  const handleChatAcceptAll = useCallback(async () => {
-    await acceptAllFnRef.current?.()
+  const handleChatAcceptAll = useCallback(async (changeIds = null) => {
+    await acceptAllFnRef.current?.(changeIds)
   }, [])
 
   // 최신 patch_plan 메시지 감지 → localPatchData 자동 설정.

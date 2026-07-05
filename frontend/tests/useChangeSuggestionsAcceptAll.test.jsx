@@ -49,7 +49,7 @@ describe('useChangeSuggestions — handleAcceptAll (versionId 있음)', () => {
 
     await act(async () => { await result.current.handleAcceptAll() })
 
-    expect(mockAcceptAll).toHaveBeenCalledWith(100, 200)
+    expect(mockAcceptAll).toHaveBeenCalledWith(100, 200, null)
   })
 
   it('applied/rejected 응답이 changeDbId 매핑을 통해 statuses에 반영된다', async () => {

@@ -21,9 +21,10 @@ function hasGeneratingVersion(list) {
  *
  * @param {number|string|null} uploadId
  * @param {string|null}        patchStatus - 변경 시 재조회 트리거 (예: 'ready')
+ * @param {number|string|null} refreshKey  - 변경 시 재조회 트리거 (예: 채팅발 draft version_id)
  * @returns {{ versions: Array, isLoading: boolean }}
  */
-export function useDocumentVersions(uploadId, patchStatus = null) {
+export function useDocumentVersions(uploadId, patchStatus = null, refreshKey = null) {
   const [versions, setVersions]   = useState([])
   const [isLoading, setIsLoading] = useState(false)
 
@@ -67,8 +68,9 @@ export function useDocumentVersions(uploadId, patchStatus = null) {
       cancelled = true
       if (timeoutId) clearTimeout(timeoutId)
     }
-  // patchStatus가 바뀔 때마다 재조회 (generating → ready 전환 감지)
-  }, [uploadId, patchStatus])
+  // patchStatus 변경(generating → ready 전환)과 refreshKey 변경(채팅에서 새 draft
+  // 버전 생성) 모두 재조회 트리거다 — 채팅발 버전이 탭에 즉시 반영되게 한다
+  }, [uploadId, patchStatus, refreshKey])
 
   return { versions, isLoading }
 }
