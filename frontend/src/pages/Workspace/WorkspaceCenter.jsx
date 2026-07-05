@@ -20,6 +20,7 @@ export function WorkspaceCenter({
   onCloseViewer,
   showBanner,
   onDismissBanner,
+  suggestedWorkflow,
   // 채팅 patch_plan 메시지로부터 받은 patch 데이터 (부모 관리)
   localPatchData,
   onPatchDataChange,
@@ -257,7 +258,7 @@ export function WorkspaceCenter({
         ) : null
       }
       inputPanel={null}
-      banner={showBanner ? <AutomationBanner onDismiss={onDismissBanner} /> : null}
+      banner={showBanner ? <AutomationBanner workflow={suggestedWorkflow} onDismiss={onDismissBanner} /> : null}
     >
       {resolveViewer(effectivePreviewData, {
         highlights,

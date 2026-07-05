@@ -4,6 +4,7 @@ import { Topbar }           from '../../components/Topbar'
 import { useChat }          from '../../hooks/useChat'
 import { useFileItems }     from '../../components/DocumentPanel'
 
+import { useSuggestedWorkflow } from '../../hooks/useSuggestedWorkflow'
 import { WorkspaceSidebar } from './WorkspaceSidebar'
 import { WorkspaceCenter }  from './WorkspaceCenter'
 import { WorkspaceChat }    from './WorkspaceChat'
@@ -43,8 +44,9 @@ export default function Workspace() {
   const [ragTone, setRagTone] = useState('하람_보고서_스타일')
   const [ragForm, setRagForm] = useState('회사_기획서_양식')
 
-  // 자동화 배너
-  const [showBanner, setShowBanner] = useState(false)
+  // 자동화 배너 — 백엔드 주간 패턴 감지 제안을 조회해 표시한다
+  const { workflow: suggestedWorkflow, dismiss: dismissSuggestedWorkflow } = useSuggestedWorkflow()
+  const showBanner = Boolean(suggestedWorkflow)
 
   // ── 채팅 patch_plan 연동 ────────────────────────────────────────────────────
   // PatchRequestInput 또는 채팅 patch_plan 메시지로부터 받은 patch 데이터
@@ -149,7 +151,8 @@ export default function Workspace() {
             previewData={previewData}
             onCloseViewer={() => setViewingFileId(null)}
             showBanner={showBanner}
-            onDismissBanner={() => setShowBanner(false)}
+            suggestedWorkflow={suggestedWorkflow}
+            onDismissBanner={dismissSuggestedWorkflow}
             localPatchData={localPatchData}
             onPatchDataChange={setLocalPatchData}
             onAcceptAllReady={handleAcceptAllReady}
@@ -171,7 +174,6 @@ export default function Workspace() {
           ragForm={ragForm}
           onRagToneChange={setRagTone}
           onRagFormChange={setRagForm}
-          onTriggerBanner={() => setShowBanner(true)}
           activeConvTitle={activeConvTitle}
           onNewConversation={handleNewConversation}
         />

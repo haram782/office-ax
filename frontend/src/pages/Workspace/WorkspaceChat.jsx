@@ -53,7 +53,6 @@ function WelcomeScreen({ onChipClick }) {
  *   ragForm: string,
  *   onRagToneChange: Function,
  *   onRagFormChange: Function,
- *   onTriggerBanner: Function,
  *   activeConvTitle: string,
  *   onNewConversation: Function,
  * }} props
@@ -70,7 +69,6 @@ export function WorkspaceChat({
   ragForm,
   onRagToneChange,
   onRagFormChange,
-  onTriggerBanner,
   activeConvTitle,
   onNewConversation,
 }) {
@@ -177,7 +175,7 @@ export function WorkspaceChat({
           {[
             { label: '날짜 형식 통일', key: 'date',   icon: 'history'  },
             { label: '표 서식 정렬',   key: 'table',  icon: 'layout'   },
-            { label: '반복 작업 실행', key: 'repeat', icon: 'zap', extra: onTriggerBanner },
+            { label: '반복 작업 실행', key: 'repeat', icon: 'zap' },
           ].map(c => (
             <button
               key={c.key}
