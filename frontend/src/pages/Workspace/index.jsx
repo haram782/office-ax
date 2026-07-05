@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 
 import { Topbar }           from '../../components/Topbar'
+import { getRagAssets, uploadRagAsset } from '../../api/client'
 import { useChat }          from '../../hooks/useChat'
 import { useFileItems }     from '../../components/DocumentPanel'
 
@@ -40,9 +41,38 @@ export default function Workspace() {
   const [rules, setRules] = useState({ table: true, date: true, mask: false, tone: true })
   const activeRuleCount   = Object.values(rules).filter(Boolean).length
 
-  // RAG 선택
-  const [ragTone, setRagTone] = useState('하람_보고서_스타일')
-  const [ragForm, setRagForm] = useState('회사_기획서_양식')
+  // RAG 선택 — 실제 자산 그룹 조회, 선택 그룹의 자산 id를 채팅 전송에 포함한다
+  const [ragTone, setRagTone] = useState('')
+  const [ragForm, setRagForm] = useState('')
+  const [ragGroups, setRagGroups] = useState({ tones: [], forms: [] })
+
+  const refreshRagAssets = useCallback(async () => {
+    try {
+      setRagGroups(await getRagAssets())
+    } catch {
+      // 자산 조회 실패는 채팅을 막지 않는다 — 빈 셀렉터로 진행
+    }
+  }, [])
+  useEffect(() => { refreshRagAssets() }, [refreshRagAssets])
+
+  const handleRagUpload = useCallback(async (kind, file) => {
+    const groupName = file.name.replace(/\.[^.]+$/, '')
+    try {
+      await uploadRagAsset(kind, groupName, file)
+      await refreshRagAssets()
+      // 방금 올린 그룹을 바로 선택해준다
+      if (kind === 'tone') setRagTone(groupName)
+      else setRagForm(groupName)
+    } catch {
+      // 업로드 실패 — 셀렉터 상태는 그대로 둔다
+    }
+  }, [refreshRagAssets])
+
+  const ragAssetIds = useMemo(() => {
+    const tone = ragGroups.tones.find(g => g.name === ragTone)?.assetIds ?? []
+    const form = ragGroups.forms.find(g => g.name === ragForm)?.assetIds ?? []
+    return [...tone, ...form]
+  }, [ragGroups, ragTone, ragForm])
 
   // 자동화 배너 — 백엔드 주간 패턴 감지 제안을 조회해 표시한다
   const { workflow: suggestedWorkflow, dismiss: dismissSuggestedWorkflow } = useSuggestedWorkflow()
@@ -174,6 +204,10 @@ export default function Workspace() {
           ragForm={ragForm}
           onRagToneChange={setRagTone}
           onRagFormChange={setRagForm}
+          ragToneGroups={ragGroups.tones}
+          ragFormGroups={ragGroups.forms}
+          onRagUpload={handleRagUpload}
+          ragAssetIds={ragAssetIds}
           activeConvTitle={activeConvTitle}
           onNewConversation={handleNewConversation}
         />
