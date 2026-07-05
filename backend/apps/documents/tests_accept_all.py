@@ -232,3 +232,76 @@ class AcceptAllAccessControlTest(TestCase):
         # self.upload의 id와 other_version의 id 조합 → upload_log 불일치
         resp = _authed(self.user).post(_url(self.upload.pk, other_version.pk))
         self.assertEqual(resp.status_code, 404)
+
+
+
+class AcceptSelectedChangeIdsTest(TestCase):
+    """
+    change_ids 부분 선택 반영 테스트.
+
+    채팅 말풍선 체크박스 UX: 사용자가 고른 변경만 applied 처리하고
+    나머지 pending은 그대로 둔다 (보류 상태 유지).
+    """
+
+    def setUp(self):
+        self.user = _make_user("accept_sel_user")
+        self.upload = _make_upload(self.user, "accept_sel_hash")
+        self.version = _make_version(self.upload, self.user)
+        self.c1 = _make_change(self.version, "op_001", {"sheet": "S", "cell": "A1"})
+        self.c2 = _make_change(self.version, "op_002", {"sheet": "S", "cell": "B2"})
+        self.c3 = _make_change(self.version, "op_003", {"sheet": "S", "cell": "C3"})
+        self.client_api = _authed(self.user)
+
+    def _post(self, body=None):
+        return self.client_api.post(
+            _url(self.upload.pk, self.version.pk),
+            data=json.dumps(body or {}),
+            content_type="application/json",
+        )
+
+    def test_only_selected_ids_are_applied(self):
+        """[happy] 선택한 change만 applied, 나머지는 pending 유지."""
+        response = self._post({"change_ids": [self.c1.pk, self.c3.pk]})
+        self.assertEqual(response.status_code, 200)
+
+        self.c1.refresh_from_db(); self.c2.refresh_from_db(); self.c3.refresh_from_db()
+        self.assertEqual(self.c1.status, DocumentChange.Status.APPLIED)
+        self.assertEqual(self.c3.status, DocumentChange.Status.APPLIED)
+        self.assertEqual(self.c2.status, DocumentChange.Status.PENDING)
+
+    def test_selected_ids_still_resolve_conflicts(self):
+        """[규칙] 선택 안에서도 동일 anchor 충돌은 confidence 규칙으로 정리된다."""
+        rival = _make_change(self.version, "op_004", {"sheet": "S", "cell": "A1"}, confidence=0.99)
+        response = self._post({"change_ids": [self.c1.pk, rival.pk]})
+        self.assertEqual(response.status_code, 200)
+
+        self.c1.refresh_from_db(); rival.refresh_from_db()
+        self.assertEqual(rival.status, DocumentChange.Status.APPLIED)
+        self.assertEqual(self.c1.status, DocumentChange.Status.REJECTED)
+
+    def test_foreign_version_ids_are_ignored(self):
+        """[안전] 다른 버전의 change id가 섞여 있어도 무시된다."""
+        other_version = _make_version(self.upload, self.user, version_number=3)
+        foreign = _make_change(other_version, "op_x", {"sheet": "S", "cell": "Z9"})
+
+        response = self._post({"change_ids": [self.c1.pk, foreign.pk]})
+        self.assertEqual(response.status_code, 200)
+
+        foreign.refresh_from_db()
+        self.assertEqual(foreign.status, DocumentChange.Status.PENDING)
+
+    def test_invalid_change_ids_returns_400(self):
+        """[검증] change_ids가 정수 리스트가 아니면 400."""
+        response = self._post({"change_ids": "not-a-list"})
+        self.assertEqual(response.status_code, 400)
+
+    def test_without_change_ids_applies_all_pending(self):
+        """[회귀] change_ids 없으면 기존 전체 반영 동작 유지."""
+        response = self._post({})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            DocumentChange.objects.filter(
+                version=self.version, status=DocumentChange.Status.APPLIED
+            ).count(),
+            3,
+        )
