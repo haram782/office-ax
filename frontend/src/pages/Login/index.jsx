@@ -17,22 +17,49 @@ function GoogleLogo() {
   )
 }
 
+// 베타 동의 버전 — 고지 문구가 실질적으로 바뀌면 올려서 재동의를 받는다
+const CONSENT_VERSION = 'v1'
+
+// 베타 고지 문구 — closed-beta-launch-plan-v1-ko.md 7절 기준
+const CONSENT_NOTICES = [
+  '업로드한 문서는 AI 분석을 위해 외부 LLM API(비학습 정책 적용)로 전송됩니다.',
+  '채팅과 분석 단계에서는 주민번호·전화번호·계좌번호·이메일을 자동 마스킹하지만, 문서 수정 기능은 원문 일부가 전송될 수 있습니다.',
+  '주민등록번호 등 민감정보가 포함된 문서는 업로드를 자제해 주세요.',
+  '업로드 문서는 30일 후 자동 삭제되며, 베타 종료 시 전체 삭제됩니다.',
+  '서비스는 베타 기간 중 예고 후 일시 중단될 수 있습니다.',
+]
+
 /**
  * 로그인 페이지.
- * mode: 'default' | 'loading' | 'error'
+ * mode: 'default' | 'loading' | 'error' | 'consent'
+ *
+ * 클로즈드 베타: 첫 로그인 시 동의 화면을 거쳐야 하며,
+ * 동의 전에는 인증 토큰을 localStorage에 저장하지 않는다 (동의 우회 방지).
  */
 export default function Login() {
   const navigate = useNavigate()
   const { theme, toggleTheme } = useTheme()
   const [mode, setMode] = useState('default')
+  // 동의 대기 중인 인증 결과 — 동의 완료 전까지 상태로만 보관
+  const [pendingAuth, setPendingAuth] = useState(null)
+
+  const enterApp = (data) => {
+    localStorage.setItem('auth_token', data.token)
+    localStorage.setItem('ax_user', JSON.stringify(data.user))
+    navigate('/', { replace: true })
+  }
 
   const login = useGoogleLogin({
     onSuccess: async (tokenResponse) => {
       try {
         const data = await googleLogin(tokenResponse.access_token)
-        localStorage.setItem('auth_token', data.token)
-        localStorage.setItem('ax_user', JSON.stringify(data.user))
-        navigate('/', { replace: true })
+        // 이미 동의한 사용자는 동의 화면을 건너뛴다
+        if (localStorage.getItem('ax_beta_consent') === CONSENT_VERSION) {
+          enterApp(data)
+        } else {
+          setPendingAuth(data)
+          setMode('consent')
+        }
       } catch {
         setMode('error')
       }
@@ -43,6 +70,55 @@ export default function Login() {
   const handleGoogleClick = () => {
     setMode('loading')
     login()
+  }
+
+  const handleConsentAgree = () => {
+    localStorage.setItem('ax_beta_consent', CONSENT_VERSION)
+    enterApp(pendingAuth)
+  }
+
+  const handleConsentDecline = () => {
+    setPendingAuth(null)
+    setMode('default')
+  }
+
+  // 동의 화면 — 로그인 카드 대신 고지 문구와 동의/거부 버튼을 표시
+  if (mode === 'consent') {
+    return (
+      <div className="relative min-h-screen flex flex-col items-center justify-center bg-zinc-50 dark:bg-zinc-950 px-4">
+        <div
+          className="max-w-[440px] w-full rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-8 fade-in"
+          style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}
+        >
+          <div className="font-bold text-zinc-800 dark:text-zinc-100 text-lg mb-1">
+            베타 서비스 이용 안내
+          </div>
+          <p className="text-xs text-zinc-400 mb-5">
+            Office-AX 클로즈드 베타를 시작하기 전에 아래 내용을 확인해주세요.
+          </p>
+          <ul className="space-y-2.5 mb-6">
+            {CONSENT_NOTICES.map((notice) => (
+              <li key={notice} className="flex gap-2 text-[13px] leading-relaxed text-zinc-600 dark:text-zinc-300">
+                <span className="text-zinc-300 dark:text-zinc-600 shrink-0">•</span>
+                <span>{notice}</span>
+              </li>
+            ))}
+          </ul>
+          <button
+            onClick={handleConsentAgree}
+            className="w-full h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-zinc-900"
+          >
+            동의하고 시작하기
+          </button>
+          <button
+            onClick={handleConsentDecline}
+            className="w-full h-10 mt-2 rounded-xl text-sm text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400"
+          >
+            동의하지 않음
+          </button>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -120,32 +196,6 @@ export default function Login() {
             : '로그인 또는 회원가입 — Google 계정으로 자동 생성됩니다'}
         </p>
 
-        {/* 테스트 모드 구분선 */}
-        <div className="flex items-center gap-3 mt-6">
-          <div className="flex-1 h-px bg-zinc-100 dark:bg-zinc-800" />
-          <span className="text-[11px] text-zinc-400 shrink-0">테스트 모드</span>
-          <div className="flex-1 h-px bg-zinc-100 dark:bg-zinc-800" />
-        </div>
-
-        {/* 게스트 계정 버튼 2개 */}
-        <div className="flex gap-2 mt-3">
-          {[
-            { label: '게스트1', token: 'guest-token-1', name: '게스트1', email: 'guest1@test.com' },
-            { label: '게스트2', token: 'guest-token-2', name: '게스트2', email: 'guest2@test.com' },
-          ].map(g => (
-            <button
-              key={g.label}
-              onClick={() => {
-                localStorage.setItem('auth_token', g.token)
-                localStorage.setItem('ax_user', JSON.stringify({ name: g.name, email: g.email }))
-                navigate('/workspace', { replace: true })
-              }}
-              className="flex-1 h-9 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/60 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-xs text-zinc-500 dark:text-zinc-400 transition-colors"
-            >
-              {g.label}로 시작
-            </button>
-          ))}
-        </div>
       </div>
     </div>
   )

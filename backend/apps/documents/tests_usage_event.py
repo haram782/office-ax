@@ -266,3 +266,59 @@ class UsageMetadataFromResultTest(TestCase):
         metadata = usage_metadata_from_result(None, source="unit_test")
         self.assertEqual(metadata["provider"], "")
         self.assertEqual(metadata["source"], "unit_test")
+
+
+
+class TestUnsupportedScanRecording(TestCase):
+    """
+    스캔본(미지원) 분석 결과의 UsageEvent 기록 정책 테스트.
+
+    closed-beta-launch-plan-v1-ko.md 결정 16 + 리뷰 발견 1:
+      스캔본은 LLM 분석이 수행되지 않았으므로 FAILED + error_code로 기록해
+      크레딧 차감에서 제외하고, 수요 관찰(인터뷰 재료)은 가능하게 남긴다.
+    """
+
+    def setUp(self):
+        self.user = _make_user()
+        self.upload_log = _make_upload_log(self.user)
+
+    def _scan_payload(self):
+        return {
+            "upload_id": self.upload_log.pk,
+            "summary": "스캔 문서(이미지 기반)는 아직 지원하지 않아요.",
+            "errors": [],
+            "source_type": "pdf_image",
+            "usage": {"input_tokens": 0, "output_tokens": 0, "token_source": "unavailable"},
+            "model": "",
+            "provider": "",
+        }
+
+    def test_notify_callback_records_scan_as_failed(self):
+        """콜백 경로: 스캔본 결과는 FAILED + error_code=unsupported_scan으로 기록된다."""
+        from apps.documents.tasks import notify_analysis_complete
+
+        notify_analysis_complete.run(upload_id=self.upload_log.pk, result=self._scan_payload())
+
+        event = UsageEvent.objects.get(upload_log=self.upload_log)
+        self.assertEqual(event.status, UsageEvent.Status.FAILED)
+        self.assertEqual(event.metadata.get("error_code"), "unsupported_scan")
+
+    def test_scan_event_does_not_consume_credit(self):
+        """스캔본 이벤트는 월간 크레딧 사용량에 포함되지 않는다."""
+        from apps.documents.services.usage import get_monthly_credit_status
+        from apps.documents.tasks import notify_analysis_complete
+
+        notify_analysis_complete.run(upload_id=self.upload_log.pk, result=self._scan_payload())
+
+        credit = get_monthly_credit_status(self.user)
+        self.assertEqual(credit["used"], 0)
+
+    def test_normal_analysis_still_recorded_as_success(self):
+        """[회귀] 일반 분석 결과는 기존대로 SUCCESS로 기록된다."""
+        from apps.documents.tasks import notify_analysis_complete
+
+        payload = {**self._scan_payload(), "source_type": "pdf_digital", "summary": "분석 완료"}
+        notify_analysis_complete.run(upload_id=self.upload_log.pk, result=payload)
+
+        event = UsageEvent.objects.get(upload_log=self.upload_log)
+        self.assertEqual(event.status, UsageEvent.Status.SUCCESS)

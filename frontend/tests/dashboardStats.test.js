@@ -13,7 +13,8 @@ vi.mock('axios', () => ({
   default: {
     create: () => ({
       get: mockGet,
-      interceptors: { request: { use: vi.fn() } },
+      // client.js가 request(인증)·response(429 크레딧) 인터셉터를 모두 등록하므로 둘 다 필요
+      interceptors: { request: { use: vi.fn() }, response: { use: vi.fn() } },
     }),
   },
 }))

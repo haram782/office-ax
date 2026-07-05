@@ -22,7 +22,13 @@ from rest_framework.views import APIView
 
 from .models import DocumentChange, DocumentVersion, FileStructure, InboundEmail, IngestionWorkflow, UploadLog, UsageEvent, compute_file_structure_hash, pdf_structure_hash
 from .services.patch_plan import LLMParseError, PatchPlanService
-from .services.usage import record_usage_event, usage_metadata_from_result
+from .services.usage import (
+    analysis_status_for_result,
+    credit_limit_response,
+    is_unsupported_scan_result,
+    record_usage_event,
+    usage_metadata_from_result,
+)
 from .tasks import patch_document_version
 from .serializers import (
     DocumentChangeSerializer,
@@ -53,6 +59,11 @@ class DocumentUploadView(APIView):
         },
     )
     def post(self, request):
+        # 베타 크레딧 한도 — 파일 저장·태스크 예약 전에 차단해야 부산물이 남지 않는다
+        blocked = credit_limit_response(request.user)
+        if blocked:
+            return blocked
+
         uploaded_file = request.FILES.get("file")
         if not uploaded_file:
             return Response({"error": "file 필드가 필요합니다."}, status=status.HTTP_400_BAD_REQUEST)
@@ -761,6 +772,11 @@ class DocumentVersionPatchTriggerView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, upload_id: int, version_id: int):
+        # 베타 크레딧 한도 — 소유권 조회보다 먼저 차단 (값싼 체크 우선)
+        blocked = credit_limit_response(request.user)
+        if blocked:
+            return blocked
+
         version = _resolve_owned_version(request.user, upload_id, version_id)
 
         if version.status != DocumentVersion.Status.DRAFT:
@@ -823,12 +839,17 @@ def _sync_task_result(upload_log: UploadLog) -> None:
         upload_log.result = payload
         upload_log.status = UploadLog.Status.DONE
         upload_log.save(update_fields=["result", "status"])
+        # 스캔본(미지원)은 FAILED + error_code로 기록해 크레딧 차감에서 제외한다
         record_usage_event(
             user=upload_log.user,
             upload_log=upload_log,
             event_type=UsageEvent.EventType.DOCUMENT_ANALYSIS,
-            status=UsageEvent.Status.SUCCESS,
-            metadata=usage_metadata_from_result(payload, source="upload_result_polling"),
+            status=analysis_status_for_result(payload),
+            metadata=usage_metadata_from_result(
+                payload,
+                source="upload_result_polling",
+                error_code="unsupported_scan" if is_unsupported_scan_result(payload) else None,
+            ),
         )
     elif result.failed():
         upload_log.status = UploadLog.Status.FAILED
@@ -867,6 +888,11 @@ class GeneratePatchPlanView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, upload_id: int):
+        # 베타 크레딧 한도 — LLM 호출 전 차단
+        blocked = credit_limit_response(request.user)
+        if blocked:
+            return blocked
+
         upload_log = UploadLog.objects.filter(pk=upload_id).select_related("user").first()
         # 소유권 사전 검증 — PermissionError/DoesNotExist는 서비스에서 raise
         try:

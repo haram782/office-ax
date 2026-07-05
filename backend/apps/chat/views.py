@@ -15,6 +15,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.documents.models import FileStructure, UploadLog, compute_file_structure_hash, pdf_structure_hash
+from apps.documents.services.usage import credit_limit_response
 from apps.documents.utils import compute_sha256, extract_excel_columns, extract_csv_columns, generic_structure_hash
 from apps.documents.pptx_render import render_one_slide
 from .change_highlights import corrections_to_change_highlights, patches_to_change_highlights
@@ -125,6 +126,11 @@ class ChatMessageCreateView(APIView):
         },
     )
     def post(self, request, session_id: int):
+        # 베타 크레딧 한도 — 채팅은 크레딧 차감 대상은 아니지만 LLM 폭주 방어를 위해 차단
+        blocked = credit_limit_response(request.user)
+        if blocked:
+            return blocked
+
         try:
             session = ChatSession.objects.get(pk=session_id, user=request.user)
         except ChatSession.DoesNotExist:

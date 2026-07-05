@@ -201,5 +201,79 @@ class TestTextChatTask(unittest.TestCase):
         self.assertEqual(result["provider"], "openai")
 
 
+class TestTextChatMasking(unittest.TestCase):
+    """
+    채팅 경로 PII 마스킹 테스트.
+
+    closed-beta-launch-plan-v1-ko.md 결정 11:
+      text_chat도 analyze_document와 동일하게 LLM 전송 전 mask_pii를 적용한다.
+      사용자 질문과 session_history(문서 발췌 포함 가능) 모두 마스킹 대상이다.
+    """
+
+    def _call_task(self, task_self, **kwargs):
+        from tasks.text_chat import _run_text_chat
+        return _run_text_chat(task_self, **kwargs)
+
+    def _analyze_prompt(self, mock_client):
+        """client.analyze에 실제로 전달된 프롬프트 텍스트를 꺼낸다."""
+        call = mock_client.analyze.call_args
+        return call.args[0] if call.args else ""
+
+    @patch("tasks.text_chat.get_llm_client")
+    @patch("tasks.text_chat._send_callback")
+    def test_content_pii_is_masked_before_llm(self, mock_callback, mock_get_client):
+        """사용자 질문 속 주민번호·전화번호가 LLM 전송 전에 마스킹된다."""
+        mock_client = MagicMock()
+        mock_client.analyze.return_value = _make_result("응답")
+        mock_get_client.return_value = mock_client
+        task_self = MagicMock()
+
+        self._call_task(
+            task_self,
+            content="담당자 주민번호 900101-1234567, 연락처 010-1234-5678 정리해줘",
+            chat_message_id=1,
+            session_history=[],
+        )
+
+        prompt = self._analyze_prompt(mock_client)
+        self.assertNotIn("900101-1234567", prompt)
+        self.assertNotIn("010-1234-5678", prompt)
+        self.assertIn("[REDACTED_ID]", prompt)
+        self.assertIn("[REDACTED_PHONE]", prompt)
+
+    @patch("tasks.text_chat.get_llm_client")
+    @patch("tasks.text_chat._send_callback")
+    def test_history_pii_is_masked_before_llm(self, mock_callback, mock_get_client):
+        """session_history에 남은 계좌번호·이메일도 마스킹된다 (문서 발췌 방어)."""
+        mock_client = MagicMock()
+        mock_client.analyze.return_value = _make_result("응답")
+        mock_get_client.return_value = mock_client
+        task_self = MagicMock()
+
+        history = [
+            {"role": "assistant", "content": "계좌 110-1234-567890, 메일 lee@corp.co.kr 확인됨"},
+        ]
+        self._call_task(task_self, content="위 내용 요약해줘", chat_message_id=2, session_history=history)
+
+        prompt = self._analyze_prompt(mock_client)
+        self.assertNotIn("110-1234-567890", prompt)
+        self.assertNotIn("lee@corp.co.kr", prompt)
+
+    @patch("tasks.text_chat.get_llm_client")
+    @patch("tasks.text_chat._send_callback")
+    def test_normal_text_is_not_altered(self, mock_callback, mock_get_client):
+        """[회귀] PII가 없는 일반 질문은 원문 그대로 전달된다."""
+        mock_client = MagicMock()
+        mock_client.analyze.return_value = _make_result("응답")
+        mock_get_client.return_value = mock_client
+        task_self = MagicMock()
+
+        self._call_task(task_self, content="합계 행 추가하는 방법 알려줘", chat_message_id=3, session_history=[])
+
+        prompt = self._analyze_prompt(mock_client)
+        self.assertIn("합계 행 추가하는 방법 알려줘", prompt)
+
+
+
 if __name__ == "__main__":
     unittest.main()

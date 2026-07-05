@@ -28,6 +28,20 @@ docs/product/
 
 ## 2. 현재 기준 문서
 
+### 클로즈드 베타 런칭 계획
+
+- `strategy/closed-beta-launch-plan-v1-ko.md`
+
+MVP 마감과 첫 외부 공개(클로즈드 베타)의 기준 문서다. 현재 작업 묶음은 이 문서를 우선한다.
+
+다음 내용을 확인할 때 우선 읽는다.
+
+- 베타 공개 범위와 대상 (공공·행정 인접 직군 지인 5~20명)
+- 배포/인증/터널 구성 (로컬 맥 + 고정 호스트네임 터널 + OAuth allowlist)
+- 크레딧 하드 한도와 민감정보 고지 정책
+- 구현 순서 (M1~M5)와 운영 체크리스트
+- 베타 성공 기준 (정성 인터뷰)과 인터뷰 질문지
+
 ### MVP 전체 범위
 
 - `strategy/mvp-scope-and-gap-v1-ko.md`
@@ -148,10 +162,7 @@ DOCX/PPTX는 정식 수정 지원보다 미리보기/검토/후속 확장 대상
 
 아직 별도 문서로 쪼개지 않은 후보:
 
-- `usage-metering-design-v1-ko.md`
-- `mvp-demo-scenarios-v1-ko.md`
-- `billing-credit-policy-v1-ko.md`
+- `mvp-demo-scenarios-v1-ko.md` — 샘플 문서와 기대 결과. 베타 계획 M4의 산출물과 겹치므로 필요 시 분리
+- `billing-credit-policy-v1-ko.md` — 실결제 전환 기준. 베타 크레딧 초기값은 `closed-beta-launch-plan-v1-ko.md` 6절이 커버하며, 베타 인터뷰 결과를 입력으로 작성한다
 
-우선순위는 `usage-metering-design-v1-ko.md`가 가장 높다.
-
-현재 대시보드에 토큰/잔액 UI가 이미 있으므로, UsageEvent와 월간 집계를 먼저 연결하는 것이 MVP 갭을 가장 빨리 줄인다.
+`usage-metering-design-v1-ko.md`는 UsageEvent 구현 완료(대시보드 집계 연결 포함)로 후보에서 제외했다.

@@ -1,3 +1,4 @@
+import os
 import uuid
 
 import requests
@@ -13,6 +14,22 @@ User = get_user_model()
 
 # Google OAuth userinfo 엔드포인트
 _GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v1/userinfo"
+
+
+def _is_beta_allowed(email: str) -> bool:
+    """
+    클로즈드 베타 이메일 allowlist 검사.
+
+    BETA_ALLOWED_EMAILS 환경변수(콤마 구분)가 설정된 경우에만 제한하고,
+    미설정·빈 값이면 전체 허용(개발 환경 기존 동작 유지).
+    요청 시점마다 읽으므로 재배포 없이 프로세스 재시작만으로 명단 갱신 가능.
+    상세: docs/product/strategy/closed-beta-launch-plan-v1-ko.md 2.2절 결정 17
+    """
+    raw = os.environ.get("BETA_ALLOWED_EMAILS", "").strip()
+    if not raw:
+        return True
+    allowed = {item.strip().lower() for item in raw.split(",") if item.strip()}
+    return email.strip().lower() in allowed
 
 
 class GoogleAuthView(APIView):
@@ -57,6 +74,13 @@ class GoogleAuthView(APIView):
         # Google name 필드를 그대로 사용 — 언어·문화권별 순서 차이를 보존
         name    = userinfo.get("name", "")
         picture = userinfo.get("picture", "")
+
+        # 클로즈드 베타 allowlist — 유저 생성 전에 차단해야 레코드가 남지 않는다
+        if not _is_beta_allowed(email):
+            return Response(
+                {"error": "클로즈드 베타 초대 대상이 아닙니다. 초대를 원하시면 운영자에게 문의해주세요."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         # email 필드 기준으로 유저 조회.
         # username 기준 조회 시 username=email 형태의 기존 슈퍼유저·테스트 유저에

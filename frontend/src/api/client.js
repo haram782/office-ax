@@ -10,6 +10,20 @@ api.interceptors.request.use((config) => {
   return config
 })
 
+// 크레딧 소진(429) 전역 처리 — 어느 API에서 오든 한 곳에서 안내 모달을 띄운다.
+// reject는 그대로 유지해 각 훅의 개별 에러 처리(스피너 해제 등)를 깨지 않는다.
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error?.response?.status === 429) {
+      const message =
+        error.response.data?.error || '이번 달 사용량을 모두 썼어요. 다음 달에 초기화됩니다.'
+      window.dispatchEvent(new CustomEvent('ax:credit-exhausted', { detail: message }))
+    }
+    return Promise.reject(error)
+  }
+)
+
 // ── 인증 API ──────────────────────────────────────────────────────────────────
 
 /** Google OAuth 액세스 토큰으로 서버 인증 → { token, user } 반환 */

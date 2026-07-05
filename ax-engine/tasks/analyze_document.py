@@ -50,6 +50,58 @@ _ACTION_TAGS: dict[str, str] = {
     "image":       "#OCR_추출",
 }
 
+# 스캔본·이미지 안내 문구 — OCR 미구현 동안 사용자에게 정직하게 알린다
+# (closed-beta-launch-plan-v1-ko.md 갭 6: 베타 제외 + 정직한 안내)
+_SCAN_UNSUPPORTED_SUMMARY = (
+    "스캔 문서(이미지 기반)는 아직 지원하지 않아요. "
+    "텍스트가 포함된 원본 파일(디지털 PDF, XLSX, DOCX, HWP)을 올려주시면 분석할 수 있어요."
+)
+
+
+def _unsupported_scan_output(upload_id: int, source_type: str) -> dict:
+    """
+    스캔본·이미지 문서의 안내 결과를 만든다.
+
+    LLM을 호출하지 않으므로 usage는 전부 0/unavailable.
+    크레딧 차감 제외는 백엔드가 source_type을 보고 FAILED로 기록하는 것으로
+    보장한다 (backend services/usage.analysis_status_for_result 참조).
+    """
+    return {
+        "upload_id":    upload_id,
+        "summary":      _SCAN_UNSUPPORTED_SUMMARY,
+        "errors":       [],
+        "model_used":   "",
+        "tokens":       {"input": 0, "output": 0},
+        "usage":        {"input_tokens": 0, "output_tokens": 0, "token_source": "unavailable"},
+        "model":        "",
+        "provider":     "",
+        "pii_redacted": {},
+        "source_type":  source_type,
+        "action_tag":   _ACTION_TAGS.get(source_type, "#문서_분석"),
+        "artifact_url": "",
+        "slide_urls":   [],
+        "slide_count":  0,
+        "docx_page_urls":  [],
+        "docx_page_count": 0,
+        "pptx_structured": [],
+    }
+
+
+def _route_callback(task_self, chat_message_id: int | None, upload_id: int, output: dict) -> None:
+    """분석 결과를 채팅/레거시 플로우에 맞는 Django 콜백 태스크로 전달한다."""
+    if chat_message_id is not None:
+        task_self.app.send_task(
+            "chat.notify_chat_response",
+            kwargs={"chat_message_id": chat_message_id, "result": output},
+            queue="celery",
+        )
+    else:
+        task_self.app.send_task(
+            "documents.notify_analysis_complete",
+            kwargs={"upload_id": upload_id, "result": output},
+            queue="celery",
+        )
+
 
 @shared_task(bind=True, name="tasks.analyze_document", max_retries=3, default_retry_delay=30)
 def analyze_document(
@@ -89,6 +141,14 @@ def analyze_document(
                 source_type = "pdf_digital"
 
         logger.info("텍스트 추출 완료 | upload_id=%s | source_type=%s", upload_id, source_type)
+
+        # 스캔본·이미지는 OCR 미구현으로 베타에서 지원하지 않는다.
+        # LLM 호출 전에 안내로 종료해 "무한 분석 중"이나 깨진 분석 결과를 방지한다.
+        if source_type in ("pdf_image", "image"):
+            logger.info("스캔본·이미지 미지원 안내 반환 | upload_id=%s | source_type=%s", upload_id, source_type)
+            output = _unsupported_scan_output(upload_id, source_type)
+            _route_callback(self, chat_message_id, upload_id, output)
+            return output
 
         # ── 2. PII 마스킹 ────────────────────────────────────────────────────
         masked_text, pii_counts = mask_pii(raw_text)
@@ -170,18 +230,7 @@ def analyze_document(
         }
 
         # ── 5. 콜백 라우팅 ────────────────────────────────────────────────
-        if chat_message_id is not None:
-            self.app.send_task(
-                "chat.notify_chat_response",
-                kwargs={"chat_message_id": chat_message_id, "result": output},
-                queue="celery",
-            )
-        else:
-            self.app.send_task(
-                "documents.notify_analysis_complete",
-                kwargs={"upload_id": upload_id, "result": output},
-                queue="celery",
-            )
+        _route_callback(self, chat_message_id, upload_id, output)
 
         return output
 
