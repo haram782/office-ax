@@ -62,8 +62,9 @@ def _unsupported_scan_output(upload_id: int, source_type: str) -> dict:
     """
     스캔본·이미지 문서의 안내 결과를 만든다.
 
-    LLM을 호출하지 않으므로 usage는 전부 0/unavailable — 백엔드가 크레딧을
-    차감하거나 비용을 집계할 근거를 남기지 않는다.
+    LLM을 호출하지 않으므로 usage는 전부 0/unavailable.
+    크레딧 차감 제외는 백엔드가 source_type을 보고 FAILED로 기록하는 것으로
+    보장한다 (backend services/usage.analysis_status_for_result 참조).
     """
     return {
         "upload_id":    upload_id,

@@ -19,7 +19,12 @@ from .patcher import (
     render_xlsx,
 )
 from .services import ensure_original_version
-from .services.usage import record_usage_event, usage_metadata_from_result
+from .services.usage import (
+    analysis_status_for_result,
+    is_unsupported_scan_result,
+    record_usage_event,
+    usage_metadata_from_result,
+)
 
 logger = get_task_logger(__name__)
 
@@ -130,12 +135,17 @@ def notify_analysis_complete(upload_id: int, result: dict) -> None:
     upload_log.save(update_fields=["result", "status"])
 
     # ── 1-a. 사용량 이벤트 기록 (best-effort) ───────────────────────────────
+    # 스캔본(미지원)은 FAILED + error_code로 기록해 크레딧 차감에서 제외한다
     record_usage_event(
         user=upload_log.user,
         upload_log=upload_log,
         event_type=UsageEvent.EventType.DOCUMENT_ANALYSIS,
-        status=UsageEvent.Status.SUCCESS,
-        metadata=usage_metadata_from_result(result, source="analysis_callback"),
+        status=analysis_status_for_result(result),
+        metadata=usage_metadata_from_result(
+            result,
+            source="analysis_callback",
+            error_code="unsupported_scan" if is_unsupported_scan_result(result) else None,
+        ),
     )
 
     # ── 1-b. 원본 DocumentVersion 자동 생성 (idempotent — 중복 생성 방지) ──

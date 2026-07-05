@@ -28,6 +28,27 @@ CREDIT_EVENT_TYPES = (
 # 월간 기본 크레딧 — env BETA_MONTHLY_CREDITS로 조정, 0 이하면 무제한
 DEFAULT_MONTHLY_CREDITS = 200
 
+# OCR 미구현으로 분석이 수행되지 않는 source_type — ax-engine _unsupported_scan_output과 짝
+UNSUPPORTED_SCAN_SOURCE_TYPES = ("pdf_image", "image")
+
+
+def is_unsupported_scan_result(result: Any) -> bool:
+    """분석 결과 payload가 스캔본(미지원) 안내인지 판정한다."""
+    return isinstance(result, dict) and result.get("source_type") in UNSUPPORTED_SCAN_SOURCE_TYPES
+
+
+def analysis_status_for_result(result: Any) -> str:
+    """
+    분석 결과에 대한 UsageEvent status 판정.
+
+    스캔본은 LLM 분석이 실제로 수행되지 않았으므로 FAILED로 기록한다 —
+    크레딧 차감(성공만 카운트)에서 제외되고, 실패 지표로 스캔본 수요를
+    관찰할 수 있다 (closed-beta-launch-plan-v1-ko.md 결정 16 / 리뷰 반영).
+    """
+    if is_unsupported_scan_result(result):
+        return UsageEvent.Status.FAILED
+    return UsageEvent.Status.SUCCESS
+
 
 def get_monthly_credit_status(user) -> dict:
     """
