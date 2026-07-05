@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Ic } from './Ic'
 import { ViewerToolbar } from '../pages/Workspace/ViewerToolbar'
 
@@ -31,6 +32,9 @@ export function ViewerShell({
   banner       = null,
   className    = 'flex-1 min-w-0 flex flex-col relative bg-zinc-50 dark:bg-zinc-950',
 }) {
+  // 뷰어 줌 — 툴바가 제어하고 셸이 콘텐츠에 scale로 반영한다 (A-4: 장식이던 줌을 실동작으로)
+  const [zoom, setZoom] = useState(100)
+
   return (
     <div className={className}>
       {/* 파일명 헤더 — 전체 너비 */}
@@ -67,12 +71,19 @@ export function ViewerShell({
       </div>
 
       {/* 뷰어 툴바 — 다운로드 / 줌 / 히스토리 */}
-      <ViewerToolbar artifactUrl={artifactUrl} onDownload={onDownload} />
+      <ViewerToolbar artifactUrl={artifactUrl} onDownload={onDownload} zoom={zoom} onZoomChange={setZoom} />
 
       {/* 콘텐츠 영역: 뷰어(좌) + 사이드 패널(우) */}
       <div className="flex-1 min-h-0 overflow-hidden flex flex-row">
-        <div className="flex-1 min-w-0 min-h-0 overflow-hidden flex flex-col">
-          {children}
+        <div className="flex-1 min-w-0 min-h-0 overflow-auto flex flex-col">
+          {/* 줌 래퍼 — 100%가 아닐 때만 scale 적용 (기본 상태에서 레이아웃 영향 없음) */}
+          <div
+            data-testid="viewer-zoom-wrapper"
+            className="flex-1 min-h-0 flex flex-col"
+            style={zoom === 100 ? undefined : { transform: `scale(${zoom / 100})`, transformOrigin: 'top center' }}
+          >
+            {children}
+          </div>
           {/* 뷰어 하단 입력 슬롯 (수정 요청 입력창 등) */}
           {inputPanel}
         </div>
