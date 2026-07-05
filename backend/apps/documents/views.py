@@ -595,9 +595,25 @@ class DocumentChangeAcceptAllView(APIView):
     def post(self, request, upload_id: int, version_id: int):
         version = _resolve_owned_version(request.user, upload_id, version_id)
 
-        pending_changes = list(
-            DocumentChange.objects.filter(version=version, status=DocumentChange.Status.PENDING)
+        # change_ids가 오면 부분 선택 반영 — 채팅 말풍선 체크박스 UX.
+        # 선택되지 않은 pending은 건드리지 않는다 (보류 유지).
+        change_ids = request.data.get("change_ids")
+        if change_ids is not None and (
+            not isinstance(change_ids, list)
+            or not all(isinstance(cid, int) for cid in change_ids)
+        ):
+            return Response(
+                {"error": "change_ids는 정수 리스트여야 합니다."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        pending_qs = DocumentChange.objects.filter(
+            version=version, status=DocumentChange.Status.PENDING
         )
+        if change_ids is not None:
+            # version 스코프 안에서만 필터 — 타 버전 id는 자연히 무시된다
+            pending_qs = pending_qs.filter(pk__in=change_ids)
+        pending_changes = list(pending_qs)
 
         applied, rejected = self._resolve_conflicts(pending_changes)
 
