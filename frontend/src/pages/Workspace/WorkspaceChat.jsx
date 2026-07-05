@@ -53,7 +53,6 @@ function WelcomeScreen({ onChipClick }) {
  *   ragForm: string,
  *   onRagToneChange: Function,
  *   onRagFormChange: Function,
- *   onTriggerBanner: Function,
  *   activeConvTitle: string,
  *   onNewConversation: Function,
  * }} props
@@ -70,7 +69,10 @@ export function WorkspaceChat({
   ragForm,
   onRagToneChange,
   onRagFormChange,
-  onTriggerBanner,
+  ragToneGroups = [],
+  ragFormGroups = [],
+  onRagUpload,
+  ragAssetIds = [],
   activeConvTitle,
   onNewConversation,
 }) {
@@ -91,8 +93,8 @@ export function WorkspaceChat({
 
   // uploadId와 현재 versionId를 포함해 전송 — BE가 upload_id로 수정 맥락을 파악한다
   const handleSend = useCallback((text, files) => {
-    onSend(text, files, uploadId)
-  }, [onSend, uploadId])
+    onSend(text, files, uploadId, ragAssetIds)
+  }, [onSend, uploadId, ragAssetIds])
 
   // [보류] — 입력창 포커스 이동 + 안내 문구 표시
   const handleRejectPatch = useCallback(() => {
@@ -170,6 +172,9 @@ export function WorkspaceChat({
           ragForm={ragForm}
           onToneChange={onRagToneChange}
           onFormChange={onRagFormChange}
+          toneGroups={ragToneGroups}
+          formGroups={ragFormGroups}
+          onUpload={onRagUpload}
         />
 
         {/* 빠른 칩 */}
@@ -177,7 +182,7 @@ export function WorkspaceChat({
           {[
             { label: '날짜 형식 통일', key: 'date',   icon: 'history'  },
             { label: '표 서식 정렬',   key: 'table',  icon: 'layout'   },
-            { label: '반복 작업 실행', key: 'repeat', icon: 'zap', extra: onTriggerBanner },
+            { label: '반복 작업 실행', key: 'repeat', icon: 'zap' },
           ].map(c => (
             <button
               key={c.key}

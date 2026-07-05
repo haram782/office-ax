@@ -103,10 +103,12 @@ services:
     restart: unless-stopped
     env_file: .env.beta
     environment:
-      ARTIFACT_DIR: /data/media
+      # backend와 동일 경로로 마운트 — RagAsset.file.path 등 절대 경로가
+      # 컨테이너 간 그대로 유효하도록 유지한다 (경로 번역 계층 불필요)
+      ARTIFACT_DIR: /app/backend/media
     volumes:
       - beta_shared_tmp:/shared-tmp
-      - beta_media:/data/media
+      - beta_media:/app/backend/media
     depends_on:
       redis:
         condition: service_healthy

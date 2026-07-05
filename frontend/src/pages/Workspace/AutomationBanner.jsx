@@ -3,9 +3,10 @@ import { Ic } from '../../components/Ic'
 
 /**
  * 자동화 패턴 감지 시 워크스페이스 하단 중앙에 슬라이드 업하는 배너.
+ * 백엔드 주간 패턴 감지 결과(workflow)를 근거 문구로 표시하고,
  * 파이프라인 빌더로 이동하거나 닫기 가능.
  */
-export function AutomationBanner({ onDismiss }) {
+export function AutomationBanner({ workflow = null, onDismiss }) {
   const navigate = useNavigate()
 
   return (
@@ -23,7 +24,8 @@ export function AutomationBanner({ onDismiss }) {
             자동화 패턴 감지!
           </div>
           <div className="text-xs text-amber-700/80 dark:text-amber-300/70">
-            동일한 보정 작업이 3회 반복되었습니다. 파이프라인으로 등록할까요?
+            {/* 감지 근거: detect_weekly_patterns — 7일 주기 업로드 streak 3회 이상 */}
+            같은 구조의 문서가 매주 반복 업로드되고 있어요. 파이프라인으로 등록할까요?
           </div>
         </div>
 

@@ -21,6 +21,74 @@ logger = get_task_logger(__name__)
 # session_history 최대 항목 수 (초과분은 최신 기준으로 잘라낸다)
 _MAX_HISTORY = 10
 
+# RAG 자산 주입 상한 — 자산당/전체 문자 수 (프롬프트 비대화 방지)
+_RAG_PER_FILE_CHARS = 3000
+_RAG_TOTAL_CHARS = 8000
+
+# kind 값 → 프롬프트 표시 라벨
+_RAG_KIND_LABELS = {"tone": "어투", "form": "양식"}
+
+
+def _extract_rag_text(path: str) -> str:
+    """
+    RAG 자산 파일에서 텍스트를 추출한다.
+
+    베타 규모(자산 소수·소용량)에서는 임베딩 검색 대신 전문 주입으로 충분하다.
+    파일 접근·파싱 실패는 채팅을 깨지 않도록 빈 문자열로 격리한다 (파일시스템 경계).
+    """
+    from pathlib import Path
+
+    suffix = Path(path).suffix.lower()
+    try:
+        if suffix == ".csv":
+            from parsers.csv_parser import parse_csv
+            text, _ = parse_csv(Path(path))
+        elif suffix == ".xlsx":
+            from parsers.excel_parser import parse_excel
+            text, _ = parse_excel(Path(path))
+        elif suffix == ".docx":
+            from parsers.docx_parser import parse_docx
+            text, _ = parse_docx(Path(path))
+        elif suffix == ".pdf":
+            from parsers.pdf_parser import parse_pdf
+            text, _ = parse_pdf(Path(path))
+        elif suffix == ".hwp":
+            from parsers.hwp_parser import parse_hwp
+            text, _ = parse_hwp(Path(path))
+        else:
+            return ""
+        return (text or "")[:_RAG_PER_FILE_CHARS]
+    except Exception as exc:
+        logger.warning("RAG 자산 텍스트 추출 실패 | path=%s | %s", path, exc)
+        return ""
+
+
+def _build_rag_context(rag_files: list[dict] | None) -> str:
+    """선택된 RAG 자산들을 프롬프트 참고 자료 블록으로 조합한다."""
+    if not rag_files:
+        return ""
+
+    blocks: list[str] = []
+    total = 0
+    for item in rag_files:
+        text = _extract_rag_text(item.get("path", ""))
+        if not text:
+            continue
+        remain = _RAG_TOTAL_CHARS - total
+        if remain <= 0:
+            break
+        text = text[:remain]
+        total += len(text)
+        label = _RAG_KIND_LABELS.get(item.get("kind", ""), item.get("kind", ""))
+        blocks.append(f"[참고 자산 - {label}: {item.get('group_name', '')}]\n{text}")
+
+    if not blocks:
+        return ""
+    return (
+        "아래는 사용자가 지정한 참고 자산이다. 어투 자산은 문체·톤을 모방하고, "
+        "양식 자산은 구조·형식을 따르라.\n\n" + "\n\n".join(blocks) + "\n\n"
+    )
+
 
 def _build_prompt(content: str, session_history: list[dict]) -> str:
     """
@@ -87,6 +155,7 @@ def _run_text_chat(
     chat_message_id: int,
     session_history: list[dict],
     upload_id: int | None = None,
+    rag_files: list[dict] | None = None,
 ) -> dict:
     """
     실제 채팅 처리 로직. Celery 태스크와 분리해 단위 테스트가 가능하게 한다.
@@ -99,9 +168,10 @@ def _run_text_chat(
         upload_id: 현재 열람 중인 UploadLog PK (None이면 일반 Q&A 모드)
     """
     # LLM 전송 전 PII 마스킹 — analyze_document와 동일 정책.
-    # 질문과 session_history(문서 발췌가 남아 있을 수 있음)를 조합한 뒤 일괄 마스킹한다.
+    # RAG 참고 자산도 마스킹 이전에 주입해 동일 정책을 적용받는다.
     # 상세: closed-beta-launch-plan-v1-ko.md 결정 11
-    prompt_text, pii_counts = mask_pii(_build_prompt(content, session_history))
+    raw_prompt = _build_rag_context(rag_files) + _build_prompt(content, session_history)
+    prompt_text, pii_counts = mask_pii(raw_prompt)
     if pii_counts:
         logger.info("text_chat PII 마스킹 | chat_message_id=%s | counts=%s", chat_message_id, pii_counts)
 
@@ -176,6 +246,7 @@ def text_chat(
     chat_message_id: int,
     session_history: list[dict] | None = None,
     upload_id: int | None = None,
+    rag_files: list[dict] | None = None,
 ) -> dict:
     """
     Django 백엔드의 ChatMessageCreateView 또는 직접 호출 진입점.
@@ -186,4 +257,4 @@ def text_chat(
         session_history: 최근 대화 이력 [{"role": "user"|"assistant", "content": "..."}]
         upload_id: 현재 열람 중인 UploadLog PK — 있으면 의도 판별 모드로 전환
     """
-    return _run_text_chat(self, content, chat_message_id, session_history or [], upload_id)
+    return _run_text_chat(self, content, chat_message_id, session_history or [], upload_id, rag_files)

@@ -51,7 +51,8 @@ export function EmailView() {
 
   useEffect(() => { getEmailInbox().then(setAll) }, [])
 
-  const statuses = ['분석완료', '보정완료', '검토중', '마스킹완료']
+  // InboundEmail 실제 상태 라벨과 일치시킨다 (api/client.js EMAIL_STATUS_LABELS)
+  const statuses = ['수신', '처리 중', '완료', '실패']
   const rows     = filter === 'all' ? all : all.filter(r => r.status === filter)
 
   return (
