@@ -10,7 +10,7 @@
   happy path  - 30일 초과 UploadLog는 삭제되고, 연결된 DocumentVersion/artifact_file도
                 CASCADE + 시그널로 함께 제거된다
   boundary    - 30일 이내 UploadLog는 보존된다
-  regression  - 반환값이 {"deleted_count": N} 형태다
+  regression  - 반환값이 {"deleted_count": N, "stale_tmp_removed": M} 형태다
 """
 import tempfile
 from datetime import timedelta
@@ -86,7 +86,7 @@ class CleanupExpiredUploadsTest(TestCase):
         self.assertFalse(DocumentVersion.objects.filter(pk=version.pk).exists())
         self.assertFalse(default_storage.exists(file_name))
         self.assertFalse(default_storage.exists(artifact_name))
-        self.assertEqual(result, {"deleted_count": 1})
+        self.assertEqual(result["deleted_count"], 1)
 
     def test_recent_upload_is_retained(self):
         recent_upload = _make_upload(self.user, "retention_hash_recent")
@@ -94,7 +94,7 @@ class CleanupExpiredUploadsTest(TestCase):
         result = cleanup_expired_uploads()
 
         self.assertTrue(UploadLog.objects.filter(pk=recent_upload.pk).exists())
-        self.assertEqual(result, {"deleted_count": 0})
+        self.assertEqual(result["deleted_count"], 0)
 
     def test_only_expired_uploads_are_counted(self):
         expired_at = timezone.now() - timedelta(days=RETENTION_DAYS + 1)
@@ -103,4 +103,4 @@ class CleanupExpiredUploadsTest(TestCase):
 
         result = cleanup_expired_uploads()
 
-        self.assertEqual(result, {"deleted_count": 1})
+        self.assertEqual(result["deleted_count"], 1)

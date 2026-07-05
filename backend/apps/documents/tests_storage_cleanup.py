@@ -201,9 +201,10 @@ class StaleTmpFileCleanupTest(TestCase):
 
             removed = _cleanup_stale_tmp_files(tmp_dir)
 
-        self.assertEqual(removed, 2)
-        self.assertFalse(old_xlsx.exists())
-        self.assertFalse(old_pdf.exists())
+            # TemporaryDirectory가 종료 시 전체를 지우므로 블록 안에서 검증한다
+            self.assertEqual(removed, 2)
+            self.assertFalse(old_xlsx.exists())
+            self.assertFalse(old_pdf.exists())
 
     def test_recent_and_unrelated_files_are_kept(self):
         """[경계·안전] 최근 파일과 tmp 패턴이 아닌 파일은 남긴다 (호스트 /tmp 공용 사용 대비)."""
@@ -220,10 +221,11 @@ class StaleTmpFileCleanupTest(TestCase):
 
             removed = _cleanup_stale_tmp_files(tmp_dir)
 
-        self.assertEqual(removed, 0)
-        self.assertTrue(recent.exists())
-        self.assertTrue(not_ours.exists())
-        self.assertTrue(no_prefix.exists())
+            # TemporaryDirectory가 종료 시 전체를 지우므로 블록 안에서 검증한다
+            self.assertEqual(removed, 0)
+            self.assertTrue(recent.exists())
+            self.assertTrue(not_ours.exists())
+            self.assertTrue(no_prefix.exists())
 
     def test_cleanup_task_reports_tmp_removed_count(self):
         """cleanup_expired_uploads 결과에 tmp 정리 건수가 포함된다."""

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from datetime import date, timedelta
+from pathlib import Path
 
 from celery import shared_task
 from celery.utils.log import get_task_logger
@@ -87,6 +89,34 @@ def detect_weekly_patterns() -> dict:
     return {"newly_suggested": suggested_count}
 
 
+# 업로드 tmp 파일 정리 기준 — 분석·패치가 2일 넘게 걸릴 일은 없다
+_TMP_MAX_AGE_DAYS = 2
+# save_temp_file이 만드는 파일만 대상 (호스트 /tmp를 공용으로 쓰는 개발 환경 보호)
+_TMP_DOCUMENT_SUFFIXES = (".xlsx", ".pdf", ".docx", ".pptx", ".hwp", ".csv", ".png", ".jpg", ".jpeg", ".webp", ".gif")
+
+
+def _cleanup_stale_tmp_files(tmp_dir: Path) -> int:
+    """
+    tmp_dir에서 save_temp_file 패턴(tmp* + 문서 확장자)의 오래된 파일을 지운다.
+
+    베타 스택의 공유 tmp 볼륨은 OS가 청소하지 않으므로 무한 증식을 막는다.
+    파일별 삭제 실패는 전체 정리를 중단하지 않는다 (파일시스템 경계 — try/except).
+    """
+    cutoff_ts = (timezone.now() - timedelta(days=_TMP_MAX_AGE_DAYS)).timestamp()
+    removed = 0
+    for path in tmp_dir.glob("tmp*"):
+        try:
+            if path.suffix.lower() not in _TMP_DOCUMENT_SUFFIXES:
+                continue
+            if not path.is_file() or path.stat().st_mtime >= cutoff_ts:
+                continue
+            path.unlink()
+            removed += 1
+        except OSError as exc:
+            logger.warning("tmp 파일 정리 실패 | path=%s | %s", path, exc)
+    return removed
+
+
 @shared_task(name="documents.cleanup_expired_uploads")
 def cleanup_expired_uploads() -> dict:
     """
@@ -94,6 +124,7 @@ def cleanup_expired_uploads() -> dict:
 
     RETENTION_DAYS가 지난 UploadLog를 bulk delete한다. 연결된 DocumentVersion 및
     storage의 file/artifact_file 정리는 pre_delete 시그널(models.py)에 위임한다.
+    업로드 임시 파일(TMPDIR)의 오래된 잔여물도 함께 정리한다.
     """
     cutoff = timezone.now() - timedelta(days=RETENTION_DAYS)
     expired_qs = UploadLog.objects.filter(uploaded_at__lt=cutoff)
@@ -103,8 +134,13 @@ def cleanup_expired_uploads() -> dict:
     _, deleted_by_model = expired_qs.delete()
     deleted_count = deleted_by_model.get("documents.UploadLog", 0)
 
-    logger.info("cleanup_expired_uploads 완료 | 삭제=%d건", deleted_count)
-    return {"deleted_count": deleted_count}
+    stale_tmp_removed = _cleanup_stale_tmp_files(Path(tempfile.gettempdir()))
+
+    logger.info(
+        "cleanup_expired_uploads 완료 | 삭제=%d건 | tmp 정리=%d건",
+        deleted_count, stale_tmp_removed,
+    )
+    return {"deleted_count": deleted_count, "stale_tmp_removed": stale_tmp_removed}
 
 
 @shared_task(name="documents.notify_analysis_complete")
