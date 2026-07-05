@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import uuid
@@ -109,6 +110,41 @@ class ChatMessageListView(ListAPIView):
 
 
 class ChatMessageCreateView(APIView):
+
+    @staticmethod
+    def _resolve_rag_files(request):
+        """
+        rag_asset_ids(JSON 배열 문자열)를 소유 자산의 파일 정보 목록으로 변환한다.
+
+        Returns:
+            (rag_files | None, error_response | None)
+            — 미전달 시 (None, None), 형식 오류 시 (None, 400 Response)
+            — 타인 소유 id는 owner 필터로 조용히 무시된다
+        """
+        raw = request.data.get("rag_asset_ids")
+        if raw in (None, ""):
+            return None, None
+
+        try:
+            ids = json.loads(raw) if isinstance(raw, str) else raw
+            if not isinstance(ids, list) or not all(
+                isinstance(i, int) and not isinstance(i, bool) for i in ids
+            ):
+                raise ValueError
+        except (json.JSONDecodeError, ValueError, TypeError):
+            return None, Response(
+                {"error": "rag_asset_ids는 정수 배열(JSON)이어야 합니다."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from apps.rag.models import RagAsset  # 순환 참조 방지를 위한 지역 import
+
+        assets = RagAsset.objects.filter(owner=request.user, pk__in=ids)
+        return [
+            {"kind": a.kind, "group_name": a.group_name, "path": a.file.path}
+            for a in assets
+            if a.file
+        ], None
     parser_classes = [MultiPartParser, JSONParser]
     permission_classes = [IsAuthenticated]
 
@@ -141,6 +177,11 @@ class ChatMessageCreateView(APIView):
 
         content = serializer.validated_data.get("content", "")
         file = serializer.validated_data.get("file")
+
+        # RAG 자산 선택 — 어투/양식 자산의 파일 경로를 텍스트 채팅 태스크에 전달한다
+        rag_files, rag_error = self._resolve_rag_files(request)
+        if rag_error:
+            return rag_error
 
         # 세션 제목 자동 설정
         if not session.title:
@@ -177,6 +218,7 @@ class ChatMessageCreateView(APIView):
                     "chat_message_id": user_message.pk,
                     "session_history": session_history,
                     "upload_id":       upload_id,
+                    "rag_files":       rag_files,
                 },
                 queue="ax",
             )
@@ -188,6 +230,7 @@ class ChatMessageCreateView(APIView):
 
         # ── 파일 형식 검사 ───────────────────────────────────────────────────────
         suffix = Path(file.name).suffix.lower()
+        # (파일 첨부 경로는 analyze_document로 가므로 rag_files는 텍스트 경로에서만 사용)
         if suffix not in _ALLOWED_SUFFIXES:
             user_message.delete()
             return Response(
