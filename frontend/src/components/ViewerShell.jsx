@@ -21,6 +21,7 @@ import { ViewerToolbar } from '../pages/Workspace/ViewerToolbar'
 export function ViewerShell({
   filename,
   artifactUrl  = null,
+  onDownload   = null,
   onClose      = null,
   onNewWindow  = null,
   sidePanel    = null,
@@ -66,7 +67,7 @@ export function ViewerShell({
       </div>
 
       {/* 뷰어 툴바 — 다운로드 / 줌 / 히스토리 */}
-      <ViewerToolbar artifactUrl={artifactUrl} />
+      <ViewerToolbar artifactUrl={artifactUrl} onDownload={onDownload} />
 
       {/* 콘텐츠 영역: 뷰어(좌) + 사이드 패널(우) */}
       <div className="flex-1 min-h-0 overflow-hidden flex flex-row">

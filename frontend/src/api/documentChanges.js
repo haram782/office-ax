@@ -55,11 +55,13 @@ export async function generatePatchPlan(uploadId, prompt) {
  *
  * @param {number|string} uploadId
  * @param {number|string} versionId
+ * @param {number[]|null} changeIds - 지정 시 해당 change만 부분 반영 (체크박스 선택)
  * @returns {Promise<{ applied: Array, rejected: Array }>}
  */
-export async function acceptAllChanges(uploadId, versionId) {
+export async function acceptAllChanges(uploadId, versionId, changeIds = null) {
   const { data } = await api.post(
     `/uploads/${uploadId}/versions/${versionId}/changes/accept-all/`,
+    changeIds ? { change_ids: changeIds } : {},
   )
   return data
 }

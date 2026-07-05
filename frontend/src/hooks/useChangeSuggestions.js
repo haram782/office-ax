@@ -30,7 +30,7 @@ const AUTO_REJECT_MARK = /\[자동 반려:/
  *   acceptAllError:         string | null,
  *   autoRejectedIds:        Set<string>,
  *   handleSetStatus:        (id: string, next: string) => void,
- *   handleAcceptAll:        () => void,
+ *   handleAcceptAll:        (changeIds?: number[]) => void,
  *   handleSelectHighlight:  (id: string) => void,
  * }}
  */
@@ -110,7 +110,9 @@ export function useChangeSuggestions(snippetData, uploadId = null, versionId = n
    * 있으면 서버에 위임한다 — 충돌 해소 결과를 미리 알 수 없으므로
    * 낙관적 업데이트 없이, 응답을 받은 뒤에만 statuses를 반영한다.
    */
-  const handleAcceptAll = useCallback(async () => {
+  const handleAcceptAll = useCallback(async (changeIds = null) => {
+    // changeIds가 있으면 부분 선택 반영 — 로컬 전용 모드(버전 없음)에서는
+    // DB id가 없어 매칭 불가하므로 기존 전체 동작을 유지한다
     if (!uploadId || !versionId) {
       setStatuses(prev => {
         const next = { ...prev }
@@ -128,7 +130,7 @@ export function useChangeSuggestions(snippetData, uploadId = null, versionId = n
     setAcceptAllError(null)
 
     try {
-      const { applied = [], rejected = [] } = await acceptAllChanges(uploadId, versionId)
+      const { applied = [], rejected = [] } = await acceptAllChanges(uploadId, versionId, changeIds)
 
       setStatuses(prev => {
         const next = { ...prev }

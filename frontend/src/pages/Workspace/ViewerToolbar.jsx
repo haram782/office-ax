@@ -4,8 +4,11 @@ import { Ic } from '../../components/Ic'
 /**
  * 문서 뷰어 상단 툴바.
  * 줌·페이지 네비게이션·히스토리·다운로드 버튼을 제공한다.
+ *
+ * 다운로드: onDownload(선택된 버전 기준 핸들러)가 있으면 그것을 우선하고,
+ * 없으면 기존 artifactUrl anchor 방식(레거시 분석 산출물)으로 폴백한다.
  */
-export function ViewerToolbar({ artifactUrl, onHistoryReplay }) {
+export function ViewerToolbar({ artifactUrl, onHistoryReplay, onDownload }) {
   const [zoom, setZoom] = useState(100)
 
   function IconBtn({ icon, onClick, title }) {
@@ -62,22 +65,28 @@ export function ViewerToolbar({ artifactUrl, onHistoryReplay }) {
         <TBtn icon="history" label="수정됨" onClick={onHistoryReplay} />
       )}
 
-      {/* 최종본 다운로드 */}
-      {artifactUrl
-        ? (
-          <a
-            href={artifactUrl}
-            download
-            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-3 py-1.5"
-          >
-            <Ic name="download" className="w-3.5 h-3.5" />
-            최종본 다운로드
-          </a>
-        )
-        : (
-          <TBtn icon="download" label="최종본 다운로드" primary />
-        )
-      }
+      {/* 최종본 다운로드 — 선택된 버전 핸들러 우선, 레거시 artifactUrl 폴백 */}
+      {onDownload ? (
+        <TBtn icon="download" label="최종본 다운로드" primary onClick={onDownload} />
+      ) : artifactUrl ? (
+        <a
+          href={artifactUrl}
+          download
+          className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-3 py-1.5"
+        >
+          <Ic name="download" className="w-3.5 h-3.5" />
+          최종본 다운로드
+        </a>
+      ) : (
+        // 연결 경로가 없는 상태 — 비활성 표시로 dead button임을 드러낸다
+        <button
+          disabled
+          className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-300 dark:bg-zinc-700 text-white text-xs font-medium px-3 py-1.5 cursor-not-allowed opacity-60"
+        >
+          <Ic name="download" className="w-3.5 h-3.5" />
+          최종본 다운로드
+        </button>
+      )}
     </div>
   )
 }

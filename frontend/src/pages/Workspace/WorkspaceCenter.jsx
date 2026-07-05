@@ -57,13 +57,14 @@ export function WorkspaceCenter({
 
   const { patchStatus: rawPatchStatus, trigger } = usePatchTrigger(uploadId, versionId)
 
-  // 버전 탭 — rawPatchStatus가 'generating'일 때 polling 시작
-  const { versions } = useDocumentVersions(uploadId, rawPatchStatus)
+  // 버전 탭 — rawPatchStatus가 'generating'일 때 polling 시작.
+  // versionId(채팅발 새 draft)가 바뀌면 즉시 재조회해 탭에 반영한다 (Fix B)
+  const { versions } = useDocumentVersions(uploadId, rawPatchStatus, versionId)
 
   // accept-all 후 자동으로 patcher를 실행해 수정본 생성까지 한 번에 처리한다.
   // 버전이 이미 ready/failed이면 trigger를 호출하지 않아 불필요한 스피너를 방지한다.
-  const handleAcceptAllAndPatch = useCallback(async () => {
-    await handleAcceptAll()
+  const handleAcceptAllAndPatch = useCallback(async (changeIds = null) => {
+    await handleAcceptAll(changeIds)
     const currentVersion = versions.find(v => v.id === versionId)
     const needsPatch = versionId && (!currentVersion || currentVersion.status === 'draft')
     if (needsPatch) trigger()
@@ -163,6 +164,38 @@ export function WorkspaceCenter({
     return !v || v.status === 'original'
   }, [selectedVersionId, versions])
 
+  // 최종본 다운로드 (Fix A) — 선택된 버전 기준으로 실제 파일을 내려받는다.
+  // 수정본: 버전 파일 API의 Blob을 a[download]로 저장. 원본: 원본 fileUrl 저장.
+  const handleDownload = useCallback(async () => {
+    const selected = versions.find(v => v.id === selectedVersionId)
+    const filename = previewData?.filename ?? 'document'
+
+    const saveAs = (href, name) => {
+      const a = document.createElement('a')
+      a.href = href
+      a.download = name
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+    }
+
+    if (!selected || selected.status === 'original') {
+      if (previewData?.fileUrl) saveAs(previewData.fileUrl, filename)
+      return
+    }
+    try {
+      const blobUrl = await fetchVersionFileBlob(uploadId, selected.id)
+      const dot = filename.lastIndexOf('.')
+      const versioned = dot > 0
+        ? `${filename.slice(0, dot)}_v${selected.version_number}${filename.slice(dot)}`
+        : `${filename}_v${selected.version_number}`
+      saveAs(blobUrl, versioned)
+      URL.revokeObjectURL(blobUrl)
+    } catch {
+      // 다운로드 실패 — 뷰어 상태는 건드리지 않는다 (재시도 가능)
+    }
+  }, [versions, selectedVersionId, previewData, uploadId])
+
   // 수정본 선택 시 fileUrl을 Blob URL로 교체한 previewData를 뷰어에 전달
   // previewData가 null인 동안에도 훅은 항상 호출돼야 하므로 early return보다 위에 둔다
   const effectivePreviewData = useMemo(() => {
@@ -188,6 +221,7 @@ export function WorkspaceCenter({
       className="flex-1 min-w-0 flex flex-col relative bg-zinc-50 dark:bg-zinc-950 border-r border-zinc-200 dark:border-zinc-800"
       filename={filename}
       artifactUrl={artifactUrl}
+      onDownload={handleDownload}
       onClose={onCloseViewer}
       onNewWindow={() => {
         // localStorage에 previewData 저장 후 /preview 탭 열기

@@ -98,26 +98,51 @@ function SnippetCard({ snippetData, onFileView }) {
   )
 }
 
+/** 변경 항목 한 줄 표시용 레이블 — title 우선, 없으면 원본→수정 요약 */
+function changeItemLabel(change) {
+  if (change.title) return change.title
+  if (change.original || change.replacement) return `${change.original} → ${change.replacement}`
+  return change.operation || '변경 항목'
+}
+
 /**
  * patch_plan 전용 말풍선.
  * source_type='patch_plan'인 어시스턴트 메시지에만 사용한다.
- * snippet_data.patch_changes 개수와 [전체 반영][보류] 액션 버튼을 표시한다.
+ * snippet_data.changes를 체크박스 리스트로 보여주고, 선택된 항목만
+ * 부분 반영하거나(선택 반영) 전체 반영/보류할 수 있다.
  */
 function PatchPlanBubble({ message, onAcceptPatch, onRejectPatch }) {
   const [isAccepting, setIsAccepting] = useState(false)
   const { content, snippet_data } = message
   // BE는 snippet_data.changes로 저장 — patch_changes는 구버전 키
-  const patchCount = (snippet_data?.changes ?? snippet_data?.patch_changes)?.length ?? 0
+  const changes = snippet_data?.changes ?? snippet_data?.patch_changes ?? []
+  const patchCount = changes.length
+
+  // 체크된 change id 집합 — 기본 전체 선택
+  const [checkedIds, setCheckedIds] = useState(() => new Set(changes.map(c => c.id)))
+  const checkedCount = checkedIds.size
+  const allChecked = checkedCount === patchCount
+
+  const toggleChecked = useCallback((id) => {
+    setCheckedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
 
   const handleAccept = useCallback(async () => {
-    if (isAccepting) return
+    if (isAccepting || checkedCount === 0) return
     setIsAccepting(true)
     try {
-      await onAcceptPatch?.()
+      // 전체 선택이면 기존 계약(인자 없음 = 전체 반영)을 유지한다
+      if (allChecked) await onAcceptPatch?.()
+      else await onAcceptPatch?.(changes.filter(c => checkedIds.has(c.id)).map(c => c.id))
     } finally {
       setIsAccepting(false)
     }
-  }, [isAccepting, onAcceptPatch])
+  }, [isAccepting, checkedCount, allChecked, changes, checkedIds, onAcceptPatch])
 
   return (
     <div className="rounded-2xl rounded-bl-sm border border-blue-200 dark:border-blue-700 bg-blue-50/50 dark:bg-blue-900/20 shadow-sm overflow-hidden">
@@ -128,26 +153,49 @@ function PatchPlanBubble({ message, onAcceptPatch, onRejectPatch }) {
         </div>
       )}
 
-      {/* 변경사항 수 요약 배지 — patch_changes가 1개 이상일 때만 표시 */}
+      {/* 변경 항목 체크박스 리스트 */}
       {patchCount > 0 && (
-        <div className="px-4 py-1.5 border-t border-blue-200/60 dark:border-blue-700/60">
-          <span className="text-xs text-blue-600 dark:text-blue-400 font-medium">
+        <div className="px-4 py-2 border-t border-blue-200/60 dark:border-blue-700/60">
+          <div className="text-xs text-blue-600 dark:text-blue-400 font-medium mb-1.5">
             📝 {patchCount}개 변경사항 준비됨
-          </span>
+          </div>
+          <ul className="space-y-1 max-h-40 overflow-y-auto">
+            {changes.map((c) => (
+              <li key={c.id}>
+                <label className="flex items-start gap-2 text-xs text-zinc-700 dark:text-zinc-200 leading-relaxed cursor-pointer hover:bg-blue-100/40 dark:hover:bg-blue-800/20 rounded px-1 py-0.5">
+                  <input
+                    type="checkbox"
+                    checked={checkedIds.has(c.id)}
+                    onChange={() => toggleChecked(c.id)}
+                    disabled={isAccepting}
+                    className="mt-0.5 accent-blue-600 shrink-0"
+                  />
+                  <span className="min-w-0">
+                    <span className="font-medium">{changeItemLabel(c)}</span>
+                    {c.original && c.replacement && c.title && (
+                      <span className="block text-zinc-400 dark:text-zinc-500 truncate">
+                        {c.original} → {c.replacement}
+                      </span>
+                    )}
+                  </span>
+                </label>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
-      {/* 전체 반영 / 보류 버튼 */}
+      {/* 선택/전체 반영 · 보류 버튼 */}
       <div className="px-4 py-2.5 border-t border-blue-200/60 dark:border-blue-700/60 flex gap-2">
         <button
           onClick={handleAccept}
-          disabled={isAccepting}
+          disabled={isAccepting || checkedCount === 0}
           className="flex-1 flex items-center justify-center gap-1.5 text-xs font-semibold py-1.5 px-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {isAccepting && (
             <span className="w-3 h-3 border border-white border-t-transparent rounded-full animate-spin" />
           )}
-          전체 반영
+          {allChecked ? '전체 반영' : `선택 반영 (${checkedCount}/${patchCount})`}
         </button>
         <button
           onClick={() => onRejectPatch?.()}
