@@ -164,3 +164,70 @@ class StorageDeleteFailureDoesNotBlockRowDeleteTest(TestCase):
             DocumentVersion.objects.filter(pk=version.pk).exists(),
             "storage 삭제 실패와 무관하게 row는 삭제되어야 한다",
         )
+
+
+
+class StaleTmpFileCleanupTest(TestCase):
+    """
+    업로드 임시 파일 정리 테스트.
+
+    save_temp_file(delete=False)이 만든 tmp 파일은 베타 스택의 공유 볼륨에서
+    아무도 지우지 않으므로, cleanup_expired_uploads가 2일 지난 문서 tmp 파일을
+    함께 정리해야 한다 (M2 리뷰 발견 — 볼륨 무한 증식 방지).
+    """
+
+    def _make_tmp(self, tmp_dir, name, age_days):
+        """지정 나이의 파일을 만든다."""
+        import os
+        import time
+
+        path = tmp_dir / name
+        path.write_bytes(b"x")
+        old = time.time() - age_days * 86400
+        os.utime(path, (old, old))
+        return path
+
+    def test_old_document_tmp_files_are_deleted(self):
+        """2일 넘은 문서 확장자 tmp 파일은 삭제된다."""
+        import tempfile
+        from pathlib import Path
+
+        from apps.documents.tasks import _cleanup_stale_tmp_files
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp_dir = Path(d)
+            old_xlsx = self._make_tmp(tmp_dir, "tmpabc123.xlsx", age_days=3)
+            old_pdf = self._make_tmp(tmp_dir, "tmpdef456.pdf", age_days=5)
+
+            removed = _cleanup_stale_tmp_files(tmp_dir)
+
+        self.assertEqual(removed, 2)
+        self.assertFalse(old_xlsx.exists())
+        self.assertFalse(old_pdf.exists())
+
+    def test_recent_and_unrelated_files_are_kept(self):
+        """[경계·안전] 최근 파일과 tmp 패턴이 아닌 파일은 남긴다 (호스트 /tmp 공용 사용 대비)."""
+        import tempfile
+        from pathlib import Path
+
+        from apps.documents.tasks import _cleanup_stale_tmp_files
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp_dir = Path(d)
+            recent = self._make_tmp(tmp_dir, "tmpnew789.xlsx", age_days=0)
+            not_ours = self._make_tmp(tmp_dir, "other-app.sock", age_days=10)
+            no_prefix = self._make_tmp(tmp_dir, "report.xlsx", age_days=10)
+
+            removed = _cleanup_stale_tmp_files(tmp_dir)
+
+        self.assertEqual(removed, 0)
+        self.assertTrue(recent.exists())
+        self.assertTrue(not_ours.exists())
+        self.assertTrue(no_prefix.exists())
+
+    def test_cleanup_task_reports_tmp_removed_count(self):
+        """cleanup_expired_uploads 결과에 tmp 정리 건수가 포함된다."""
+        from apps.documents.tasks import cleanup_expired_uploads
+
+        result = cleanup_expired_uploads.run()
+        self.assertIn("stale_tmp_removed", result)
