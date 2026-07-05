@@ -178,15 +178,36 @@ export async function getPipelineRuns(pipelineId) {
   return data
 }
 
+// InboundEmail status 값 → 사용자 표시 라벨
+const EMAIL_STATUS_LABELS = {
+  received: '수신',
+  processing: '처리 중',
+  done: '완료',
+  failed: '실패',
+}
+
+/** 수신 시각을 짧은 표시 형태로 변환 (오늘이면 시각, 아니면 월-일) */
+function formatEmailTime(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  const now = new Date()
+  const sameDay = d.toDateString() === now.toDateString()
+  return sameDay
+    ? d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })
+    : d.toLocaleDateString('ko-KR', { month: '2-digit', day: '2-digit' }).replace(/\. ?/g, '-').replace(/-$/, '')
+}
+
+/** 인바운드 이메일 수신함 조회 — InboundEmailSerializer 필드를 화면 형태로 매핑 */
 export async function getEmailInbox() {
-  return [
-    { from: '세무회계 김',  subject: '2025년 8월 청약 접수증 송부', file: '청약신청서 접수증.pdf',  time: '오전 02:17', status: '분석완료' },
-    { from: 'ERP 자동발송', subject: '월간 견적 리포트',            file: '견적서_2508.xlsx',       time: '어제 18:40', status: '보정완료' },
-    { from: '법무팀',       subject: '계약서 검토 요청',            file: '표준계약서_v3.hwp',      time: '어제 14:02', status: '검토중'   },
-    { from: '고객지원',     subject: '민원 처리 결과 통보',         file: '민원결과.pdf',           time: '08-09',      status: '마스킹완료' },
-    { from: '구매팀',       subject: '발주서 재검토 요청',          file: '발주서_0808.xlsx',       time: '08-08',      status: '검토중'   },
-    { from: '인사팀',       subject: '재직증명서 발급',             file: '재직증명서.pdf',         time: '08-07',      status: '보정완료' },
-  ]
+  const { data } = await api.get('/email-inbox/')
+  return data.map((row) => ({
+    id:      row.id,
+    from:    row.sender,
+    subject: row.subject,
+    file:    row.attachment_filename,
+    time:    formatEmailTime(row.received_at),
+    status:  EMAIL_STATUS_LABELS[row.status] ?? row.status,
+  }))
 }
 
 export async function getRagAssets() {
