@@ -41,3 +41,6 @@ pnpm-debug.log*
 
 # Local assistant/tooling
 .claude/
+
+# 베타 환경 시크릿
+.env.beta

@@ -1,0 +1,136 @@
+# Office-AX 클로즈드 베타 스택 — dev 환경과 완전 분리
+#
+# 실행:   docker compose -f docker-compose.beta.yml --env-file .env.beta up -d --build
+# 원칙:   dev compose(docker-compose.yml)와 프로젝트명·포트·볼륨을 공유하지 않는다.
+#         베타 반영은 야간 배포 창에만 수행한다 (closed-beta-launch-plan-v1-ko.md 결정 14).
+#
+# 컨테이너 간 파일 공유 구조:
+#   beta_shared_tmp : backend가 저장한 업로드 임시 파일(TMPDIR)을 ax-engine이 file_path로 읽는다
+#   beta_media      : ax-engine 렌더링 산출물(ARTIFACT_DIR)과 Django MEDIA_ROOT가 같은 볼륨,
+#                     nginx가 /media/로 직접 서빙한다
+
+name: officeax-beta
+
+services:
+  postgres:
+    image: postgres:14-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: officeax_beta
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${BETA_DB_PASSWORD:?}
+    volumes:
+      - beta_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d officeax_beta"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - beta_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend-web:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    # 시작 시 마이그레이션 + collectstatic — 베타 단일 인스턴스라 경합 없음
+    command: >
+      sh -c "python manage.py migrate --noinput
+             && python manage.py collectstatic --noinput
+             && gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 180"
+    env_file: .env.beta
+    environment:
+      TMPDIR: /shared-tmp
+    volumes:
+      - beta_shared_tmp:/shared-tmp
+      - beta_media:/app/backend/media
+      - beta_static:/app/backend/staticfiles
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/admin/login/ > /dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Django 쪽 'celery' 큐 워커 — patch 실행·콜백·알림톡 처리
+  backend-worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    command: celery -A config worker -Q celery --loglevel=info --concurrency=2
+    env_file: .env.beta
+    environment:
+      TMPDIR: /shared-tmp
+    volumes:
+      - beta_shared_tmp:/shared-tmp
+      - beta_media:/app/backend/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # 야간 크론 (주간 패턴 감지 02시, 만료 파일 정리 03시)
+  backend-beat:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    command: celery -A config beat --loglevel=info
+    env_file: .env.beta
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # AX Engine — 'ax' 큐 전용 (문서 분석·채팅·PatchPlan 생성)
+  ax-worker:
+    build:
+      context: ./ax-engine
+    restart: unless-stopped
+    env_file: .env.beta
+    environment:
+      ARTIFACT_DIR: /data/media
+    volumes:
+      - beta_shared_tmp:/shared-tmp
+      - beta_media:/data/media
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  nginx:
+    build:
+      context: ./frontend
+      args:
+        VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:?}
+    restart: unless-stopped
+    ports:
+      - "${BETA_HTTP_PORT:-8080}:80"
+    volumes:
+      - ./infra/nginx/beta.conf:/etc/nginx/conf.d/default.conf:ro
+      - beta_media:/srv/media:ro
+      - beta_static:/srv/static:ro
+    depends_on:
+      - backend-web
+
+volumes:
+  beta_postgres_data:
+  beta_redis_data:
+  beta_media:
+  beta_static:
+  beta_shared_tmp:

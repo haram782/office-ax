@@ -56,7 +56,17 @@ TEMPLATES = [
 ]
 
 STATIC_URL = "/static/"
+# collectstatic 산출 위치 — 베타 스택에서 nginx가 이 볼륨을 직접 서빙한다
+STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "/media/"
+
+# ngrok 등 https 프록시 뒤에서 admin 로그인(CSRF origin 검사)에 필요
+# 예: CSRF_TRUSTED_ORIGINS=https://officeax.ngrok-free.app
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("CSRF_TRUSTED_ORIGINS", "").split(",")
+    if origin.strip()
+]
 
 DATABASES = {
     "default": {
