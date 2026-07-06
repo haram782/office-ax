@@ -168,6 +168,47 @@ describe('파일 보기', () => {
   })
 })
 
+describe('드롭존 안정성 (리뷰 반영)', () => {
+  it('자식 요소로 dragleave가 발생해도 드롭존이 계속 활성 상태를 유지한다 (깜박임 방지)', () => {
+    mockAssets()
+    render(<StyleView />)
+    const zone = screen.getByTestId('tone-dropzone')
+    const child = zone.querySelector('button, div')
+
+    fireEvent.dragOver(zone, { dataTransfer: {} })
+    // relatedTarget이 여전히 드롭존 내부(자식)인 경우 — 실제 이탈이 아니다
+    fireEvent.dragLeave(child, { relatedTarget: zone })
+
+    expect(zone.className).toContain('border-blue-400')
+  })
+
+  it('드롭존 밖으로 완전히 나가면 강조가 해제된다', () => {
+    mockAssets()
+    render(<StyleView />)
+    const zone = screen.getByTestId('tone-dropzone')
+
+    fireEvent.dragOver(zone, { dataTransfer: {} })
+    fireEvent.dragLeave(zone, { relatedTarget: document.body })
+
+    expect(zone.className).not.toContain('border-blue-400')
+  })
+
+  it('지원하지 않는 확장자를 드롭하면 업로드하지 않고 안내 문구를 보여준다', async () => {
+    mockAssets()
+    render(<StyleView />)
+    await waitFor(() => screen.getByText('보고서_어투'))
+
+    fireEvent.drop(screen.getByTestId('tone-dropzone'), {
+      dataTransfer: { files: [new File(['x'], '악성코드.exe')] },
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText(/지원하지 않는 파일 형식/)).toBeInTheDocument()
+    })
+    expect(mockUploadRagAsset).not.toHaveBeenCalled()
+  })
+})
+
 describe('업로드·삭제·보기 실패 시 인라인 에러 안내', () => {
   it('업로드 실패 시 에러 문구를 표시한다 (기존: 조용히 무시됨)', async () => {
     mockAssets()
