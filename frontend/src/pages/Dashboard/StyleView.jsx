@@ -8,6 +8,14 @@ function groupNameFromFile(file) {
   return file.name.replace(/\.[^.]+$/, '')
 }
 
+// 드래그앤드롭은 HTML accept 속성의 제약을 받지 않으므로 별도로 검증한다
+const ACCEPTED_RAG_EXT = new Set(['.docx', '.hwp', '.pdf', '.xlsx', '.csv'])
+
+function isAcceptedRagFile(file) {
+  const ext = '.' + file.name.split('.').pop().toLowerCase()
+  return ACCEPTED_RAG_EXT.has(ext)
+}
+
 /**
  * 파일 행 — 클릭 시 SubViewerPopup 열기, x 버튼으로 삭제.
  */
@@ -93,47 +101,60 @@ function AssetGroup({ kind, name, files, onAddFile, onViewFile, onDeleteFile }) 
 function KindDropzone({ kind, label, hint, onDropFile }) {
   const inputRef = useRef(null)
   const [dragOver, setDragOver] = useState(false)
+  const [rejectMsg, setRejectMsg] = useState('')
 
   const handleFiles = (files) => {
     const file = files?.[0]
-    if (file) onDropFile(kind, groupNameFromFile(file), file)
+    if (!file) return
+    if (!isAcceptedRagFile(file)) {
+      setRejectMsg('지원하지 않는 파일 형식입니다. .docx · .hwp · .pdf · .xlsx · .csv만 가능합니다.')
+      return
+    }
+    setRejectMsg('')
+    onDropFile(kind, groupNameFromFile(file), file)
   }
 
   return (
-    <div
-      data-testid={`${kind}-dropzone`}
-      onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={(e) => {
-        e.preventDefault()
-        setDragOver(false)
-        handleFiles(e.dataTransfer?.files)
-      }}
-      className={`rounded-xl border-2 border-dashed p-5 text-center transition-colors ${
-        dragOver
-          ? 'border-blue-400 bg-blue-50/50 dark:bg-blue-500/10'
-          : 'border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900/40'
-      }`}
-    >
-      <div className="w-9 h-9 rounded-lg bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 grid place-items-center mx-auto mb-2 text-blue-600 dark:text-blue-400">
-        <Ic name="upload" className="w-4 h-4" />
-      </div>
-      <div className="text-xs font-medium text-zinc-700 dark:text-zinc-200">{label}</div>
-      <div className="text-[11px] text-zinc-400 mt-0.5">{hint}</div>
-      <button
-        onClick={() => inputRef.current?.click()}
-        className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-3 py-1.5"
+    <div className="space-y-1.5">
+      <div
+        data-testid={`${kind}-dropzone`}
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+        onDragLeave={(e) => {
+          // 자식 요소(아이콘·라벨·버튼)로 drag 이동 시 flickering 방지 — DropZone.jsx와 동일 규칙
+          if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(false)
+        }}
+        onDrop={(e) => {
+          e.preventDefault()
+          setDragOver(false)
+          handleFiles(e.dataTransfer?.files)
+        }}
+        className={`rounded-xl border-2 border-dashed p-5 text-center transition-colors ${
+          dragOver
+            ? 'border-blue-400 bg-blue-50/50 dark:bg-blue-500/10'
+            : 'border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900/40'
+        }`}
       >
-        <Ic name="upload" className="w-3.5 h-3.5" />
-        파일 선택
-      </button>
-      <input
-        ref={inputRef}
-        type="file"
-        className="hidden"
-        accept=".docx,.hwp,.pdf,.xlsx,.csv"
-        onChange={(e) => { handleFiles(e.target.files); e.target.value = '' }}
-      />
+        <div className="w-9 h-9 rounded-lg bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 grid place-items-center mx-auto mb-2 text-blue-600 dark:text-blue-400">
+          <Ic name="upload" className="w-4 h-4" />
+        </div>
+        <div className="text-xs font-medium text-zinc-700 dark:text-zinc-200">{label}</div>
+        <div className="text-[11px] text-zinc-400 mt-0.5">{hint}</div>
+        <button
+          onClick={() => inputRef.current?.click()}
+          className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-3 py-1.5"
+        >
+          <Ic name="upload" className="w-3.5 h-3.5" />
+          파일 선택
+        </button>
+        <input
+          ref={inputRef}
+          type="file"
+          className="hidden"
+          accept=".docx,.hwp,.pdf,.xlsx,.csv"
+          onChange={(e) => { handleFiles(e.target.files); e.target.value = '' }}
+        />
+      </div>
+      {rejectMsg && <p className="text-[11px] text-red-500 text-center">{rejectMsg}</p>}
     </div>
   )
 }
