@@ -168,6 +168,50 @@ describe('파일 보기', () => {
   })
 })
 
+describe('업로드·삭제·보기 실패 시 인라인 에러 안내', () => {
+  it('업로드 실패 시 에러 문구를 표시한다 (기존: 조용히 무시됨)', async () => {
+    mockAssets()
+    mockUploadRagAsset.mockRejectedValue(new Error('413'))
+    render(<StyleView />)
+    await waitFor(() => screen.getByText('보고서_어투'))
+
+    fireEvent.drop(screen.getByTestId('tone-dropzone'), {
+      dataTransfer: { files: [new File(['x'], '큰파일.docx')] },
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText(/업로드에 실패했습니다/)).toBeInTheDocument()
+    })
+  })
+
+  it('삭제 실패 시 에러 문구를 표시한다', async () => {
+    mockAssets()
+    mockDeleteRagAsset.mockRejectedValue(new Error('network'))
+    render(<StyleView />)
+    await waitFor(() => screen.getByText('a.docx'))
+
+    const row = screen.getByText('a.docx').closest('div[class*="flex items-center"]')
+    fireEvent.click(row.querySelector('button:last-child'))
+
+    await waitFor(() => {
+      expect(screen.getByText(/삭제에 실패했습니다/)).toBeInTheDocument()
+    })
+  })
+
+  it('[회귀] 성공 후에는 이전 에러 문구가 사라진다', async () => {
+    mockAssets()
+    mockUploadRagAsset.mockRejectedValueOnce(new Error('fail')).mockResolvedValueOnce({ id: 1 })
+    render(<StyleView />)
+    await waitFor(() => screen.getByText('보고서_어투'))
+
+    fireEvent.drop(screen.getByTestId('tone-dropzone'), { dataTransfer: { files: [new File(['x'], 'a.docx')] } })
+    await waitFor(() => expect(screen.getByText(/업로드에 실패했습니다/)).toBeInTheDocument())
+
+    fireEvent.drop(screen.getByTestId('tone-dropzone'), { dataTransfer: { files: [new File(['x'], 'b.docx')] } })
+    await waitFor(() => expect(screen.queryByText(/업로드에 실패했습니다/)).toBeNull())
+  })
+})
+
 describe('워크스페이스 적용중 배지 (가짜 개념 제거)', () => {
   it('실데이터에 없는 개념이므로 배지가 렌더되지 않는다', async () => {
     mockAssets()
