@@ -16,17 +16,19 @@ vi.mock('../src/components/Ic', () => ({
 
 const mockGet = vi.hoisted(() => vi.fn())
 const mockPost = vi.hoisted(() => vi.fn())
+const mockDelete = vi.hoisted(() => vi.fn())
 vi.mock('axios', () => ({
   default: {
     create: () => ({
       get: mockGet,
       post: mockPost,
+      delete: mockDelete,
       interceptors: { request: { use: vi.fn() }, response: { use: vi.fn() } },
     }),
   },
 }))
 
-import { getRagAssets, uploadRagAsset, sendChatMessage } from '../src/api/client'
+import { getRagAssets, uploadRagAsset, sendChatMessage, deleteRagAsset, getRagAssetFileUrl } from '../src/api/client'
 import { RagSelector } from '../src/pages/Workspace/RagSelector'
 
 const ASSETS = [
@@ -48,6 +50,29 @@ describe('getRagAssets 실연결·그룹핑', () => {
     expect(tones[0].assetIds).toEqual([11, 12])
     expect(forms[0].name).toBe('계약서_양식')
     expect(forms[0].assetIds).toEqual([21])
+  })
+
+  it('[대시보드용] 파일별 id를 files 배열 항목에 포함한다 (삭제·보기에 필요)', async () => {
+    mockGet.mockResolvedValue({ data: ASSETS })
+    const { tones } = await getRagAssets()
+    expect(tones[0].files.map(f => f.id)).toEqual([11, 12])
+  })
+})
+
+describe('deleteRagAsset', () => {
+  it('DELETE /rag-assets/{id}/를 호출한다', async () => {
+    mockDelete.mockResolvedValue({})
+    await deleteRagAsset(11)
+    expect(mockDelete).toHaveBeenCalledWith('/rag-assets/11/')
+  })
+})
+
+describe('getRagAssetFileUrl', () => {
+  it('GET /rag-assets/{id}/file/ 응답에서 file_url을 반환한다', async () => {
+    mockGet.mockResolvedValue({ data: { file_url: '/media/rag_assets/1/a.docx', group_name: 'g', kind: 'tone' } })
+    const url = await getRagAssetFileUrl(11)
+    expect(mockGet).toHaveBeenCalledWith('/rag-assets/11/file/')
+    expect(url).toBe('/media/rag_assets/1/a.docx')
   })
 })
 
