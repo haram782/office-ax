@@ -162,6 +162,9 @@ export function StyleView() {
   const [assets, setAssets] = useState({ tones: [], forms: [] })
   // { filename, fileUrl } | null
   const [popup, setPopup] = useState(null)
+  // 업로드/삭제 실패 안내 — 조용히 무시하면 "버튼 눌러도 반응 없음"과 같은
+  // 증상이 되므로 성공 시 지워지는 인라인 배너로 표시한다 (리뷰 반영)
+  const [actionError, setActionError] = useState(null)
 
   const refresh = useCallback(() => {
     getRagAssets().then(setAssets)
@@ -171,9 +174,10 @@ export function StyleView() {
   const handleUpload = useCallback(async (kind, groupName, file) => {
     try {
       await uploadRagAsset(kind, groupName, file)
+      setActionError(null)
       refresh()
     } catch {
-      // 업로드 실패 — 목록은 그대로 두고 재시도 가능하게 한다
+      setActionError('업로드에 실패했습니다. 파일 크기와 형식을 확인하고 다시 시도해주세요.')
     }
   }, [refresh])
 
@@ -181,24 +185,33 @@ export function StyleView() {
     if (!window.confirm(`'${name}' 파일을 삭제할까요?`)) return
     try {
       await deleteRagAsset(id)
+      setActionError(null)
       refresh()
     } catch {
-      // 삭제 실패 — 목록은 그대로 유지
+      setActionError('삭제에 실패했습니다. 잠시 후 다시 시도해주세요.')
     }
   }, [refresh])
 
   const handleViewFile = useCallback(async (id, filename) => {
     try {
       const fileUrl = await getRagAssetFileUrl(id)
+      setActionError(null)
       setPopup({ filename, fileUrl })
     } catch {
-      setPopup({ filename, fileUrl: '' })
+      setActionError('문서를 여는 데 실패했습니다. 잠시 후 다시 시도해주세요.')
     }
   }, [])
 
   return (
     <>
       <div className="flex flex-col gap-6">
+        {/* 업로드·삭제·보기 실패 안내 — 성공 시 자동으로 사라진다 */}
+        {actionError && (
+          <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3 dark:bg-red-500/10 dark:border-red-500/30 dark:text-red-300">
+            {actionError}
+          </div>
+        )}
+
         {/* 어투 스타일 섹션 */}
         <Section title="어투 스타일" sub="하나의 어투에 여러 참조 파일을 연결해 문체를 학습시킵니다">
           <KindDropzone
