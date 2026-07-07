@@ -11,12 +11,23 @@ function hasGeneratingVersion(list) {
   return Array.isArray(list) && list.some(v => v.status === 'generating')
 }
 
+function findVersion(list, versionId) {
+  if (!Array.isArray(list) || versionId == null) return null
+  return list.find(v => String(v.id) === String(versionId)) ?? null
+}
+
+function isTerminalVersionStatus(status) {
+  return status === 'ready' || status === 'failed'
+}
+
 /**
  * DocumentVersion 목록 조회 훅.
  * 마운트 시 + patchStatus 변경 시 재조회한다.
  *
- * 조회 결과에 status === 'generating'인 버전이 있으면 3초 간격으로
- * 자동 재조회(polling)한다. 모든 버전이 ready/failed로 전환되거나
+ * 조회 결과에 status === 'generating'인 버전이 있거나 patchStatus가
+ * 'generating'이면 3초 간격으로 자동 재조회(polling)한다. 트리거 직후
+ * 첫 조회가 아직 draft로 보이는 짧은 레이스에서도 수정본 완료를 놓치지
+ * 않기 위함이다. 추적 중인 refreshKey 버전이 ready/failed가 되거나
  * polling 시작 후 90초가 지나면 자동으로 중단한다.
  *
  * @param {number|string|null} uploadId
@@ -45,7 +56,13 @@ export function useDocumentVersions(uploadId, patchStatus = null, refreshKey = n
           if (cancelled) return
           setVersions(data)
 
-          if (!hasGeneratingVersion(data)) return
+          const watchedVersion = findVersion(data, refreshKey)
+          const watchedIsDone = watchedVersion && isTerminalVersionStatus(watchedVersion.status)
+          const shouldPoll = !watchedIsDone && (
+            patchStatus === 'generating' || hasGeneratingVersion(data)
+          )
+
+          if (!shouldPoll) return
 
           // 타임아웃 내에서만 다음 polling을 예약한다
           const elapsed = Date.now() - pollStartedAt

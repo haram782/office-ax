@@ -28,6 +28,11 @@ const VERSIONS_GENERATING = [
   { id: 2, version_number: 2, status: 'generating', label: '수정본' },
 ]
 
+const VERSIONS_DRAFT = [
+  { id: 1, version_number: 1, status: 'original', label: '원본' },
+  { id: 2, version_number: 2, status: 'draft',    label: '수정본' },
+]
+
 const VERSIONS_ALL_READY = [
   { id: 1, version_number: 1, status: 'original', label: '원본' },
   { id: 2, version_number: 2, status: 'ready',    label: '수정본' },
@@ -113,6 +118,23 @@ describe('useDocumentVersions — generating 상태 polling', () => {
 
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     expect(mockFetchVersions).toHaveBeenCalledTimes(1)
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(mockFetchVersions).toHaveBeenCalledTimes(2)
+  })
+
+  it('patchStatus가 generating이면 첫 조회가 아직 draft여도 재조회한다', async () => {
+    mockFetchVersions
+      .mockResolvedValueOnce(VERSIONS_DRAFT)
+      .mockResolvedValueOnce(VERSIONS_ALL_READY)
+
+    renderHook(() => useDocumentVersions(10, 'generating', 2))
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(mockFetchVersions).toHaveBeenCalledTimes(1)
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(mockFetchVersions).toHaveBeenCalledTimes(2)
 
     await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
     expect(mockFetchVersions).toHaveBeenCalledTimes(2)
