@@ -66,6 +66,14 @@ describe('getRagAssets 실연결·그룹핑', () => {
     const { tones } = await getRagAssets()
     expect(tones[0].files[0].name).toBe('가나.hwp')
   })
+
+  it('[경계] 잘못된 인코딩 시퀀스가 있어도 예외 없이 원문 그대로 표시한다', async () => {
+    mockGet.mockResolvedValue({
+      data: [{ id: 31, kind: 'tone', group_name: 'g', file: '/media/rag/100%할인.docx', file_size: 100 }],
+    })
+    const { tones } = await getRagAssets()
+    expect(tones[0].files[0].name).toBe('100%할인.docx')
+  })
 })
 
 describe('deleteRagAsset', () => {

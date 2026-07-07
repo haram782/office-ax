@@ -212,6 +212,21 @@ export async function getEmailInbox() {
   }))
 }
 
+/**
+ * RAG 자산 파일 URL에서 표시용 파일명을 추출한다.
+ * Django FileField.url은 비ASCII 파일명을 퍼센트 인코딩하므로 디코딩한다.
+ * 사용자가 올린 원본 파일명에 '%' 등이 남아 잘못된 인코딩 시퀀스가 되면
+ * decodeURIComponent가 예외를 던질 수 있으므로(외부 입력 경계) try/except로 격리한다.
+ */
+function decodeRagFilename(fileUrl) {
+  const raw = (fileUrl ?? '').split('/').pop()
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return raw
+  }
+}
+
 /** RAG 자산 목록 조회 — kind·group_name 기준으로 그룹핑해 반환 */
 export async function getRagAssets() {
   const { data } = await api.get('/rag-assets/')
@@ -222,8 +237,7 @@ export async function getRagAssets() {
       if (!groups.has(a.group_name)) groups.set(a.group_name, { name: a.group_name, assetIds: [], files: [] })
       const g = groups.get(a.group_name)
       g.assetIds.push(a.id)
-      // Django FileField.url은 비ASCII 파일명을 퍼센트 인코딩하므로 표시 전에 디코딩한다
-      g.files.push({ id: a.id, name: decodeURIComponent((a.file ?? '').split('/').pop()), meta: `${Math.round((a.file_size ?? 0) / 1024)} KB` })
+      g.files.push({ id: a.id, name: decodeRagFilename(a.file), meta: `${Math.round((a.file_size ?? 0) / 1024)} KB` })
     }
     return [...groups.values()]
   }
