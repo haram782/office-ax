@@ -1074,10 +1074,16 @@ function HwpViewer({ previewData, highlights = [], selectedHighlightId = null, o
                 const h = rect.highlight
                 const isSelected = h.id === selectedHighlightId
                 const statusCls = h.status === 'applied'
-                  ? 'bg-emerald-300/30 border-emerald-500/70'
+                  ? 'border-emerald-500/85 shadow-[0_0_0_2px_rgba(16,185,129,0.16)]'
                   : h.status === 'rejected'
-                    ? 'bg-zinc-300/20 border-zinc-400/50'
-                    : 'bg-yellow-300/35 border-yellow-500/70'
+                    ? 'border-zinc-400/70 shadow-[0_0_0_2px_rgba(113,113,122,0.12)]'
+                    : 'border-amber-500/85 shadow-[0_0_0_2px_rgba(245,158,11,0.16)]'
+                const scaledLeft = rect.x * overlayScale.x
+                const scaledTop = rect.y * overlayScale.y
+                const scaledWidth = rect.width * overlayScale.x
+                const scaledHeight = rect.height * overlayScale.y
+                const padX = Math.max(4, scaledWidth * 0.18)
+                const padY = Math.max(3, scaledHeight * 0.35)
 
                 return (
                   <div
@@ -1085,17 +1091,18 @@ function HwpViewer({ previewData, highlights = [], selectedHighlightId = null, o
                     title={h.title || h.reason || h.replacement || '제안 위치'}
                     style={{
                       position: 'absolute',
-                      left: rect.x * overlayScale.x,
-                      top: rect.y * overlayScale.y,
-                      width: Math.max(rect.width * overlayScale.x, 4),
-                      height: Math.max(rect.height * overlayScale.y, 4),
-                      borderRadius: 2,
+                      left: Math.max(0, scaledLeft - padX),
+                      top: Math.max(0, scaledTop - padY),
+                      width: Math.max(scaledWidth + padX * 2, 10),
+                      height: Math.max(scaledHeight + padY * 2, 10),
+                      borderRadius: 4,
+                      boxSizing: 'border-box',
                       pointerEvents: 'auto',
                       cursor: 'pointer',
                     }}
                     className={isSelected
-                      ? 'bg-blue-400/35 border-2 border-blue-600 shadow-[0_0_0_2px_rgba(37,99,235,0.18)]'
-                      : `${statusCls} border`}
+                      ? 'bg-transparent border-2 border-blue-600 shadow-[0_0_0_3px_rgba(37,99,235,0.18),0_0_14px_rgba(37,99,235,0.2)]'
+                      : `bg-transparent border ${statusCls}`}
                     onClick={() => onSelectHighlight?.(h.id)}
                   />
                 )
