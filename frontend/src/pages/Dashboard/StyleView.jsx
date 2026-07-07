@@ -159,16 +159,19 @@ function KindDropzone({ kind, label, hint, onDropFile }) {
   )
 }
 
-/** 섹션 헤더 + 그리드 */
+/**
+ * 섹션 헤더 + 단일 열 스택.
+ * 드롭존과 그룹 카드들을 세로로 쌓는다 (어투/서식 두 섹션은 부모에서 2열로 배치).
+ */
 function Section({ title, sub, children }) {
   return (
-    <div>
+    <section>
       <div className="mb-3">
         <h3 className="text-sm font-bold text-zinc-800 dark:text-zinc-100">{title}</h3>
         <p className="text-xs text-zinc-400 mt-0.5">{sub}</p>
       </div>
-      <div className="grid grid-cols-2 gap-4 items-start">{children}</div>
-    </div>
+      <div className="flex flex-col gap-4">{children}</div>
+    </section>
   )
 }
 
@@ -233,37 +236,38 @@ export function StyleView() {
           </div>
         )}
 
-        {/* 어투 스타일 섹션 */}
-        <Section title="어투 스타일" sub="하나의 어투에 여러 참조 파일을 연결해 문체를 학습시킵니다">
-          <KindDropzone
-            kind="tone"
-            label="어투 파일을 끌어다 놓으세요"
-            hint=".docx · .hwp · .pdf 지원 — 새 어투로 등록됩니다"
-            onDropFile={handleUpload}
-          />
-          {assets.tones.map(t => (
-            <AssetGroup
-              key={t.name} kind="tone" name={t.name} files={t.files}
-              onAddFile={handleUpload} onViewFile={handleViewFile} onDeleteFile={handleDelete}
+        {/* 어투/서식 사이드바이사이드 2열 — 각 열은 드롭존 → 그룹 순의 단일 열 스택 */}
+        <div className="grid grid-cols-2 gap-6">
+          <Section title="어투 스타일" sub="하나의 어투에 여러 참조 파일을 연결해 문체를 학습시킵니다">
+            <KindDropzone
+              kind="tone"
+              label="어투 파일을 끌어다 놓으세요"
+              hint=".docx · .hwp · .pdf 지원 — 새 어투로 등록됩니다"
+              onDropFile={handleUpload}
             />
-          ))}
-        </Section>
+            {assets.tones.map(t => (
+              <AssetGroup
+                key={t.name} kind="tone" name={t.name} files={t.files}
+                onAddFile={handleUpload} onViewFile={handleViewFile} onDeleteFile={handleDelete}
+              />
+            ))}
+          </Section>
 
-        {/* 서식 양식 섹션 */}
-        <Section title="서식 양식" sub="하나의 양식에 여러 표준 템플릿 파일을 연결합니다">
-          <KindDropzone
-            kind="form"
-            label="표준 서식을 끌어다 놓으세요"
-            hint=".docx · .hwp · .pdf 지원 — 새 양식으로 등록됩니다"
-            onDropFile={handleUpload}
-          />
-          {assets.forms.map(f => (
-            <AssetGroup
-              key={f.name} kind="form" name={f.name} files={f.files}
-              onAddFile={handleUpload} onViewFile={handleViewFile} onDeleteFile={handleDelete}
+          <Section title="서식 양식" sub="하나의 양식에 여러 표준 템플릿 파일을 연결합니다">
+            <KindDropzone
+              kind="form"
+              label="표준 서식을 끌어다 놓으세요"
+              hint=".docx · .hwp · .pdf 지원 — 새 양식으로 등록됩니다"
+              onDropFile={handleUpload}
             />
-          ))}
-        </Section>
+            {assets.forms.map(f => (
+              <AssetGroup
+                key={f.name} kind="form" name={f.name} files={f.files}
+                onAddFile={handleUpload} onViewFile={handleViewFile} onDeleteFile={handleDelete}
+              />
+            ))}
+          </Section>
+        </div>
       </div>
 
       {/* RAG 문서 뷰어 팝업 */}
