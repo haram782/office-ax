@@ -222,7 +222,8 @@ export async function getRagAssets() {
       if (!groups.has(a.group_name)) groups.set(a.group_name, { name: a.group_name, assetIds: [], files: [] })
       const g = groups.get(a.group_name)
       g.assetIds.push(a.id)
-      g.files.push({ id: a.id, name: (a.file ?? '').split('/').pop(), meta: `${Math.round((a.file_size ?? 0) / 1024)} KB` })
+      // Django FileField.url은 비ASCII 파일명을 퍼센트 인코딩하므로 표시 전에 디코딩한다
+      g.files.push({ id: a.id, name: decodeURIComponent((a.file ?? '').split('/').pop()), meta: `${Math.round((a.file_size ?? 0) / 1024)} KB` })
     }
     return [...groups.values()]
   }
