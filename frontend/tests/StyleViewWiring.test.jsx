@@ -63,6 +63,33 @@ describe('StyleView 초기 로딩', () => {
   })
 })
 
+describe('레이아웃: 어투/서식 사이드바이사이드 열', () => {
+  it('두 섹션 컨테이너가 같은 부모 아래 2열 그리드로 배치된다', async () => {
+    mockAssets()
+    render(<StyleView />)
+    await waitFor(() => screen.getByText('보고서_어투'))
+
+    const toneSection = screen.getByText('어투 스타일').closest('section')
+    const formSection = screen.getByText('서식 양식').closest('section')
+    expect(toneSection.parentElement).toBe(formSection.parentElement)
+    expect(toneSection.parentElement.className).toMatch(/grid-cols-2/)
+  })
+
+  it('각 섹션 내부는 드롭존 다음 그룹이 세로로 쌓이는 단일 열이다 (2열 그리드 아님)', async () => {
+    mockAssets()
+    render(<StyleView />)
+    await waitFor(() => screen.getByText('보고서_어투'))
+
+    const toneSection = screen.getByText('어투 스타일').closest('section')
+    expect(toneSection.className).not.toMatch(/grid-cols-2/)
+
+    // 드롭존 → 그룹1 → 그룹2 순서로 세로 배치되는지 DOM 순서로 확인
+    const dropzone = screen.getByTestId('tone-dropzone')
+    const group1 = screen.getByText('보고서_어투').closest('div.rounded-2xl')
+    expect(dropzone.compareDocumentPosition(group1) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+})
+
 describe('어투/서식 전용 드롭존', () => {
   it('어투 드롭존에 파일을 놓으면 kind=tone으로 업로드된다', async () => {
     mockAssets()
@@ -169,15 +196,26 @@ describe('파일 보기', () => {
 })
 
 describe('드롭존 안정성 (리뷰 반영)', () => {
-  it('자식 요소로 dragleave가 발생해도 드롭존이 계속 활성 상태를 유지한다 (깜박임 방지)', () => {
+  // happy-dom은 fireEvent.dragLeave(el, {relatedTarget})의 relatedTarget을 무시하므로
+  // (eventInit으로 전달돼도 실제 이벤트 객체에 반영되지 않음), Object.defineProperty로
+  // 직접 주입한 네이티브 Event를 dispatch하는 표준 우회법을 쓴다.
+  // [복구 메모] 이 헬퍼와 아래 두 테스트는 PR #11 커밋 시 git add 누락으로 유실됐다가
+  // 여기서 복구되었다 — StyleView.jsx의 프로덕션 수정 자체는 정상 병합되어 있었다.
+  function dragLeaveWithRelatedTarget(el, relatedTarget) {
+    const event = new Event('dragleave', { bubbles: true, cancelable: true })
+    Object.defineProperty(event, 'relatedTarget', { value: relatedTarget })
+    fireEvent(el, event)
+  }
+
+  it('자식 요소로 향하는 dragleave는 드롭존이 계속 활성 상태를 유지한다 (깜박임 방지)', () => {
     mockAssets()
     render(<StyleView />)
     const zone = screen.getByTestId('tone-dropzone')
-    const child = zone.querySelector('button, div')
+    const child = zone.querySelector('button')
 
     fireEvent.dragOver(zone, { dataTransfer: {} })
     // relatedTarget이 여전히 드롭존 내부(자식)인 경우 — 실제 이탈이 아니다
-    fireEvent.dragLeave(child, { relatedTarget: zone })
+    dragLeaveWithRelatedTarget(zone, child)
 
     expect(zone.className).toContain('border-blue-400')
   })
@@ -188,7 +226,7 @@ describe('드롭존 안정성 (리뷰 반영)', () => {
     const zone = screen.getByTestId('tone-dropzone')
 
     fireEvent.dragOver(zone, { dataTransfer: {} })
-    fireEvent.dragLeave(zone, { relatedTarget: document.body })
+    dragLeaveWithRelatedTarget(zone, document.body)
 
     expect(zone.className).not.toContain('border-blue-400')
   })
