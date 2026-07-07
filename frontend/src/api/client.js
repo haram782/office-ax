@@ -170,7 +170,7 @@ export async function deleteStep(pipelineId, stepId) {
 
 /** 스텝 순서 재정렬 — orders: [{ id, step_order }, ...] */
 export async function reorderSteps(pipelineId, orders) {
-  const { data } = await api.post(`/pipelines/${pipelineId}/steps/reorder/`, { orders })
+  const { data } = await api.post(`/pipelines/${pipelineId}/steps/reorder/`, orders)
   return data
 }
 
@@ -185,6 +185,7 @@ const EMAIL_STATUS_LABELS = {
   received: '수신',
   processing: '처리 중',
   done: '완료',
+  fail: '실패',
   failed: '실패',
 }
 
@@ -210,6 +211,12 @@ export async function getEmailInbox() {
     time:    formatEmailTime(row.received_at),
     status:  EMAIL_STATUS_LABELS[row.status] ?? row.status,
   }))
+}
+
+/** 수신 이메일 첨부 파일 뷰어 URL 조회 */
+export async function getEmailAttachment(id) {
+  const { data } = await api.get(`/email-inbox/${id}/attachment/`)
+  return data
 }
 
 /**

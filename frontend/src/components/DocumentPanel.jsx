@@ -827,6 +827,9 @@ function HwpViewer({ previewData, highlights = [], selectedHighlightId = null, o
   const [totalPages, setTotalPages] = useState(0)
   const [pageNum, setPageNum]       = useState(0)
   const [errMsg, setErrMsg]         = useState('')
+  const [pageInfo, setPageInfo]     = useState(null)
+  const [canvasSize, setCanvasSize] = useState(null)
+  const [textRects, setTextRects]   = useState([])
   const docRef       = useRef(null)
   const canvasRef    = useRef(null)
   const containerRef = useRef(null)
@@ -837,6 +840,7 @@ function HwpViewer({ previewData, highlights = [], selectedHighlightId = null, o
     let cancelled = false
     if (docRef.current) { docRef.current.free(); docRef.current = null }
     setStatus('loading'); setPageNum(0); setTotalPages(0); setErrMsg('')
+    setPageInfo(null); setCanvasSize(null); setTextRects([])
 
     ;(async () => {
       await ensureWasm()
@@ -886,15 +890,70 @@ function HwpViewer({ previewData, highlights = [], selectedHighlightId = null, o
       const ratioW = containerW / naturalW
       const ratioH = containerH / naturalH
       const ratio  = Math.min(ratioW, ratioH)
-      canvas.style.width  = Math.floor(naturalW  * ratio) + 'px'
-      canvas.style.height = Math.floor(naturalH  * ratio) + 'px'
+      const cssWidth  = Math.floor(naturalW  * ratio)
+      const cssHeight = Math.floor(naturalH * ratio)
+      canvas.style.width  = cssWidth + 'px'
+      canvas.style.height = cssHeight + 'px'
       canvas.style.display = 'block'
+
+      setCanvasSize({ width: cssWidth, height: cssHeight })
+      try {
+        setPageInfo(JSON.parse(docRef.current.getPageInfo(pageNum)))
+      } catch {
+        setPageInfo({ width: naturalW, height: naturalH })
+      }
     } catch (err) {
       console.error('[HwpViewer] canvas render:', err)
       setErrMsg(err?.message ?? '렌더링 실패')
       setStatus('error')
     }
   }, [status, pageNum])
+
+  // text_match 제안 → HWP 문서 좌표 rect 변환.
+  useEffect(() => {
+    if (status !== 'done' || !docRef.current) return
+
+    const doc = docRef.current
+    const nextRects = []
+
+    for (const h of highlights) {
+      if (h.anchor?.type !== 'text_match') continue
+
+      const targetText = h.anchor?.target_text || h.anchor?.text_match || h.original || ''
+      if (!targetText) continue
+
+      const occurrence = Number.isInteger(h.anchor?.occurrence) && h.anchor.occurrence > 0
+        ? h.anchor.occurrence
+        : 1
+
+      try {
+        const matches = JSON.parse(doc.searchAllText(targetText, false, true))
+        if (!Array.isArray(matches) || matches.length < occurrence) continue
+
+        const match = matches[occurrence - 1]
+        const length = match.length ?? targetText.length
+        const rects = JSON.parse(
+          doc.getSelectionRects(
+            match.sec,
+            match.para,
+            match.charOffset,
+            match.para,
+            match.charOffset + length,
+          ),
+        )
+
+        if (!Array.isArray(rects)) continue
+        for (const rect of rects) {
+          if (rect.pageIndex == null || rect.x == null || rect.y == null) continue
+          nextRects.push({ ...rect, highlight: h })
+        }
+      } catch (err) {
+        console.warn('[HwpViewer] highlight 위치 계산 실패', h.id, err)
+      }
+    }
+
+    setTextRects(nextRects)
+  }, [status, highlights])
 
   // ③ 언마운트 시 WASM 힙 메모리 해제
   useEffect(() => () => {
@@ -904,6 +963,14 @@ function HwpViewer({ previewData, highlights = [], selectedHighlightId = null, o
   const goToPage = useCallback((n) => {
     setPageNum(Math.max(0, Math.min(n, totalPages - 1)))
   }, [totalPages])
+
+  // 선택한 제안이 다른 페이지에 있으면 해당 페이지로 이동한다.
+  useEffect(() => {
+    if (!selectedHighlightId) return
+    const rect = textRects.find(r => r.highlight?.id === selectedHighlightId)
+    if (!rect || rect.pageIndex == null || rect.pageIndex === pageNum) return
+    goToPage(rect.pageIndex)
+  }, [selectedHighlightId, textRects, pageNum, goToPage])
 
   // — 빈 상태 —
   if (!fileUrl) {
@@ -950,6 +1017,14 @@ function HwpViewer({ previewData, highlights = [], selectedHighlightId = null, o
     ? (highlights.find(h => h.id === selectedHighlightId && h.anchor?.type === 'text_match') ?? null)
     : null
 
+  const pageRects = textRects.filter(r => r.pageIndex === pageNum)
+  const overlayScale = pageInfo && canvasSize
+    ? {
+        x: canvasSize.width / pageInfo.width,
+        y: canvasSize.height / pageInfo.height,
+      }
+    : null
+
   // — 정상 렌더 —
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-zinc-100 dark:bg-zinc-800">
@@ -989,8 +1064,44 @@ function HwpViewer({ previewData, highlights = [], selectedHighlightId = null, o
 
       {/* Canvas 렌더링 영역 */}
       <div ref={containerRef} className="flex-1 overflow-auto p-6 flex justify-center items-start">
-        <div className="bg-white dark:bg-zinc-900 shadow-md rounded-sm overflow-hidden">
+        <div className="relative bg-white dark:bg-zinc-900 shadow-md rounded-sm overflow-hidden">
           <canvas ref={canvasRef} />
+          {overlayScale && pageRects.length > 0 && (
+            <div
+              style={{ position: 'absolute', top: 0, left: 0, width: canvasSize.width, height: canvasSize.height, pointerEvents: 'none' }}
+            >
+              {pageRects.map((rect, idx) => {
+                const h = rect.highlight
+                const isSelected = h.id === selectedHighlightId
+                const statusCls = h.status === 'applied'
+                  ? 'bg-emerald-300/30 border-emerald-500/70'
+                  : h.status === 'rejected'
+                    ? 'bg-zinc-300/20 border-zinc-400/50'
+                    : 'bg-yellow-300/35 border-yellow-500/70'
+
+                return (
+                  <div
+                    key={`${h.id}-${idx}`}
+                    title={h.title || h.reason || h.replacement || '제안 위치'}
+                    style={{
+                      position: 'absolute',
+                      left: rect.x * overlayScale.x,
+                      top: rect.y * overlayScale.y,
+                      width: Math.max(rect.width * overlayScale.x, 4),
+                      height: Math.max(rect.height * overlayScale.y, 4),
+                      borderRadius: 2,
+                      pointerEvents: 'auto',
+                      cursor: 'pointer',
+                    }}
+                    className={isSelected
+                      ? 'bg-blue-400/35 border-2 border-blue-600 shadow-[0_0_0_2px_rgba(37,99,235,0.18)]'
+                      : `${statusCls} border`}
+                    onClick={() => onSelectHighlight?.(h.id)}
+                  />
+                )
+              })}
+            </div>
+          )}
         </div>
       </div>
     </div>

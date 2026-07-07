@@ -164,3 +164,17 @@ class InboundEmailWebhookSavesRecordTest(TestCase):
         self.assertEqual(record.sender, "boss@corp.com")
         self.assertEqual(record.subject, "월간 보고서")
         self.assertEqual(record.attachment_filename, "report.xlsx")
+        self.assertTrue(record.upload_log.file, "첨부 원본 파일이 UploadLog.file에 저장되어야 합니다")
+
+    def test_webhook_accepts_hwp_attachment(self):
+        """HWP 첨부도 베타 이메일 수신 경로에서 스킵되지 않아야 한다."""
+        from apps.documents.models import InboundEmail
+
+        response = self._post_webhook("sample.hwp")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["processed_attachments"], 1)
+
+        record = InboundEmail.objects.filter(user=self.user).first()
+        self.assertIsNotNone(record, "HWP 첨부도 InboundEmail 레코드가 생성되어야 합니다")
+        self.assertEqual(record.attachment_filename, "sample.hwp")
