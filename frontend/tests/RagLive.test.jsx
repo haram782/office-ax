@@ -57,6 +57,15 @@ describe('getRagAssets 실연결·그룹핑', () => {
     const { tones } = await getRagAssets()
     expect(tones[0].files.map(f => f.id)).toEqual([11, 12])
   })
+
+  it('[버그 수정] 한글 파일명이 URL 인코딩된 채로 표시되지 않고 디코딩된다', async () => {
+    // Django FileField.url은 비ASCII 파일명을 퍼센트 인코딩한다 (예: 가.hwp → %EA%B0%80.hwp)
+    mockGet.mockResolvedValue({
+      data: [{ id: 30, kind: 'tone', group_name: 'g', file: '/media/rag/%EA%B0%80%EB%82%98.hwp', file_size: 100 }],
+    })
+    const { tones } = await getRagAssets()
+    expect(tones[0].files[0].name).toBe('가나.hwp')
+  })
 })
 
 describe('deleteRagAsset', () => {
