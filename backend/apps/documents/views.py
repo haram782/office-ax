@@ -211,7 +211,7 @@ class InboundEmailWebhookView(APIView):
     authentication_classes = []
     permission_classes = []
     parser_classes = [MultiPartParser]
-    _ALLOWED_SUFFIXES = {".xlsx", ".pdf"}
+    _ALLOWED_SUFFIXES = {".xlsx", ".pdf", ".hwp", ".hwpx"}
 
     @extend_schema(exclude=True)   # 내부 웹훅 — Swagger 문서에서 숨김
     def post(self, request):
@@ -245,12 +245,17 @@ class InboundEmailWebhookView(APIView):
                 continue
 
             tmp_path = save_temp_file(file_obj, suffix)
+            try:
+                file_obj.seek(0)
+            except Exception:
+                logger.warning("inbound-email 웹훅: 첨부 파일 포인터 초기화 실패 | 파일=%s", filename)
 
             upload_log = UploadLog.objects.create(
                 user=workflow.user,
                 file_structure=workflow.file_structure,
                 original_filename=filename,
                 status=UploadLog.Status.PENDING,
+                file=file_obj,
             )
 
             task = current_app.send_task(

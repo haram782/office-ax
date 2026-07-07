@@ -96,6 +96,14 @@ export function useChat() {
     }))
   }, [])
 
+  const setConvTitle = useCallback((convId, title) => {
+    if (!title) return
+    setSessions(prev => ({
+      ...prev,
+      [convId]: { ...prev[convId], title },
+    }))
+  }, [])
+
   // 백엔드 세션 ID 획득 (없으면 생성)
   const getOrCreateBackendId = useCallback(async (convId) => {
     if (backendIdsRef.current[convId]) return backendIdsRef.current[convId]
@@ -184,7 +192,8 @@ export function useChat() {
         const beforeMsgs = await getChatMessages(sid)
         const baselineAssistantCount = beforeMsgs.filter(m => m.role === 'assistant').length
 
-        await sendChatMessage(sid, content, null, uploadId, ragAssetIds)
+        const sendResult = await sendChatMessage(sid, content, null, uploadId, ragAssetIds)
+        setConvTitle(convId, sendResult?.session_title)
 
         const afterSendMsgs = await getChatMessages(sid)
         setConvMessages(convId, afterSendMsgs)
@@ -225,7 +234,8 @@ export function useChat() {
       const baselineAssistantCount = beforeMsgs.filter(m => m.role === 'assistant').length
 
       for (let i = 0; i < fileList.length; i++) {
-        await sendChatMessage(sid, i === 0 ? content : '', fileList[i], uploadId)
+        const sendResult = await sendChatMessage(sid, i === 0 ? content : '', fileList[i], uploadId)
+        setConvTitle(convId, sendResult?.session_title)
       }
 
       const afterSendMsgs = await getChatMessages(sid)
@@ -271,7 +281,7 @@ export function useChat() {
       setIsProcessing(false)
       setError(err?.response?.data?.error ?? '메시지 전송에 실패했습니다.')
     }
-  }, [activeSessionId, getOrCreateBackendId, setConvMessages, stopPolling])
+  }, [activeSessionId, getOrCreateBackendId, setConvMessages, setConvTitle, stopPolling])
 
   // resetSession — createSession의 별칭 (하위 호환)
   const resetSession = useCallback(() => createSession(), [createSession])

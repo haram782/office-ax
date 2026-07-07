@@ -224,7 +224,12 @@ class ChatMessageCreateView(APIView):
             )
 
             return Response(
-                {"message_id": user_message.pk, "session_id": session.pk, "status": "processing"},
+                {
+                    "message_id": user_message.pk,
+                    "session_id": session.pk,
+                    "session_title": session.title,
+                    "status": "processing",
+                },
                 status=status.HTTP_202_ACCEPTED,
             )
 
@@ -359,7 +364,12 @@ class ChatMessageCreateView(APIView):
             logger.info("중복 파일 감지 | hash=%s | 기존 UploadLog=%s", sha256[:12], existing_log.pk)
 
             return Response(
-                {"message_id": user_message.pk, "session_id": session.pk, "status": "duplicate"},
+                {
+                    "message_id": user_message.pk,
+                    "session_id": session.pk,
+                    "session_title": session.title,
+                    "status": "duplicate",
+                },
                 status=status.HTTP_202_ACCEPTED,
             )
 
@@ -441,7 +451,12 @@ class ChatMessageCreateView(APIView):
         )
 
         return Response(
-            {"message_id": user_message.pk, "session_id": session.pk, "status": "processing"},
+            {
+                "message_id": user_message.pk,
+                "session_id": session.pk,
+                "session_title": session.title,
+                "status": "processing",
+            },
             status=status.HTTP_202_ACCEPTED,
         )
 

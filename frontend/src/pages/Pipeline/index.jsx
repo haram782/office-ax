@@ -67,6 +67,7 @@ const STEP_DEFAULTS = {
 // 실행기록 상태 배지 메타데이터
 const RUN_STATUS = {
   success: { label: '성공',   cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300' },
+  fail:    { label: '실패',   cls: 'bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300'             },
   failed:  { label: '실패',   cls: 'bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300'             },
   running: { label: '진행 중', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300'            },
 }

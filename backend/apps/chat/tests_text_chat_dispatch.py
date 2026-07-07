@@ -54,6 +54,18 @@ class TextChatDispatchTest(TestCase):
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.data["status"], "processing")
 
+    def test_first_text_message_returns_generated_session_title(self):
+        """빈 제목 세션의 첫 메시지 응답에는 자동 생성된 session_title이 포함되어야 한다."""
+        self.session.title = ""
+        self.session.save(update_fields=["title"])
+
+        with patch("apps.chat.views.current_app.send_task") as mock_send:
+            mock_send.return_value = MagicMock(id="fake-task-id")
+            response = self._post_text("주간 매출 보고서 정리")
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.data["session_title"], "주간 매출 보고서 정리")
+
     def test_text_message_dispatches_text_chat_task(self):
         """텍스트 메시지 → tasks.text_chat 태스크 이름으로 dispatch."""
         with patch("apps.chat.views.current_app.send_task") as mock_send:

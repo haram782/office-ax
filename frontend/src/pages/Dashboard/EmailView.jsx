@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Ic } from '../../components/Ic'
-import { getEmailInbox } from '../../api/client'
+import { getEmailAttachment, getEmailInbox } from '../../api/client'
 import { SubViewerPopup } from '../Workspace/SubViewerPopup'
 
 /**
@@ -44,16 +44,33 @@ function FilterChip({ active, label, onClick }) {
  * 첨부 파일명 클릭 → SubViewerPopup 열기.
  */
 export function EmailView() {
-  const [all, setAll]       = useState([])
-  const [filter, setFilter] = useState('all')
+  const [all, setAll]             = useState([])
+  const [filter, setFilter]       = useState('all')
+  const [openingId, setOpeningId] = useState(null)
   // { filename, fileUrl } | null
-  const [popup, setPopup]   = useState(null)
+  const [popup, setPopup]         = useState(null)
 
   useEffect(() => { getEmailInbox().then(setAll) }, [])
 
   // InboundEmail 실제 상태 라벨과 일치시킨다 (api/client.js EMAIL_STATUS_LABELS)
   const statuses = ['수신', '처리 중', '완료', '실패']
   const rows     = filter === 'all' ? all : all.filter(r => r.status === filter)
+
+  const openAttachment = async (row) => {
+    if (!row?.id || openingId) return
+    setOpeningId(row.id)
+    try {
+      const attachment = await getEmailAttachment(row.id)
+      setPopup({
+        filename: attachment.original_filename || row.file,
+        fileUrl:  attachment.file_url || '',
+      })
+    } catch {
+      setPopup({ filename: row.file, fileUrl: '' })
+    } finally {
+      setOpeningId(null)
+    }
+  }
 
   return (
     <>
@@ -105,11 +122,15 @@ export function EmailView() {
                   <td className="px-4 py-3">
                     {/* 첨부 파일명 클릭 → SubViewerPopup 열기 */}
                     <button
-                      onClick={() => setPopup({ filename: r.file, fileUrl: r.fileUrl ?? null })}
+                      onClick={() => openAttachment(r)}
+                      disabled={openingId === r.id}
                       className="inline-flex items-center gap-1.5 text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap"
                     >
                       <Ic name="fileText" className="w-3.5 h-3.5" />
                       {r.file}
+                      {openingId === r.id && (
+                        <span className="h-3 w-3 border-[1.5px] border-blue-500 border-t-transparent rounded-full animate-spin" />
+                      )}
                     </button>
                   </td>
                   <td className="px-4 py-3 text-zinc-400 text-xs whitespace-nowrap">{r.time}</td>
