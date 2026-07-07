@@ -222,7 +222,7 @@ export async function getRagAssets() {
       if (!groups.has(a.group_name)) groups.set(a.group_name, { name: a.group_name, assetIds: [], files: [] })
       const g = groups.get(a.group_name)
       g.assetIds.push(a.id)
-      g.files.push({ name: (a.file ?? '').split('/').pop(), meta: `${Math.round((a.file_size ?? 0) / 1024)} KB` })
+      g.files.push({ id: a.id, name: (a.file ?? '').split('/').pop(), meta: `${Math.round((a.file_size ?? 0) / 1024)} KB` })
     }
     return [...groups.values()]
   }
@@ -240,4 +240,15 @@ export async function uploadRagAsset(kind, groupName, file) {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
   return data
+}
+
+/** RAG 자산 삭제 */
+export async function deleteRagAsset(assetId) {
+  await api.delete(`/rag-assets/${assetId}/`)
+}
+
+/** RAG 자산 파일의 다운로드 URL 조회 (뷰어 팝업에서 사용) */
+export async function getRagAssetFileUrl(assetId) {
+  const { data } = await api.get(`/rag-assets/${assetId}/file/`)
+  return data.file_url
 }

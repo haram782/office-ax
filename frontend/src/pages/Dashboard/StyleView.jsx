@@ -1,18 +1,29 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Ic } from '../../components/Ic'
-import { getRagAssets } from '../../api/client'
+import { getRagAssets, uploadRagAsset, deleteRagAsset, getRagAssetFileUrl } from '../../api/client'
 import { SubViewerPopup } from '../Workspace/SubViewerPopup'
 
+/** 파일명에서 확장자를 뗀 것을 그룹명으로 사용한다 (Workspace RagSelector와 동일 규칙) */
+function groupNameFromFile(file) {
+  return file.name.replace(/\.[^.]+$/, '')
+}
+
+// 드래그앤드롭은 HTML accept 속성의 제약을 받지 않으므로 별도로 검증한다
+const ACCEPTED_RAG_EXT = new Set(['.docx', '.hwp', '.pdf', '.xlsx', '.csv'])
+
+function isAcceptedRagFile(file) {
+  const ext = '.' + file.name.split('.').pop().toLowerCase()
+  return ACCEPTED_RAG_EXT.has(ext)
+}
+
 /**
- * 파일 행 — 클릭 시 SubViewerPopup 열기.
- * onView(name, fileUrl) 콜백을 통해 부모의 팝업 상태를 갱신한다.
+ * 파일 행 — 클릭 시 SubViewerPopup 열기, x 버튼으로 삭제.
  */
-function FileRow({ name, meta, onView }) {
+function FileRow({ id, name, meta, onView, onDelete }) {
   return (
     <div className="flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-zinc-50 dark:hover:bg-zinc-800/60">
-      {/* 파일명 클릭 → 뷰어 팝업 */}
       <button
-        onClick={() => onView(name)}
+        onClick={() => onView(id, name)}
         className="flex items-center gap-2 flex-1 min-w-0 text-left"
       >
         <Ic name="fileText" className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
@@ -24,7 +35,10 @@ function FileRow({ name, meta, onView }) {
       <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300">
         학습완료
       </span>
-      <button className="shrink-0 w-6 h-6 grid place-items-center rounded-md text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700">
+      <button
+        onClick={() => onDelete(id, name)}
+        className="shrink-0 w-6 h-6 grid place-items-center rounded-md text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700"
+      >
         <Ic name="x" className="w-3.5 h-3.5" />
       </button>
     </div>
@@ -32,70 +46,126 @@ function FileRow({ name, meta, onView }) {
 }
 
 /** 에셋 그룹 카드 (어투 / 양식) */
-function AssetGroup({ kind, name, active, files, onAddFile, onViewFile }) {
+function AssetGroup({ kind, name, files, onAddFile, onViewFile, onDeleteFile }) {
   const isTone = kind === 'tone'
   const badgeColor = isTone
     ? 'bg-blue-50 text-blue-600 dark:bg-blue-500/15 dark:text-blue-300'
     : 'bg-violet-50 text-violet-600 dark:bg-violet-500/15 dark:text-violet-300'
-  const borderColor = active
-    ? 'border-blue-300 dark:border-blue-500/40 ring-1 ring-blue-100 dark:ring-blue-500/20'
-    : 'border-zinc-200 dark:border-zinc-800'
+  const fileInputRef = useRef(null)
 
   return (
-    <div className={`rounded-2xl border bg-white dark:bg-zinc-900 overflow-hidden shadow-sm ${borderColor}`}>
+    <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 overflow-hidden shadow-sm">
       {/* 헤더 */}
       <div className="flex items-center gap-2.5 px-3.5 py-3 border-b border-zinc-100 dark:border-zinc-800">
         <div className={`w-8 h-8 rounded-lg grid place-items-center shrink-0 ${badgeColor}`}>
           <Ic name={isTone ? 'sparkles' : 'fileText'} />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5">
-            <span className="text-sm font-semibold text-zinc-800 dark:text-zinc-100 truncate">{name}</span>
-            {active && (
-              <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 dark:bg-blue-500/15 dark:text-blue-300">
-                워크스페이스 적용중
-              </span>
-            )}
-          </div>
+          <span className="text-sm font-semibold text-zinc-800 dark:text-zinc-100 truncate">{name}</span>
           <div className="text-[11px] text-zinc-400">참조 파일 {files.length}개</div>
         </div>
-        <button className="shrink-0 w-7 h-7 grid place-items-center rounded-lg text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800">
-          <Ic name="dots" />
-        </button>
       </div>
 
       {/* 파일 목록 */}
       <div className="p-1.5">
-        {files.map((f, i) => (
-          <FileRow key={i} name={f.name} meta={f.meta} onView={onViewFile} />
+        {files.map((f) => (
+          <FileRow key={f.id} id={f.id} name={f.name} meta={f.meta} onView={onViewFile} onDelete={onDeleteFile} />
         ))}
       </div>
 
-      {/* 파일 추가 버튼 */}
+      {/* 파일 추가 버튼 — 같은 그룹(kind+name)에 파일을 추가한다 */}
       <button
-        onClick={onAddFile}
+        onClick={() => fileInputRef.current?.click()}
         className="w-full flex items-center gap-1.5 px-3.5 py-2.5 border-t border-zinc-100 dark:border-zinc-800 text-xs text-blue-600 dark:text-blue-400 hover:bg-blue-50/50 dark:hover:bg-blue-500/10"
       >
         <Ic name="plus" className="w-3.5 h-3.5" />
         참조 파일 추가
       </button>
+      <input
+        ref={fileInputRef}
+        type="file"
+        data-group={name}
+        className="hidden"
+        accept=".docx,.hwp,.pdf,.xlsx,.csv"
+        onChange={(e) => {
+          const file = e.target.files?.[0]
+          if (file) onAddFile(kind, name, file)
+          e.target.value = ''
+        }}
+      />
+    </div>
+  )
+}
+
+/** 어투/서식 전용 드롭존 — 드래그앤드롭 또는 클릭으로 새 그룹을 만든다 */
+function KindDropzone({ kind, label, hint, onDropFile }) {
+  const inputRef = useRef(null)
+  const [dragOver, setDragOver] = useState(false)
+  const [rejectMsg, setRejectMsg] = useState('')
+
+  const handleFiles = (files) => {
+    const file = files?.[0]
+    if (!file) return
+    if (!isAcceptedRagFile(file)) {
+      setRejectMsg('지원하지 않는 파일 형식입니다. .docx · .hwp · .pdf · .xlsx · .csv만 가능합니다.')
+      return
+    }
+    setRejectMsg('')
+    onDropFile(kind, groupNameFromFile(file), file)
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <div
+        data-testid={`${kind}-dropzone`}
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+        onDragLeave={(e) => {
+          // 자식 요소(아이콘·라벨·버튼)로 drag 이동 시 flickering 방지 — DropZone.jsx와 동일 규칙
+          if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(false)
+        }}
+        onDrop={(e) => {
+          e.preventDefault()
+          setDragOver(false)
+          handleFiles(e.dataTransfer?.files)
+        }}
+        className={`rounded-xl border-2 border-dashed p-5 text-center transition-colors ${
+          dragOver
+            ? 'border-blue-400 bg-blue-50/50 dark:bg-blue-500/10'
+            : 'border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900/40'
+        }`}
+      >
+        <div className="w-9 h-9 rounded-lg bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 grid place-items-center mx-auto mb-2 text-blue-600 dark:text-blue-400">
+          <Ic name="upload" className="w-4 h-4" />
+        </div>
+        <div className="text-xs font-medium text-zinc-700 dark:text-zinc-200">{label}</div>
+        <div className="text-[11px] text-zinc-400 mt-0.5">{hint}</div>
+        <button
+          onClick={() => inputRef.current?.click()}
+          className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-3 py-1.5"
+        >
+          <Ic name="upload" className="w-3.5 h-3.5" />
+          파일 선택
+        </button>
+        <input
+          ref={inputRef}
+          type="file"
+          className="hidden"
+          accept=".docx,.hwp,.pdf,.xlsx,.csv"
+          onChange={(e) => { handleFiles(e.target.files); e.target.value = '' }}
+        />
+      </div>
+      {rejectMsg && <p className="text-[11px] text-red-500 text-center">{rejectMsg}</p>}
     </div>
   )
 }
 
 /** 섹션 헤더 + 그리드 */
-function Section({ title, sub, addLabel, children }) {
+function Section({ title, sub, children }) {
   return (
     <div>
-      <div className="flex items-end justify-between mb-3">
-        <div>
-          <h3 className="text-sm font-bold text-zinc-800 dark:text-zinc-100">{title}</h3>
-          <p className="text-xs text-zinc-400 mt-0.5">{sub}</p>
-        </div>
-        <button className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-700 text-xs px-2.5 py-1.5 text-zinc-600 dark:text-zinc-300">
-          <Ic name="plus" className="w-3.5 h-3.5" />
-          {addLabel}
-        </button>
+      <div className="mb-3">
+        <h3 className="text-sm font-bold text-zinc-800 dark:text-zinc-100">{title}</h3>
+        <p className="text-xs text-zinc-400 mt-0.5">{sub}</p>
       </div>
       <div className="grid grid-cols-2 gap-4 items-start">{children}</div>
     </div>
@@ -104,59 +174,93 @@ function Section({ title, sub, addLabel, children }) {
 
 /**
  * 스타일 & 템플릿 (RAG) 뷰 (대시보드 메인 콘텐츠).
- * FileRow 클릭 → SubViewerPopup 열기.
+ *
+ * 어투/서식 전용 드롭존으로 새 그룹을 만들고, 그룹 카드의 [참조 파일 추가]로
+ * 기존 그룹에 파일을 더한다. FileRow 클릭 → 파일 URL 조회 후 SubViewerPopup.
+ * "워크스페이스 적용중" 배지는 실데이터에 없는 개념이라 제거했다.
  */
 export function StyleView() {
   const [assets, setAssets] = useState({ tones: [], forms: [] })
-  // { filename } | null
-  const [popup, setPopup]   = useState(null)
+  // { filename, fileUrl } | null
+  const [popup, setPopup] = useState(null)
+  // 업로드/삭제 실패 안내 — 조용히 무시하면 "버튼 눌러도 반응 없음"과 같은
+  // 증상이 되므로 성공 시 지워지는 인라인 배너로 표시한다 (리뷰 반영)
+  const [actionError, setActionError] = useState(null)
 
-  useEffect(() => { getRagAssets().then(setAssets) }, [])
+  const refresh = useCallback(() => {
+    getRagAssets().then(setAssets)
+  }, [])
+  useEffect(() => { refresh() }, [refresh])
 
-  const handleViewFile = (filename) => setPopup({ filename })
+  const handleUpload = useCallback(async (kind, groupName, file) => {
+    try {
+      await uploadRagAsset(kind, groupName, file)
+      setActionError(null)
+      refresh()
+    } catch {
+      setActionError('업로드에 실패했습니다. 파일 크기와 형식을 확인하고 다시 시도해주세요.')
+    }
+  }, [refresh])
+
+  const handleDelete = useCallback(async (id, name) => {
+    if (!window.confirm(`'${name}' 파일을 삭제할까요?`)) return
+    try {
+      await deleteRagAsset(id)
+      setActionError(null)
+      refresh()
+    } catch {
+      setActionError('삭제에 실패했습니다. 잠시 후 다시 시도해주세요.')
+    }
+  }, [refresh])
+
+  const handleViewFile = useCallback(async (id, filename) => {
+    try {
+      const fileUrl = await getRagAssetFileUrl(id)
+      setActionError(null)
+      setPopup({ filename, fileUrl })
+    } catch {
+      setActionError('문서를 여는 데 실패했습니다. 잠시 후 다시 시도해주세요.')
+    }
+  }, [])
 
   return (
     <>
       <div className="flex flex-col gap-6">
-        {/* 파일 업로드 드롭존 */}
-        <div className="rounded-2xl border-2 border-dashed border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900/40 p-8 text-center shadow-sm">
-          <div className="w-12 h-12 rounded-xl bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 grid place-items-center mx-auto mb-3 text-blue-600 dark:text-blue-400">
-            <Ic name="upload" className="w-5 h-5" />
+        {/* 업로드·삭제·보기 실패 안내 — 성공 시 자동으로 사라진다 */}
+        {actionError && (
+          <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3 dark:bg-red-500/10 dark:border-red-500/30 dark:text-red-300">
+            {actionError}
           </div>
-          <div className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
-            어투 파일 · 표준 서식을 끌어다 놓으세요
-          </div>
-          <div className="text-xs text-zinc-400 mt-1">.docx · .hwp · .pdf 지원 — RAG 학습에 사용됩니다</div>
-          <button className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-3.5 py-1.5">
-            <Ic name="upload" className="w-3.5 h-3.5" />
-            파일 선택
-          </button>
-        </div>
+        )}
 
         {/* 어투 스타일 섹션 */}
-        <Section
-          title="어투 스타일"
-          sub="하나의 어투에 여러 참조 파일을 연결해 문체를 학습시킵니다"
-          addLabel="어투 추가"
-        >
+        <Section title="어투 스타일" sub="하나의 어투에 여러 참조 파일을 연결해 문체를 학습시킵니다">
+          <KindDropzone
+            kind="tone"
+            label="어투 파일을 끌어다 놓으세요"
+            hint=".docx · .hwp · .pdf 지원 — 새 어투로 등록됩니다"
+            onDropFile={handleUpload}
+          />
           {assets.tones.map(t => (
             <AssetGroup
-              key={t.id} kind="tone" name={t.name} active={t.active}
-              files={t.files} onAddFile={() => {}} onViewFile={handleViewFile}
+              key={t.name} kind="tone" name={t.name} files={t.files}
+              onAddFile={handleUpload} onViewFile={handleViewFile} onDeleteFile={handleDelete}
             />
           ))}
         </Section>
 
         {/* 서식 양식 섹션 */}
-        <Section
-          title="서식 양식"
-          sub="하나의 양식에 여러 표준 템플릿 파일을 연결합니다"
-          addLabel="양식 추가"
-        >
+        <Section title="서식 양식" sub="하나의 양식에 여러 표준 템플릿 파일을 연결합니다">
+          <KindDropzone
+            kind="form"
+            label="표준 서식을 끌어다 놓으세요"
+            hint=".docx · .hwp · .pdf 지원 — 새 양식으로 등록됩니다"
+            onDropFile={handleUpload}
+          />
           {assets.forms.map(f => (
             <AssetGroup
-              key={f.id} kind="form" name={f.name} active={f.active}
-              files={f.files} onAddFile={() => {}} onViewFile={handleViewFile}
+              key={f.name} kind="form" name={f.name} files={f.files}
+              onAddFile={handleUpload} onViewFile={handleViewFile} onDeleteFile={handleDelete}
             />
           ))}
         </Section>
@@ -166,6 +270,7 @@ export function StyleView() {
       {popup && (
         <SubViewerPopup
           filename={popup.filename}
+          fileUrl={popup.fileUrl}
           title={`RAG 문서 · ${popup.filename}`}
           onClose={() => setPopup(null)}
         />
