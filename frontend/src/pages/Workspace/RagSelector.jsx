@@ -39,7 +39,7 @@ export function RagSelector({
   onFormChange,
 }) {
   return (
-    <div className="flex items-end gap-2 px-3 pt-3">
+    <div className="flex items-end gap-2 px-3 pt-3 pb-2">
       <span className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold text-blue-600 dark:text-blue-300 pb-1.5">
         <Ic name="sparkles" className="w-3.5 h-3.5" />
         RAG
