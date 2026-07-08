@@ -195,13 +195,6 @@ export function WorkspaceChat({
           ))}
         </div>
 
-        {/* 파일 미선택 시 안내 문구 — 입력창 위에 표시 */}
-        {!uploadId && (
-          <p className="px-4 pt-2 text-xs text-zinc-400 dark:text-zinc-500">
-            파일을 먼저 선택해주세요
-          </p>
-        )}
-
         {/* [보류] 후 정정 안내 문구 */}
         {uploadId && inputGuidance && (
           <p className="px-4 pt-2 text-xs text-blue-500 dark:text-blue-400">
@@ -209,12 +202,11 @@ export function WorkspaceChat({
           </p>
         )}
 
-        {/* 채팅 입력 — 파일 미선택 시 disabled */}
+        {/* 채팅 입력 — uploadId는 있으면 문서 맥락으로만 전달한다 */}
         <ChatInput
           ref={chatInputRef}
           onSend={handleSend}
           isProcessing={isProcessing}
-          disabled={!uploadId}
           onFocus={handleGuidanceClear}
         />
       </div>
