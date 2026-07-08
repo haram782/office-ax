@@ -6,6 +6,16 @@ const MAX_POLLS = 40   // 100초 타임아웃
 
 function makeConvId() { return `conv_${Date.now()}` }
 
+function hasAssistantCompletion(messages, { allowPlainAssistant = false } = {}) {
+  return messages.some(m => (
+    m.role === 'assistant' &&
+    (
+      m.snippet_data?.type ||
+      (allowPlainAssistant && typeof m.content === 'string' && m.content.trim().length > 0)
+    )
+  ))
+}
+
 /**
  * 채팅 워크스페이스 상태 머신 — sessions 맵 구조.
  *
@@ -14,8 +24,9 @@ function makeConvId() { return `conv_${Date.now()}` }
  * activeSessionId: 현재 선택된 대화 ID.
  *
  * 폴링 종료 조건:
- *   baseline 이후 새로 생성된 어시스턴트 메시지 중 snippet_data.type이
- *   있는 것이 하나라도 도착하면 종료한다.
+ *   텍스트/수정 요청은 baseline 이후 새 어시스턴트 메시지 중 snippet_data.type이
+ *   있는 것이 하나라도 도착하면 종료한다. 파일 업로드 분석은 일반 텍스트 응답도
+ *   최종 결과일 수 있으므로 plain assistant 메시지도 완료로 인정한다.
  *   BE가 중간 안내 메시지(snippet_data 없음)를 먼저 전송해도 폴링을 계속한다.
  */
 export function useChat() {
@@ -200,7 +211,7 @@ export function useChat() {
 
         // 새 어시스턴트 메시지 중 snippet_data.type이 있으면 즉시 종료
         const newAfterSend = afterSendMsgs.filter(m => m.role === 'assistant').slice(baselineAssistantCount)
-        if (newAfterSend.some(m => m.snippet_data?.type)) {
+        if (hasAssistantCompletion(newAfterSend)) {
           setIsProcessing(false)
           return
         }
@@ -220,7 +231,7 @@ export function useChat() {
             const fresh = await getChatMessages(sid)
             setConvMessages(convId, fresh)
             const newMsgs = fresh.filter(m => m.role === 'assistant').slice(baselineAssistantCount)
-            if (newMsgs.some(m => m.snippet_data?.type)) {
+            if (hasAssistantCompletion(newMsgs)) {
               stopPolling()
               setIsProcessing(false)
             }
@@ -241,14 +252,14 @@ export function useChat() {
       const afterSendMsgs = await getChatMessages(sid)
       setConvMessages(convId, afterSendMsgs)
 
-      // 새 어시스턴트 메시지 중 snippet_data.type이 있으면 즉시 종료
+      // 파일 분석은 snippet 없는 일반 텍스트 응답도 최종 결과로 내려올 수 있다.
       const newAfterSendFile = afterSendMsgs.filter(m => m.role === 'assistant').slice(baselineAssistantCount)
-      if (newAfterSendFile.some(m => m.snippet_data?.type)) {
+      if (hasAssistantCompletion(newAfterSendFile, { allowPlainAssistant: true })) {
         setIsProcessing(false)
         return
       }
 
-      // ── Celery 완료 폴링 — snippet_data.type 도착 시 종료 ────────────────────
+      // ── Celery 완료 폴링 — 파일 분석은 plain assistant 응답도 완료 ─────────────
       intervalRef.current = setInterval(async () => {
         pollCountRef.current += 1
 
@@ -263,7 +274,7 @@ export function useChat() {
           const fresh = await getChatMessages(sid)
           setConvMessages(convId, fresh)
           const newMsgs = fresh.filter(m => m.role === 'assistant').slice(baselineAssistantCount)
-          if (newMsgs.some(m => m.snippet_data?.type)) {
+          if (hasAssistantCompletion(newMsgs, { allowPlainAssistant: true })) {
             stopPolling()
             setIsProcessing(false)
           }

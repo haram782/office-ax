@@ -139,7 +139,6 @@ describe('RagSelector 실데이터', () => {
         ragForm=""
         onToneChange={vi.fn()}
         onFormChange={vi.fn()}
-        onUpload={vi.fn()}
       />
     )
     expect(screen.getByText('보고서_어투')).toBeInTheDocument()
@@ -156,9 +155,23 @@ describe('RagSelector 실데이터', () => {
         ragForm=""
         onToneChange={vi.fn()}
         onFormChange={vi.fn()}
-        onUpload={vi.fn()}
       />
     )
     expect(screen.getAllByText('미지정')).toHaveLength(2)
+  })
+
+  it('워크스페이스에서는 RAG 자산 추가 버튼을 렌더하지 않는다', () => {
+    render(
+      <RagSelector
+        toneGroups={toneGroups}
+        formGroups={formGroups}
+        ragTone=""
+        ragForm=""
+        onToneChange={vi.fn()}
+        onFormChange={vi.fn()}
+      />
+    )
+    expect(screen.queryByTitle('어투 자산 업로드')).toBeNull()
+    expect(screen.queryByTitle('양식 자산 업로드')).toBeNull()
   })
 })

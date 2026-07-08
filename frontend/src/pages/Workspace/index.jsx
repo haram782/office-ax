@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 
 import { Topbar }           from '../../components/Topbar'
-import { getRagAssets, uploadRagAsset } from '../../api/client'
+import { getRagAssets } from '../../api/client'
 import { useChat }          from '../../hooks/useChat'
 import { useFileItems }     from '../../components/DocumentPanel'
 
@@ -54,19 +54,6 @@ export default function Workspace() {
     }
   }, [])
   useEffect(() => { refreshRagAssets() }, [refreshRagAssets])
-
-  const handleRagUpload = useCallback(async (kind, file) => {
-    const groupName = file.name.replace(/\.[^.]+$/, '')
-    try {
-      await uploadRagAsset(kind, groupName, file)
-      await refreshRagAssets()
-      // 방금 올린 그룹을 바로 선택해준다
-      if (kind === 'tone') setRagTone(groupName)
-      else setRagForm(groupName)
-    } catch {
-      // 업로드 실패 — 셀렉터 상태는 그대로 둔다
-    }
-  }, [refreshRagAssets])
 
   const ragAssetIds = useMemo(() => {
     const tone = ragGroups.tones.find(g => g.name === ragTone)?.assetIds ?? []
@@ -206,7 +193,6 @@ export default function Workspace() {
           onRagFormChange={setRagForm}
           ragToneGroups={ragGroups.tones}
           ragFormGroups={ragGroups.forms}
-          onRagUpload={handleRagUpload}
           ragAssetIds={ragAssetIds}
           activeConvTitle={activeConvTitle}
           onNewConversation={handleNewConversation}
