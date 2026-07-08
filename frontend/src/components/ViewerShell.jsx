@@ -15,6 +15,7 @@ import { ViewerToolbar } from '../pages/Workspace/ViewerToolbar'
  *   inputPanel:   ReactNode | null,
  *   children:     ReactNode,
  *   headerExtra:  ReactNode | null,
+ *   versionPanel: ReactNode | null,
  *   banner:       ReactNode | null,
  *   className:    string,
  * }} props
@@ -29,6 +30,7 @@ export function ViewerShell({
   inputPanel   = null,
   children,
   headerExtra  = null,
+  versionPanel = null,
   banner       = null,
   className    = 'flex-1 min-w-0 flex flex-col relative bg-zinc-50 dark:bg-zinc-950',
 }) {
@@ -72,6 +74,8 @@ export function ViewerShell({
 
       {/* 뷰어 툴바 — 다운로드 / 줌 / 히스토리 */}
       <ViewerToolbar artifactUrl={artifactUrl} onDownload={onDownload} zoom={zoom} onZoomChange={setZoom} />
+
+      {versionPanel}
 
       {/* 콘텐츠 영역: 뷰어(좌) + 사이드 패널(우) */}
       <div className="flex-1 min-h-0 overflow-hidden flex flex-row">
