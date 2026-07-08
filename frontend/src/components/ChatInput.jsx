@@ -32,8 +32,9 @@ export const ChatInput = forwardRef(function ChatInput({ onSend, isProcessing, d
     el.style.height = `${Math.min(el.scrollHeight, 128)}px`
   }, [text])
 
-  // disabled=true(파일 미선택) 또는 처리 중이면 전송 불가
-  const canSend = (text.trim() || files.length > 0) && !isProcessing && !disabled
+  const canAttach = !isProcessing
+  const canType = !isProcessing && !disabled
+  const canSend = !isProcessing && Boolean(files.length > 0 || (!disabled && text.trim()))
 
   const handleSend = () => {
     if (!canSend) return
@@ -92,8 +93,9 @@ export const ChatInput = forwardRef(function ChatInput({ onSend, isProcessing, d
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          disabled={isProcessing || disabled}
+          disabled={!canAttach}
           className="flex-shrink-0 p-2.5 rounded-xl text-gray-400 dark:text-zinc-500 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-zinc-800 disabled:opacity-40 transition-colors"
+          aria-label="파일 첨부"
           title="파일 첨부 (xlsx·xls·csv·pdf·docx·pptx·hwp·hwpx·png·jpg) — 여러 개 선택 가능"
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -118,7 +120,7 @@ export const ChatInput = forwardRef(function ChatInput({ onSend, isProcessing, d
           onFocus={onFocus}
           placeholder="메시지를 입력하세요…"
           rows={1}
-          disabled={isProcessing || disabled}
+          disabled={!canType}
           className="flex-1 resize-none rounded-xl border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800 px-3.5 py-2.5 text-sm text-gray-800 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500
             focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 focus:bg-white dark:focus:bg-zinc-700
             disabled:opacity-50 transition-all scroll-on-hover"
@@ -129,6 +131,7 @@ export const ChatInput = forwardRef(function ChatInput({ onSend, isProcessing, d
           type="button"
           onClick={handleSend}
           disabled={!canSend}
+          aria-label="전송"
           className="flex-shrink-0 w-10 h-10 rounded-xl bg-blue-600 hover:bg-blue-700 text-white
             disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center justify-center"
         >
