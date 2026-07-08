@@ -116,6 +116,13 @@ _MOCK_PATCH_PLAN = {
     ],
 }
 
+_MOCK_EMPTY_PATCH_PLAN = {
+    "schema": "office_ax.patch_plan.v0",
+    "plan_id": "plan_empty_intent_001",
+    "summary": "수정 항목 없음",
+    "operations": [],
+}
+
 
 # ── happy path ────────────────────────────────────────────────────────────────
 
@@ -207,6 +214,27 @@ class ChatPatchIntentHappyPathTest(TestCase):
         self.assertIn("version_id", assistant_msg.snippet_data)
         self.assertIn("changes", assistant_msg.snippet_data)
         self.assertIsNotNone(assistant_msg.snippet_data.get("version_id"))
+
+    def test_empty_patch_plan_callback_creates_terminal_patch_plan_snippet(self):
+        """operations=[] 결과도 프론트 폴링 종료용 patch_plan snippet을 저장한다."""
+        notify_patch_plan_generated(
+            chat_message_id=self.user_msg.pk,
+            upload_id=self.upload.pk,
+            prompt="없는 텍스트 교체",
+            result=_MOCK_EMPTY_PATCH_PLAN,
+        )
+
+        assistant_msg = ChatMessage.objects.filter(
+            session=self.session,
+            role=ChatMessage.Role.ASSISTANT,
+        ).last()
+
+        self.assertIsNotNone(assistant_msg)
+        self.assertTrue(assistant_msg.has_snippet, "빈 결과도 완료 마커가 있어야 한다")
+        self.assertEqual(assistant_msg.snippet_data.get("type"), "patch_plan")
+        self.assertIsNone(assistant_msg.snippet_data.get("version_id"))
+        self.assertEqual(assistant_msg.snippet_data.get("changes"), [])
+        self.assertEqual(assistant_msg.snippet_data.get("plan_id"), "plan_empty_intent_001")
 
     @patch("apps.chat.tasks.current_app.send_task", side_effect=RuntimeError("redis down"))
     def test_patch_intent_enqueue_failure_creates_error_message(self, _mock_send_task):
