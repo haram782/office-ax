@@ -7,8 +7,6 @@ import { RagSelector }     from './RagSelector'
 /** 빈 대화 환영 화면 */
 function WelcomeScreen({ onChipClick }) {
   const chips = [
-    { label: '날짜 형식 통일',    key: 'date',     icon: 'history'   },
-    { label: '표 서식 정렬',      key: 'table',    icon: 'layout'    },
     { label: '개인정보 마스킹',   key: 'mask',     icon: 'sparkles'  },
     { label: '보정 파일 다운로드', key: 'download', icon: 'download'  },
   ]
@@ -71,7 +69,6 @@ export function WorkspaceChat({
   onRagFormChange,
   ragToneGroups = [],
   ragFormGroups = [],
-  onRagUpload,
   ragAssetIds = [],
   activeConvTitle,
   onNewConversation,
@@ -108,11 +105,8 @@ export function WorkspaceChat({
   // 빠른 칩 → 미리 정의된 텍스트 전송
   function handleChip(key) {
     const presets = {
-      date:     '날짜 형식을 YYYY-MM-DD로 통일해줘',
-      table:    '표 셀 서식을 자동 정렬해줘',
       mask:     '개인정보를 자동 마스킹해줘',
       download: '보정된 파일을 다운로드하고 싶어',
-      repeat:   '반복 작업으로 등록하고 싶어',
     }
     if (presets[key]) onSend(presets[key], [])
   }
@@ -174,26 +168,7 @@ export function WorkspaceChat({
           onFormChange={onRagFormChange}
           toneGroups={ragToneGroups}
           formGroups={ragFormGroups}
-          onUpload={onRagUpload}
         />
-
-        {/* 빠른 칩 */}
-        <div className="px-3 pt-2.5 flex flex-wrap gap-1.5">
-          {[
-            { label: '날짜 형식 통일', key: 'date',   icon: 'history'  },
-            { label: '표 서식 정렬',   key: 'table',  icon: 'layout'   },
-            { label: '반복 작업 실행', key: 'repeat', icon: 'zap' },
-          ].map(c => (
-            <button
-              key={c.key}
-              onClick={() => { c.extra?.(); handleChip(c.key) }}
-              className="inline-flex items-center gap-1.5 rounded-full border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-700 text-[11px] px-2.5 py-1 text-zinc-600 dark:text-zinc-300"
-            >
-              <Ic name={c.icon} className="w-3.5 h-3.5" />
-              {c.label}
-            </button>
-          ))}
-        </div>
 
         {/* [보류] 후 정정 안내 문구 */}
         {uploadId && inputGuidance && (

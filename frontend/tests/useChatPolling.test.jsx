@@ -57,6 +57,14 @@ const QA_MSG = {
   created_at: new Date().toISOString(),
 }
 
+const FILE_ANALYSIS_MSG = {
+  id: 'a4',
+  role: 'assistant',
+  content: '첨부 문서를 분석했습니다.',
+  snippet_data: null,
+  created_at: new Date().toISOString(),
+}
+
 // ── 헬퍼 ────────────────────────────────────────────────────────────────────
 
 /** 훅 마운트 후 세션 초기화(getChatSessions)가 완료될 때까지 대기 */
@@ -152,6 +160,24 @@ describe('useChat — 폴링 종료 조건 (인터벌)', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(2500) })
     expect(result.current.isProcessing).toBe(false)
   })
+
+  it('[regression] 파일 업로드 분석은 snippet_data 없는 일반 응답에도 폴링이 종료된다', async () => {
+    mockGetChatMessages
+      .mockResolvedValueOnce([])                  // baseline
+      .mockResolvedValueOnce([])                  // afterSend
+      .mockResolvedValueOnce([FILE_ANALYSIS_MSG]) // poll tick 1 → 파일 분석 완료
+
+    const file = new File(['문서'], 'sample.pdf', { type: 'application/pdf' })
+    const { result } = await mountAndInit()
+    await sendAndFlush(result, '분석해줘', [file], null)
+
+    expect(result.current.isProcessing).toBe(true)
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500) })
+
+    expect(result.current.isProcessing).toBe(false)
+    expect(result.current.error).toBeNull()
+  })
 })
 
 // ── 즉시 응답 테스트 (fake timers 환경에서 수행) ─────────────────────────────
@@ -172,6 +198,19 @@ describe('useChat — 즉시 응답 (afterSend snippet_data.type 있음)', () =>
     await sendAndFlush(result, '질문', [], null)
 
     // sendMessage 완료 직후 — 폴링 시작 없이 종료됐으면 2번만 호출
+    expect(mockGetChatMessages).toHaveBeenCalledTimes(2)
+  })
+
+  it('[regression] 파일 업로드 afterSend에 plain assistant 응답이 있으면 인터벌 없이 종료된다', async () => {
+    mockGetChatMessages
+      .mockResolvedValueOnce([])                  // baseline
+      .mockResolvedValueOnce([FILE_ANALYSIS_MSG]) // afterSend → 즉시 종료
+
+    const file = new File(['문서'], 'sample.pdf', { type: 'application/pdf' })
+    const { result } = await mountAndInit()
+    await sendAndFlush(result, '분석해줘', [file], null)
+
+    expect(result.current.isProcessing).toBe(false)
     expect(mockGetChatMessages).toHaveBeenCalledTimes(2)
   })
 })
