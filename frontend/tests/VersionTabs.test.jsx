@@ -9,9 +9,9 @@ import { describe, it, expect, vi } from 'vitest'
 import { VersionTabs } from '../src/pages/Workspace/VersionTabs'
 
 const VERSIONS = [
-  { id: 1, version_number: 1, status: 'original',   label: '원본' },
-  { id: 2, version_number: 2, status: 'ready',      label: '수정본' },
-  { id: 3, version_number: 3, status: 'generating', label: '생성 중' },
+  { id: 1, version_number: 1, status: 'original',   label: '원본',   created_at: '2026-07-08T05:10:00' },
+  { id: 2, version_number: 2, status: 'ready',      label: '수정본', created_at: '2026-07-08T05:20:00', updated_at: '2026-07-08T05:25:00' },
+  { id: 3, version_number: 3, status: 'generating', label: '생성 중', created_at: '2026-07-08T05:30:00' },
 ]
 
 describe('VersionTabs', () => {
@@ -19,6 +19,7 @@ describe('VersionTabs', () => {
     render(<VersionTabs versions={[]} selectedVersionId={null} onSelectVersion={vi.fn()} />)
 
     expect(screen.getByText('원본')).toBeInTheDocument()
+    expect(screen.getByText('v1')).toBeInTheDocument()
     // ready/generating 탭 없음
     expect(screen.queryByText('수정본')).not.toBeInTheDocument()
   })
@@ -33,7 +34,7 @@ describe('VersionTabs', () => {
     )
     // id=1 (원본) 탭 버튼이 aria-pressed 또는 data-active 속성으로 식별 가능
     // 또는 role=tab + aria-selected 사용
-    const activeTab = screen.getByRole('button', { name: '원본' })
+    const activeTab = screen.getByRole('button', { name: /원본/ })
     expect(activeTab).toHaveAttribute('data-active', 'true')
   })
 
@@ -50,6 +51,14 @@ describe('VersionTabs', () => {
     await userEvent.click(screen.getByRole('button', { name: /수정본/ }))
 
     expect(onSelectVersion).toHaveBeenCalledWith(VERSIONS[1])
+  })
+
+  it('탭에 버전 번호와 날짜 시간이 함께 표시된다', () => {
+    render(<VersionTabs versions={VERSIONS} selectedVersionId={1} onSelectVersion={vi.fn()} />)
+
+    expect(screen.getByText(/v2 ·/)).toBeInTheDocument()
+    expect(screen.getByText(/05:25/)).toBeInTheDocument()
+    expect(screen.getByText('완료')).toBeInTheDocument()
   })
 
   it('generating 상태 탭은 disabled이다', () => {

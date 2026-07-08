@@ -88,6 +88,16 @@ describe('ViewerShell', () => {
     expect(screen.queryByTestId('header-logo')).not.toBeInTheDocument()
   })
 
+  it('versionPanel이 있으면 툴바 아래에 렌더한다', () => {
+    render(
+      <ViewerShell filename="test.hwp" onClose={null} onNewWindow={null} versionPanel={<div data-testid="version-panel">버전 탭</div>}>
+        <div>뷰어</div>
+      </ViewerShell>,
+    )
+
+    expect(screen.getByTestId('version-panel')).toBeInTheDocument()
+  })
+
   it('onNewWindow가 있으면 새 창 버튼이 렌더되고 클릭 시 호출된다', async () => {
     const onNewWindow = vi.fn()
     render(

@@ -168,11 +168,11 @@ class DocumentVersionListTest(TestCase):
         self.assertEqual(len(resp.data), 2)
 
     def test_list_contains_expected_fields(self):
-        """응답에 id, version_number, status, label, applied_change_ids, created_at이 포함된다."""
+        """응답에 버전 탭 표시와 파일 조회에 필요한 요약 필드가 포함된다."""
         resp = self.client.get(f"/api/v1/uploads/{self.upload.pk}/versions/")
         self.assertEqual(resp.status_code, 200)
         item = resp.data[0]
-        for field in ("id", "version_number", "status", "label", "applied_change_ids", "created_at"):
+        for field in ("id", "version_number", "status", "label", "applied_change_ids", "created_at", "updated_at"):
             self.assertIn(field, item, f"응답에 {field} 필드가 있어야 한다")
 
     def test_other_user_gets_403(self):

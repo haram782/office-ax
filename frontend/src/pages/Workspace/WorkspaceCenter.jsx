@@ -94,29 +94,48 @@ export function WorkspaceCenter({
 
   // 선택된 버전 ID (기본값: 원본 버전 ID 또는 null)
   const [selectedVersionId, setSelectedVersionId] = useState(null)
+  const [versionBlobUrl, setVersionBlobUrl] = useState(null)
+  const lastEditingVersionIdRef = useRef(null)
 
-  // versions 목록이 처음 로드될 때 원본 버전을 기본 선택
+  useEffect(() => {
+    lastEditingVersionIdRef.current = null
+    setSelectedVersionId(null)
+    setVersionBlobUrl(prev => {
+      if (prev) URL.revokeObjectURL(prev)
+      return null
+    })
+  }, [uploadId])
+
+  // versions 목록이 처음 로드될 때 현재 편집 버전이 있으면 우선 선택하고, 없으면 원본을 선택
   useEffect(() => {
     if (versions.length === 0) return
     if (selectedVersionId !== null) return
+    const editingVersion = versionId ? versions.find(v => v.id === versionId) : null
     const original = versions.find(v => v.status === 'original')
-    if (original) setSelectedVersionId(original.id)
-  }, [versions, selectedVersionId])
+    setSelectedVersionId((editingVersion ?? original ?? versions[0]).id)
+  }, [versions, selectedVersionId, versionId])
+
+  useEffect(() => {
+    if (!versionId || versions.length === 0) return
+    if (String(lastEditingVersionIdRef.current) === String(versionId)) return
+    const editingVersion = versions.find(v => String(v.id) === String(versionId))
+    if (!editingVersion) return
+    lastEditingVersionIdRef.current = versionId
+    setSelectedVersionId(editingVersion.id)
+  }, [versionId, versions])
 
   // 버전 선택 시 Blob URL 관리 — 원본이 아닌 수정본 선택 시 파일을 내려받는다
-  const [versionBlobUrl, setVersionBlobUrl] = useState(null)
-
   const handleSelectVersion = useCallback(async (version) => {
     setSelectedVersionId(version.id)
 
-    if (version.status === 'original') {
-      // 원본 — 이전 Blob URL 해제 후 원본 fileUrl로 복귀
+    if (version.status !== 'ready') {
+      // 원본·초안·생성 실패 버전은 별도 artifact가 없으므로 원본 fileUrl로 복귀
       if (versionBlobUrl) URL.revokeObjectURL(versionBlobUrl)
       setVersionBlobUrl(null)
       return
     }
 
-    // 수정본 — on-demand 다운로드 후 Blob URL 생성
+    // 완료된 수정본 — on-demand 다운로드 후 Blob URL 생성
     try {
       if (versionBlobUrl) URL.revokeObjectURL(versionBlobUrl)
       const blobUrl = await fetchVersionFileBlob(uploadId, version.id)
@@ -159,11 +178,23 @@ export function WorkspaceCenter({
   }, [patchStatus, versionId, versions, handleSelectVersion, suggestions, setStatuses])
 
   // 뷰어에 전달할 fileUrl — 수정본 선택 시 Blob URL, 원본 선택 시 previewData.fileUrl
-  const selectedIsOriginal = useMemo(() => {
-    if (!selectedVersionId || versions.length === 0) return true
-    const v = versions.find(v => v.id === selectedVersionId)
-    return !v || v.status === 'original'
+  const selectedVersion = useMemo(() => {
+    if (!selectedVersionId || versions.length === 0) return null
+    return versions.find(v => v.id === selectedVersionId) ?? null
   }, [selectedVersionId, versions])
+
+  const selectedUsesOriginalFile = useMemo(() => {
+    if (!selectedVersionId || versions.length === 0) return true
+    return !selectedVersion || selectedVersion.status !== 'ready'
+  }, [selectedVersionId, versions, selectedVersion])
+
+  const selectedShowsCurrentChanges = useMemo(() => {
+    if (!versionId || !selectedVersionId) return suggestions.length > 0
+    return String(selectedVersionId) === String(versionId)
+  }, [selectedVersionId, versionId, suggestions.length])
+
+  const visibleSuggestions = selectedShowsCurrentChanges ? suggestions : []
+  const visibleHighlights = selectedShowsCurrentChanges ? highlights : []
 
   // 최종본 다운로드 (Fix A) — 선택된 버전 기준으로 실제 파일을 내려받는다.
   // 수정본: 버전 파일 API의 Blob을 a[download]로 저장. 원본: 원본 fileUrl 저장.
@@ -180,7 +211,7 @@ export function WorkspaceCenter({
       a.remove()
     }
 
-    if (!selected || selected.status === 'original') {
+    if (!selected || selected.status !== 'ready') {
       if (previewData?.fileUrl) saveAs(previewData.fileUrl, filename)
       return
     }
@@ -202,9 +233,9 @@ export function WorkspaceCenter({
   // previewData가 null인 동안에도 훅은 항상 호출돼야 하므로 early return보다 위에 둔다
   const effectivePreviewData = useMemo(() => {
     if (!previewData) return previewData
-    if (selectedIsOriginal || !versionBlobUrl) return previewData
+    if (selectedUsesOriginalFile || !versionBlobUrl) return previewData
     return { ...previewData, fileUrl: versionBlobUrl }
-  }, [previewData, selectedIsOriginal, versionBlobUrl])
+  }, [previewData, selectedUsesOriginalFile, versionBlobUrl])
 
   // 파일 미선택 상태 — 모든 hook 호출 이후에 early return
   if (!previewData) {
@@ -230,7 +261,7 @@ export function WorkspaceCenter({
         localStorage.setItem('ax_preview_data', JSON.stringify(previewData))
         window.open('/preview', '_blank')
       }}
-      headerExtra={
+      versionPanel={
         <VersionTabs
           versions={versions}
           selectedVersionId={selectedVersionId}
@@ -238,9 +269,9 @@ export function WorkspaceCenter({
         />
       }
       sidePanel={
-        suggestions.length > 0 ? (
+        visibleSuggestions.length > 0 ? (
           <ChangeSuggestionPanel
-            suggestions={suggestions}
+            suggestions={visibleSuggestions}
             statuses={statuses}
             pendingIds={pendingIds}
             onSetStatus={handleSetStatus}
@@ -253,7 +284,7 @@ export function WorkspaceCenter({
             uploadId={uploadId}
             versionId={versionId}
             patchStatus={patchStatus}
-            onPatch={versionId ? trigger : null}
+            onPatch={selectedShowsCurrentChanges && versionId ? trigger : null}
           />
         ) : null
       }
@@ -261,7 +292,7 @@ export function WorkspaceCenter({
       banner={showBanner ? <AutomationBanner workflow={suggestedWorkflow} onDismiss={onDismissBanner} /> : null}
     >
       {resolveViewer(effectivePreviewData, {
-        highlights,
+        highlights:            visibleHighlights,
         selectedHighlightId:  selectedSuggestionId,
         onSelectHighlight:    handleSelectHighlight,
       })}

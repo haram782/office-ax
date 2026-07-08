@@ -70,7 +70,7 @@ export async function acceptAllChanges(uploadId, versionId, changeIds = null) {
  * 업로드에 속한 DocumentVersion 목록을 조회한다.
  *
  * @param {number|string} uploadId
- * @returns {Promise<Array<{ id, version_number, status, label, summary, applied_change_ids, created_at }>>}
+ * @returns {Promise<Array<{ id, version_number, status, label, summary, applied_change_ids, created_at, updated_at }>>}
  */
 export async function fetchDocumentVersions(uploadId) {
   const { data } = await api.get(`/uploads/${uploadId}/versions/`)
