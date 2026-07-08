@@ -449,10 +449,19 @@ def notify_patch_plan_generated(
     if version_id is None:
         # operations 빈 배열 → 수정할 항목 없음 안내
         content = "요청하신 내용에 해당하는 수정 항목을 찾지 못했습니다. 더 구체적인 내용으로 다시 요청해 주세요."
+        snippet_data = {
+            "type":       "patch_plan",
+            "version_id": None,
+            "upload_id":  upload_id,
+            "plan_id":    plan_id,
+            "changes":    [],
+        }
         ChatMessage.objects.create(
             session=session,
             role=ChatMessage.Role.ASSISTANT,
             content=content,
+            has_snippet=True,
+            snippet_data=snippet_data,
         )
         record_usage_event(
             user=user,
