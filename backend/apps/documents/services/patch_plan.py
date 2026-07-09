@@ -79,6 +79,7 @@ def _build_file_context(upload_log: UploadLog) -> dict:
         "snippet_data": snippet,
         "summary": result.get("summary", ""),
         "errors": result.get("errors", []),
+        "document_text": result.get("document_text", ""),
     }
 
 

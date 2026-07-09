@@ -16,6 +16,7 @@ from llm.base import AnalysisResult
 from tasks.generate_patch_plan import (
     _build_patch_plan_prompt,
     _coerce_patch_plan,
+    _maybe_build_simple_replace_plan,
     _run_generate_patch_plan,
     _send_callback,
 )
@@ -53,14 +54,40 @@ class GeneratePatchPlanTaskTest(unittest.TestCase):
             {
                 "filename": "sales.xlsx",
                 "source_type": "excel",
+                "document_text": "문서 본문 test",
                 "snippet_data": {"corrections": [{"cell": "A2"}]},
             },
         )
 
         self.assertIn("sales.xlsx", prompt)
         self.assertIn("excel", prompt)
+        self.assertIn("문서 본문 test", prompt)
         self.assertIn("A2", prompt)
         self.assertIn("A2를 고쳐줘", prompt)
+
+    def test_simple_hwp_replace_plan_uses_document_text_without_llm(self):
+        """본문에 있는 명시적 텍스트 교체는 deterministic replace_text PatchPlan으로 만든다."""
+        plan = _maybe_build_simple_replace_plan(
+            "문서 내 'test' 문구를 '박하람'으로 교체",
+            {"source_type": "hwp", "document_text": "이것은 테스트 문서입니다 Test"},
+        )
+
+        self.assertIsNotNone(plan)
+        op = plan["operations"][0]
+        self.assertEqual(op["format"], "hwp")
+        self.assertEqual(op["operation"], "replace_text")
+        self.assertEqual(op["original"], "test")
+        self.assertEqual(op["replacement"], "박하람")
+        self.assertEqual(op["anchor"]["occurrence"], 1)
+
+    def test_simple_replace_plan_returns_none_when_text_absent(self):
+        """본문에 없는 텍스트는 deterministic plan을 만들지 않고 LLM 경로로 넘긴다."""
+        plan = _maybe_build_simple_replace_plan(
+            "문서 내 'missing' 문구를 '박하람'으로 교체",
+            {"source_type": "hwp", "document_text": "이것은 테스트 문서입니다 Test"},
+        )
+
+        self.assertIsNone(plan)
 
     @patch("tasks.generate_patch_plan.get_llm_client")
     def test_run_generate_patch_plan_uses_registered_llm_client(self, mock_get_client):
@@ -82,6 +109,17 @@ class GeneratePatchPlanTaskTest(unittest.TestCase):
         self.assertEqual(plan["model_used"], "gemini/mock")
         mock_get_client.assert_called_once()
         mock_client.analyze.assert_called_once()
+
+    @patch("tasks.generate_patch_plan.get_llm_client")
+    def test_run_generate_patch_plan_skips_llm_for_simple_hwp_replace(self, mock_get_client):
+        """단순 HWP 텍스트 교체는 LLM 호출 없이 PatchPlan을 생성한다."""
+        plan = _run_generate_patch_plan(
+            "문서 내 'test' 문구를 '박하람'으로 교체",
+            {"filename": "sample.hwp", "source_type": "hwp", "document_text": "Test"},
+        )
+
+        self.assertEqual(plan["operations"][0]["operation"], "replace_text")
+        mock_get_client.assert_not_called()
 
     def test_coerce_patch_plan_contains_usage_keys(self):
         """PatchPlan 결과 dict에 usage/model/provider 계약 키가 채워진다."""

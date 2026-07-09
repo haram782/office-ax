@@ -55,6 +55,7 @@ class TestAnalyzeDocumentUsageKeys(unittest.TestCase):
         self.assertEqual(output["usage"]["token_source"], "provider_reported")
         self.assertEqual(output["model"], "gpt-4o")
         self.assertEqual(output["provider"], "openai")
+        self.assertEqual(output["document_text"], "csv 마스킹 텍스트")
 
 
 class TestScannedDocumentGuidance(unittest.TestCase):
@@ -123,6 +124,7 @@ class TestScannedDocumentGuidance(unittest.TestCase):
 
         self.assertEqual(output["source_type"], "pdf_digital")
         self.assertEqual(output["summary"], "분석 완료")
+        self.assertEqual(output["document_text"], "마스킹된 본문")
         mock_client.analyze.assert_called_once()
 
 
