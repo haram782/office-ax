@@ -440,7 +440,9 @@ function PdfViewer({ previewData, highlights = [], selectedHighlightId = null, o
     if (!fileUrl) return
     let cancelled = false
 
-    setPdfDoc(prev => { prev?.destroy(); return null })
+    // pdfjs v6: destroy()는 PDFDocumentLoadingTask에만 있고 PDFDocumentProxy에는 없다
+    // (언마운트 정리 effect와 동일 규칙 — 아래 unmount cleanup effect 참고)
+    setPdfDoc(prev => { prev?.loadingTask?.destroy(); return null })
     setNumPages(0)
     setCurrentPage(1)
     setErrMsg('')
