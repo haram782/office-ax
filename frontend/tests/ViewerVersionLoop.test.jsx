@@ -95,18 +95,20 @@ describe('PatchPlanBubble 변경 항목 체크박스', () => {
     expect(screen.getByText(/날짜 형식 통일/)).toBeInTheDocument()
   })
 
-  it('체크박스는 기본 전체 선택 상태이고 버튼 라벨은 [전체 반영]이다', () => {
+  it('체크박스는 기본 전체 선택 상태이고 선택 반영/전체 반영/보류 버튼이 함께 보인다', () => {
     render(<MessageBubble message={makePatchPlanMessage(TWO_CHANGES)} onAcceptPatch={vi.fn()} />)
     const boxes = screen.getAllByRole('checkbox')
     expect(boxes).toHaveLength(2)
     expect(boxes.every(b => b.checked)).toBe(true)
+    expect(screen.getByText('선택 반영')).toBeInTheDocument()
     expect(screen.getByText('전체 반영')).toBeInTheDocument()
+    expect(screen.getByText('보류')).toBeInTheDocument()
   })
 
-  it('하나를 해제하면 버튼 라벨이 [선택 반영 (1/2)]로 바뀐다', () => {
+  it('하나를 해제해도 선택 반영 버튼은 그대로 유지된다', () => {
     render(<MessageBubble message={makePatchPlanMessage(TWO_CHANGES)} onAcceptPatch={vi.fn()} />)
     fireEvent.click(screen.getAllByRole('checkbox')[1])
-    expect(screen.getByText(/선택 반영 \(1\/2\)/)).toBeInTheDocument()
+    expect(screen.getByText('선택 반영')).toBeInTheDocument()
   })
 
   it('부분 선택 후 반영 클릭 시 선택된 change id 배열로 onAcceptPatch를 호출한다', async () => {
@@ -114,7 +116,7 @@ describe('PatchPlanBubble 변경 항목 체크박스', () => {
     render(<MessageBubble message={makePatchPlanMessage(TWO_CHANGES)} onAcceptPatch={onAcceptPatch} />)
 
     fireEvent.click(screen.getAllByRole('checkbox')[1]) // 502 해제
-    fireEvent.click(screen.getByText(/선택 반영/))
+    fireEvent.click(screen.getByText('선택 반영'))
 
     await waitFor(() => expect(onAcceptPatch).toHaveBeenCalledWith([501]))
   })
@@ -130,6 +132,19 @@ describe('PatchPlanBubble 변경 항목 체크박스', () => {
   it('[경계] 전부 해제하면 반영 버튼이 비활성화된다', () => {
     render(<MessageBubble message={makePatchPlanMessage(TWO_CHANGES)} onAcceptPatch={vi.fn()} />)
     screen.getAllByRole('checkbox').forEach(b => fireEvent.click(b))
-    expect(screen.getByText(/선택 반영 \(0\/2\)/).closest('button')).toBeDisabled()
+    expect(screen.getByText('선택 반영').closest('button')).toBeDisabled()
+    expect(screen.getByText('전체 반영').closest('button')).not.toBeDisabled()
+  })
+
+  it('선택 반영 성공 후 체크박스와 액션 버튼이 사라진다', async () => {
+    const onAcceptPatch = vi.fn().mockResolvedValue()
+    render(<MessageBubble message={makePatchPlanMessage(TWO_CHANGES)} onAcceptPatch={onAcceptPatch} />)
+
+    fireEvent.click(screen.getByText('선택 반영'))
+
+    await waitFor(() => expect(screen.queryByRole('checkbox')).toBeNull())
+    expect(screen.queryByText('선택 반영')).toBeNull()
+    expect(screen.queryByText('전체 반영')).toBeNull()
+    expect(screen.queryByText('보류')).toBeNull()
   })
 })

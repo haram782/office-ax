@@ -113,6 +113,7 @@ function changeItemLabel(change) {
  */
 function PatchPlanBubble({ message, onAcceptPatch, onRejectPatch }) {
   const [isAccepting, setIsAccepting] = useState(false)
+  const [isResolved, setIsResolved] = useState(false)
   const { content, snippet_data } = message
   // BE는 snippet_data.changes로 저장 — patch_changes는 구버전 키
   const changes = snippet_data?.changes ?? snippet_data?.patch_changes ?? []
@@ -121,7 +122,6 @@ function PatchPlanBubble({ message, onAcceptPatch, onRejectPatch }) {
   // 체크된 change id 집합 — 기본 전체 선택
   const [checkedIds, setCheckedIds] = useState(() => new Set(changes.map(c => c.id)))
   const checkedCount = checkedIds.size
-  const allChecked = checkedCount === patchCount
 
   const toggleChecked = useCallback((id) => {
     setCheckedIds(prev => {
@@ -132,17 +132,36 @@ function PatchPlanBubble({ message, onAcceptPatch, onRejectPatch }) {
     })
   }, [])
 
-  const handleAccept = useCallback(async () => {
+  const selectedChangeIds = useCallback(() => (
+    changes.filter(c => checkedIds.has(c.id)).map(c => c.id)
+  ), [changes, checkedIds])
+
+  const handleAcceptSelected = useCallback(async () => {
     if (isAccepting || checkedCount === 0) return
     setIsAccepting(true)
     try {
-      // 전체 선택이면 기존 계약(인자 없음 = 전체 반영)을 유지한다
-      if (allChecked) await onAcceptPatch?.()
-      else await onAcceptPatch?.(changes.filter(c => checkedIds.has(c.id)).map(c => c.id))
+      await onAcceptPatch?.(selectedChangeIds())
+      setIsResolved(true)
     } finally {
       setIsAccepting(false)
     }
-  }, [isAccepting, checkedCount, allChecked, changes, checkedIds, onAcceptPatch])
+  }, [isAccepting, checkedCount, selectedChangeIds, onAcceptPatch])
+
+  const handleAcceptAll = useCallback(async () => {
+    if (isAccepting || patchCount === 0) return
+    setIsAccepting(true)
+    try {
+      await onAcceptPatch?.()
+      setIsResolved(true)
+    } finally {
+      setIsAccepting(false)
+    }
+  }, [isAccepting, patchCount, onAcceptPatch])
+
+  const handleReject = useCallback(() => {
+    onRejectPatch?.()
+    setIsResolved(true)
+  }, [onRejectPatch])
 
   return (
     <div className="rounded-2xl rounded-bl-sm border border-blue-200 dark:border-blue-700 bg-blue-50/50 dark:bg-blue-900/20 shadow-sm overflow-hidden">
@@ -154,7 +173,7 @@ function PatchPlanBubble({ message, onAcceptPatch, onRejectPatch }) {
       )}
 
       {/* 변경 항목 체크박스 리스트 */}
-      {patchCount > 0 && (
+      {patchCount > 0 && !isResolved && (
         <div className="px-4 py-2 border-t border-blue-200/60 dark:border-blue-700/60">
           <div className="text-xs text-blue-600 dark:text-blue-400 font-medium mb-1.5">
             📝 {patchCount}개 변경사항 준비됨
@@ -185,26 +204,38 @@ function PatchPlanBubble({ message, onAcceptPatch, onRejectPatch }) {
         </div>
       )}
 
-      {/* 선택/전체 반영 · 보류 버튼 */}
-      <div className="px-4 py-2.5 border-t border-blue-200/60 dark:border-blue-700/60 flex gap-2">
-        <button
-          onClick={handleAccept}
-          disabled={isAccepting || checkedCount === 0}
-          className="flex-1 flex items-center justify-center gap-1.5 text-xs font-semibold py-1.5 px-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-        >
-          {isAccepting && (
-            <span className="w-3 h-3 border border-white border-t-transparent rounded-full animate-spin" />
-          )}
-          {allChecked ? '전체 반영' : `선택 반영 (${checkedCount}/${patchCount})`}
-        </button>
-        <button
-          onClick={() => onRejectPatch?.()}
-          disabled={isAccepting}
-          className="flex-1 text-xs font-semibold py-1.5 px-3 rounded-lg border border-zinc-300 dark:border-zinc-600 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-        >
-          보류
-        </button>
-      </div>
+      {/* 선택 반영 · 전체 반영 · 보류 버튼 */}
+      {patchCount > 0 && !isResolved && (
+        <div className="px-4 py-2.5 border-t border-blue-200/60 dark:border-blue-700/60 grid grid-cols-3 gap-2">
+          <button
+            onClick={handleAcceptSelected}
+            disabled={isAccepting || checkedCount === 0}
+            className="flex items-center justify-center gap-1 text-xs font-semibold py-1.5 px-2 rounded-lg border border-blue-300 dark:border-blue-700 text-blue-700 dark:text-blue-300 bg-white/70 dark:bg-blue-950/20 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {isAccepting && (
+              <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />
+            )}
+            선택 반영
+          </button>
+          <button
+            onClick={handleAcceptAll}
+            disabled={isAccepting}
+            className="flex items-center justify-center gap-1 text-xs font-semibold py-1.5 px-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {isAccepting && (
+              <span className="w-3 h-3 border border-white border-t-transparent rounded-full animate-spin" />
+            )}
+            전체 반영
+          </button>
+          <button
+            onClick={handleReject}
+            disabled={isAccepting}
+            className="text-xs font-semibold py-1.5 px-2 rounded-lg border border-zinc-300 dark:border-zinc-600 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            보류
+          </button>
+        </div>
+      )}
     </div>
   )
 }
