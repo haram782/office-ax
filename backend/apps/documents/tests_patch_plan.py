@@ -101,6 +101,7 @@ def _make_done_upload(user, hash_val="patch_plan_hash"):
         result={
             "source_type": "excel",
             "summary": "분석 완료",
+            "document_text": "문서 본문 test",
             "errors": ["날짜 형식 오류"],
             "snippet_data": {
                 "corrections": [{"cell": "A2", "issue": "날짜 형식 불일치"}]
@@ -251,3 +252,20 @@ class PatchPlanLLMDispatchTest(TestCase):
             "날짜 형식을 고쳐줘",
         )
         async_result.get.assert_called_once()
+
+    @patch("apps.documents.services.patch_plan.current_app.send_task")
+    def test_generate_patch_plan_passes_document_text_to_ax_engine(self, mock_send_task):
+        """UploadLog.result.document_text가 ax-engine file_context로 전달된다."""
+        async_result = MagicMock()
+        async_result.get.return_value = _MOCK_EMPTY_PLAN
+        mock_send_task.return_value = async_result
+
+        user = _make_user("patch_plan_context_user")
+        upload = _make_done_upload(user, hash_val="patch_plan_context_hash")
+
+        from apps.documents.services.patch_plan import PatchPlanService
+
+        PatchPlanService.generate(upload.pk, "test를 수정해줘", user)
+
+        file_context = mock_send_task.call_args.kwargs["kwargs"]["file_context"]
+        self.assertEqual(file_context["document_text"], "문서 본문 test")

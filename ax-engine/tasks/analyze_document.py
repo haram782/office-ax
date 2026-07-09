@@ -19,6 +19,7 @@ from prompts.document_analysis import DOCUMENT_ANALYSIS_PROMPT
 logger = get_task_logger(__name__)
 
 _OCR_TEXT_THRESHOLD = 50  # 이 글자 수 미만이면 스캔 PDF로 판정
+_PATCH_CONTEXT_TEXT_LIMIT = 20000
 
 # suffix → (parser_fn, source_type)
 # source_type 값은 UserActionLog.FileType 값과 일치시킨다
@@ -85,6 +86,11 @@ def _unsupported_scan_output(upload_id: int, source_type: str) -> dict:
         "docx_page_count": 0,
         "pptx_structured": [],
     }
+
+
+def _patch_context_text(text: str) -> str:
+    """PatchPlan 생성에 사용할 마스킹된 본문 스냅샷을 제한 길이로 보관한다."""
+    return (text or "")[:_PATCH_CONTEXT_TEXT_LIMIT]
 
 
 def _route_callback(task_self, chat_message_id: int | None, upload_id: int, output: dict) -> None:
@@ -216,6 +222,7 @@ def analyze_document(
             "model":        result.model_used,
             "provider":     result.provider,
             "pii_redacted": pii_counts,
+            "document_text": _patch_context_text(masked_text),
             "source_type":  source_type,
             "action_tag":   _ACTION_TAGS.get(source_type, "#문서_분석"),
             "artifact_url": artifact_url,
