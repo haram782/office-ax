@@ -66,9 +66,19 @@ export default function Workspace() {
   const showBanner = Boolean(suggestedWorkflow)
 
   // ── 채팅 patch_plan 연동 ────────────────────────────────────────────────────
-  // PatchRequestInput 또는 채팅 patch_plan 메시지로부터 받은 patch 데이터
-  // WorkspaceCenter 내부에서 관리하던 것을 채팅 연동을 위해 여기서 관리한다
-  const [localPatchData, setLocalPatchData] = useState(null)
+  // 최신 patch_plan 메시지를 렌더 시점에 바로 반영한다.
+  // useEffect로 한 박자 늦게 동기화하면 채팅 [전체 반영] 클릭이 stale handler를 탈 수 있다.
+  const localPatchData = useMemo(() => {
+    const last = [...messages].reverse().find(
+      m => m.snippet_data?.type === 'patch_plan' &&
+           (viewingFileId == null || m.snippet_data?.upload_id === viewingFileId),
+    )
+    if (!last) return null
+    const pd = last.snippet_data
+    const changes = pd?.changes ?? pd?.patch_changes
+    if (!Array.isArray(changes)) return null
+    return { version_id: pd.version_id ?? null, patch_changes: changes }
+  }, [messages, viewingFileId])
 
   // WorkspaceCenter가 마운트될 때 handleAcceptAll 함수를 등록하는 ref
   // 채팅 [전체 반영] 클릭 시 우측 패널과 동일한 acceptAll 로직을 실행한다
@@ -79,26 +89,6 @@ export default function Workspace() {
   const handleChatAcceptAll = useCallback(async (changeIds = null) => {
     await acceptAllFnRef.current?.(changeIds)
   }, [])
-
-  // 최신 patch_plan 메시지 감지 → localPatchData 자동 설정.
-  // viewingFileId가 바뀌면 즉시 재실행해 다른 파일의 patch 데이터가 남지 않도록 한다.
-  // upload_id 기준으로 현재 보는 파일과 일치하는 patch_plan만 채택한다.
-  useEffect(() => {
-    const last = [...messages].reverse().find(
-      m => m.snippet_data?.type === 'patch_plan' &&
-           (viewingFileId == null || m.snippet_data?.upload_id === viewingFileId),
-    )
-    if (!last) {
-      setLocalPatchData(null)
-      return
-    }
-    const pd = last.snippet_data
-    // BE는 snippet_data.changes로 저장 — patch_changes는 구버전 키
-    const changes = pd?.changes ?? pd?.patch_changes
-    if (Array.isArray(changes)) {
-      setLocalPatchData({ version_id: pd.version_id ?? null, patch_changes: changes })
-    }
-  }, [messages, viewingFileId])
 
   // 새 대화 생성 — sessions 맵에 추가하고 뷰어 초기화
   const handleNewConversation = useCallback(() => {
@@ -171,7 +161,6 @@ export default function Workspace() {
             suggestedWorkflow={suggestedWorkflow}
             onDismissBanner={dismissSuggestedWorkflow}
             localPatchData={localPatchData}
-            onPatchDataChange={setLocalPatchData}
             onAcceptAllReady={handleAcceptAllReady}
           />
         ) : (

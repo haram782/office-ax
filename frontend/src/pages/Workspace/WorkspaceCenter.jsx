@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
+import { useState, useCallback, useMemo, useEffect, useLayoutEffect, useRef } from 'react'
 import { Ic } from '../../components/Ic'
 import { resolveViewer }            from '../../components/DocumentPanel'
 import { ViewerShell }              from '../../components/ViewerShell'
@@ -23,7 +23,6 @@ export function WorkspaceCenter({
   suggestedWorkflow,
   // 채팅 patch_plan 메시지로부터 받은 patch 데이터 (부모 관리)
   localPatchData,
-  onPatchDataChange,
   // 채팅 [전체 반영] 버튼이 handleAcceptAll을 호출할 수 있도록 부모에 함수를 등록
   onAcceptAllReady,
 }) {
@@ -66,13 +65,13 @@ export function WorkspaceCenter({
   // 버전이 이미 ready/failed이면 trigger를 호출하지 않아 불필요한 스피너를 방지한다.
   const handleAcceptAllAndPatch = useCallback(async (changeIds = null) => {
     await handleAcceptAll(changeIds)
-    const currentVersion = versions.find(v => v.id === versionId)
+    const currentVersion = versions.find(v => String(v.id) === String(versionId))
     const needsPatch = versionId && (!currentVersion || currentVersion.status === 'draft')
-    if (needsPatch) trigger()
+    if (needsPatch) await trigger()
   }, [handleAcceptAll, versionId, versions, trigger])
 
   // 채팅 [전체 반영] 버튼이 accept-all+patch 함수를 호출할 수 있도록 부모에 등록
-  useEffect(() => {
+  useLayoutEffect(() => {
     onAcceptAllReady?.(handleAcceptAllAndPatch)
   }, [onAcceptAllReady, handleAcceptAllAndPatch])
 
