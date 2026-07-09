@@ -151,6 +151,40 @@ describe('PdfViewer — done state', () => {
     expect(screen.getByText('75%')).toBeTruthy()
   })
 
+  it('[버그 수정] 다른 PDF로 전환해도 크래시하지 않는다 (pdfjs v6: destroy는 loadingTask에만 있음)', async () => {
+    // 실제 pdfjs v6 PDFDocumentProxy는 최상위에 destroy()가 없다 —
+    // loadingTask.destroy()만 존재한다. makeMockDoc()의 top-level destroy는
+    // 이 회귀를 못 잡으므로, 실제 프록시 형태를 정확히 흉내낸 mock을 쓴다.
+    function makeRealisticMockDoc(numPages) {
+      const mockPage = {
+        getViewport: vi.fn(() => ({ width: 595, height: 842 })),
+        render: vi.fn(() => ({ promise: Promise.resolve(), cancel: vi.fn() })),
+      }
+      return {
+        numPages,
+        getPage: vi.fn().mockResolvedValue(mockPage),
+        loadingTask: { destroy: vi.fn() },
+        // destroy는 의도적으로 정의하지 않는다 — 실제 PDFDocumentProxy와 동일
+      }
+    }
+
+    const firstDoc = makeRealisticMockDoc(2)
+    const secondDoc = makeRealisticMockDoc(3)
+    mockGetDocument
+      .mockReturnValueOnce({ promise: Promise.resolve(firstDoc) })
+      .mockReturnValueOnce({ promise: Promise.resolve(secondDoc) })
+
+    const previewData = { filename: 'a.pdf', fileUrl: '/media/a.pdf', snippetData: null }
+    const { rerender } = await act(async () => render(resolveViewer(previewData, {})))
+    await waitFor(() => expect(screen.getByText('/ 2')).toBeTruthy())
+
+    // 다른 PDF로 전환 — 이전 pdfDoc(firstDoc) 정리 시 prev.destroy()가 호출되면 크래시한다
+    const nextPreviewData = { filename: 'b.pdf', fileUrl: '/media/b.pdf', snippetData: null }
+    await act(async () => rerender(resolveViewer(nextPreviewData, {})))
+
+    await waitFor(() => expect(screen.getByText('/ 3')).toBeTruthy())
+  })
+
   it('이전 페이지 버튼은 첫 페이지에서 비활성화된다', async () => {
     const mockDoc = makeMockDoc(3)
     mockGetDocument.mockReturnValue({ promise: Promise.resolve(mockDoc) })
