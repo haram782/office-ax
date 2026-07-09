@@ -31,7 +31,7 @@ const VERSIONS = [
   { id: 2, version_number: 2, status: 'draft', label: '박하람 교체안', created_at: '2026-07-08T05:20:00' },
 ]
 
-function renderCenter() {
+function renderCenter(props = {}) {
   return render(
     <WorkspaceCenter
       previewData={{
@@ -46,8 +46,7 @@ function renderCenter() {
       onDismissBanner={vi.fn()}
       suggestedWorkflow={null}
       localPatchData={{ version_id: 2, patch_changes: [] }}
-      onPatchDataChange={vi.fn()}
-      onAcceptAllReady={vi.fn()}
+      onAcceptAllReady={props.onAcceptAllReady ?? vi.fn()}
     />,
   )
 }
@@ -91,5 +90,43 @@ describe('WorkspaceCenter 버전별 수정 카드', () => {
 
     expect(await screen.findByText('박하람 텍스트 교체')).toBeInTheDocument()
     expect(screen.getByTestId('viewer-highlights')).toHaveTextContent('1')
+  })
+
+  it('전체 반영 후 현재 버전이 draft이면 수정본 생성을 자동 트리거한다', async () => {
+    const trigger = vi.fn().mockResolvedValue(undefined)
+    const handleAcceptAll = vi.fn().mockResolvedValue(undefined)
+    let registeredAcceptAll = null
+
+    mockUsePatchTrigger.mockReturnValue({ patchStatus: null, trigger })
+    mockUseChangeSuggestions.mockReturnValue({
+      suggestions: [{ id: 's1', title: '박하람 텍스트 교체', status: 'pending' }],
+      statuses: { s1: 'pending' },
+      setStatuses: vi.fn(),
+      selectedSuggestionId: null,
+      setSelectedSuggestionId: vi.fn(),
+      highlights: [{ id: 's1', status: 'pending' }],
+      pendingIds: new Set(),
+      isAcceptingAll: false,
+      acceptAllError: null,
+      autoRejectedIds: new Set(),
+      handleSetStatus: vi.fn(),
+      handleAcceptAll,
+      handleSelectHighlight: vi.fn(),
+    })
+
+    renderCenter({
+      onAcceptAllReady: (fn) => {
+        registeredAcceptAll = fn
+      },
+    })
+
+    await waitFor(() => {
+      expect(registeredAcceptAll).toEqual(expect.any(Function))
+    })
+
+    await registeredAcceptAll()
+
+    expect(handleAcceptAll).toHaveBeenCalledWith(null)
+    expect(trigger).toHaveBeenCalledTimes(1)
   })
 })
