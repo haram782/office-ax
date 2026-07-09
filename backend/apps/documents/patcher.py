@@ -22,6 +22,7 @@ import os
 import re
 import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -1140,20 +1141,39 @@ def _apply_pdf_annotate(page, rect, change) -> None:
     annot.update()
 
 
+# 한글 replacement 렌더링용 임베드 폰트 — Noto Sans KR Regular(TrueType)를
+# 한글·라틴·기본 문장부호로 서브셋한 파일 (backend/apps/documents/fonts/README.md 참조)
+_KOREAN_FONT_PATH = Path(__file__).resolve().parent / "fonts" / "NotoSansKR-Regular.ttf"
+_KOREAN_FONT_NAME = "NotoSansKR"
+
+
 def _apply_pdf_redact_overlay(page, rect, change) -> None:
     """
     지정 rect 영역을 흰색으로 가린 뒤 replacement 텍스트를 overlay로 삽입한다.
 
-    CJK 문자 포함 시 "korea-s" 폰트, 순수 ASCII는 "helv" 폰트를 사용한다.
-    (korea-s로 ASCII를 그리면 문자 사이에 불필요한 폭이 생겨 텍스트 추출 시
-     공백이 끼는 부작용이 있으므로 ASCII는 helv를 유지한다)
+    CJK 문자 포함 시 NotoSansKR을 페이지에 임베드해 사용하고, 순수 ASCII는
+    "helv"를 유지한다(korea-s/임베드 폰트로 ASCII를 그리면 문자 사이에
+    불필요한 폭이 생겨 텍스트 추출 시 공백이 끼는 부작용이 있다).
+
+    PyMuPDF 내장 fontname="korea-s"는 실제 글리프를 PDF에 담지 않는
+    "참조 전용" 폰트다(뷰어가 시스템에 Batang 폰트를 갖고 있다고 가정) —
+    Adobe 등 데스크톱 뷰어는 시스템 폰트로 대체해 보여주지만, 브라우저
+    pdf.js는 대체하지 못해 텍스트가 완전히 투명하게 렌더링된다.
+    page.insert_font(fontfile=...)로 실제 글리프 데이터를 PDF에 임베드하면
+    어떤 뷰어에서도 동일하게 보인다.
     """
     page.add_redact_annot(rect, fill=(1, 1, 1))
     page.apply_redactions()
 
     font_size = change.patch.get("font_size", 11) if change.patch else 11
     replacement = change.replacement or ""
-    fontname = "korea-s" if any(ord(ch) > 127 for ch in replacement) else "helv"
+    is_cjk = any(ord(ch) > 127 for ch in replacement)
+
+    if is_cjk:
+        fontname = _KOREAN_FONT_NAME
+        page.insert_font(fontname=fontname, fontfile=str(_KOREAN_FONT_PATH))
+    else:
+        fontname = "helv"
 
     page.insert_text(
         (rect.x0, rect.y1 - 2),
