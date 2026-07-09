@@ -31,6 +31,18 @@ const VERSIONS = [
   { id: 2, version_number: 2, status: 'draft', label: '박하람 교체안', created_at: '2026-07-08T05:20:00' },
 ]
 
+const READY_VERSIONS = [
+  VERSIONS[0],
+  {
+    id: 2,
+    version_number: 2,
+    status: 'ready',
+    label: '박하람 교체안',
+    created_at: '2026-07-08T05:20:00',
+    applied_change_ids: ['s1'],
+  },
+]
+
 function renderCenter(props = {}) {
   return render(
     <WorkspaceCenter
@@ -155,5 +167,53 @@ describe('WorkspaceCenter 버전별 수정 카드', () => {
     await waitFor(() => {
       expect(trigger).toHaveBeenCalledTimes(1)
     })
+  })
+
+  it('수정본 생성 전 applied 상태는 반영됨이 아니라 생성 대기로 표시한다', async () => {
+    mockUseChangeSuggestions.mockReturnValue({
+      suggestions: [{ id: 's1', title: '박하람 텍스트 교체', status: 'applied' }],
+      statuses: { s1: 'applied' },
+      setStatuses: vi.fn(),
+      selectedSuggestionId: null,
+      setSelectedSuggestionId: vi.fn(),
+      highlights: [{ id: 's1', status: 'applied' }],
+      pendingIds: new Set(),
+      isAcceptingAll: false,
+      acceptAllError: null,
+      autoRejectedIds: new Set(),
+      handleSetStatus: vi.fn(),
+      handleAcceptAll: vi.fn(),
+      handleSelectHighlight: vi.fn(),
+    })
+
+    renderCenter()
+
+    expect(await screen.findByText('생성 대기')).toBeInTheDocument()
+    expect(screen.queryByText('반영됨')).not.toBeInTheDocument()
+  })
+
+  it('완료된 수정본은 적용 operation 기준으로 반영됨을 표시하고 되돌리기를 숨긴다', async () => {
+    mockUseDocumentVersions.mockReturnValue({ versions: READY_VERSIONS })
+    mockUseChangeSuggestions.mockReturnValue({
+      suggestions: [{ id: 's1', title: '박하람 텍스트 교체', status: 'rejected' }],
+      statuses: { s1: 'rejected' },
+      setStatuses: vi.fn(),
+      selectedSuggestionId: null,
+      setSelectedSuggestionId: vi.fn(),
+      highlights: [{ id: 's1', status: 'rejected' }],
+      pendingIds: new Set(),
+      isAcceptingAll: false,
+      acceptAllError: null,
+      autoRejectedIds: new Set(),
+      handleSetStatus: vi.fn(),
+      handleAcceptAll: vi.fn(),
+      handleSelectHighlight: vi.fn(),
+    })
+
+    renderCenter()
+
+    expect(await screen.findByText('반영됨')).toBeInTheDocument()
+    expect(screen.queryByText('거절됨')).not.toBeInTheDocument()
+    expect(screen.queryByText('되돌리기')).not.toBeInTheDocument()
   })
 })

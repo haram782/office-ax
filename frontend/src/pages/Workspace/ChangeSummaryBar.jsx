@@ -1,6 +1,6 @@
 /**
  * 변경 제안 요약 바.
- * 대기/적용됨/거절됨 개수, "모두 적용" 버튼, "수정본 생성" 버튼을 제공한다.
+ * 대기/생성 대기/반영/거절 개수, "모두 적용" 버튼, "수정본 생성" 버튼을 제공한다.
  */
 
 // patchStatus → 버튼 렌더 모드 맵
@@ -36,13 +36,18 @@ export function ChangeSummaryBar({
   onPatch     = null,
 }) {
   // 각 제안의 실효 상태: statuses 맵에 있으면 덮어쓰고 없으면 원본 status 사용
-  const pending  = suggestions.filter(s => (statuses[s.id] ?? s.status ?? 'pending') === 'pending').length
-  const applied  = suggestions.filter(s => (statuses[s.id] ?? s.status ?? 'pending') === 'applied').length
-  const rejected = suggestions.filter(s => (statuses[s.id] ?? s.status ?? 'pending') === 'rejected').length
-  const total    = suggestions.length
+  const statusOf = (s) => statuses[s.id] ?? s.status ?? 'pending'
+  const pending    = suggestions.filter(s => statusOf(s) === 'pending').length
+  const accepted   = suggestions.filter(s => statusOf(s) === 'accepted').length
+  const generating = suggestions.filter(s => statusOf(s) === 'generating').length
+  const applied    = suggestions.filter(s => statusOf(s) === 'applied').length
+  const failed     = suggestions.filter(s => statusOf(s) === 'failed').length
+  const rejected   = suggestions.filter(s => statusOf(s) === 'rejected').length
+  const total      = suggestions.length
 
-  // 수정본 생성 버튼 표시 조건 — applied 항목 + uploadId + versionId 필수
-  const canShowPatchBtn = applied > 0 && uploadId != null && versionId != null && onPatch != null
+  // 수정본 생성 버튼 표시 조건 — 생성 대상 항목 + uploadId + versionId 필수
+  const selectedForPatch = accepted + generating + applied + failed
+  const canShowPatchBtn = selectedForPatch > 0 && uploadId != null && versionId != null && onPatch != null
 
   const patchBtn = PATCH_BTN[patchStatus] ?? PATCH_BTN.null
 
@@ -67,9 +72,24 @@ export function ChangeSummaryBar({
               대기 {pending}
             </span>
           )}
+          {accepted > 0 && (
+            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-900/25 text-blue-600 dark:text-blue-400 tabular-nums">
+              생성 대기 {accepted}
+            </span>
+          )}
+          {generating > 0 && (
+            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-900/25 text-blue-600 dark:text-blue-400 tabular-nums">
+              생성 중 {generating}
+            </span>
+          )}
           {applied > 0 && (
             <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 tabular-nums">
-              적용 {applied}
+              반영 {applied}
+            </span>
+          )}
+          {failed > 0 && (
+            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-red-50 dark:bg-red-900/20 text-red-500 tabular-nums">
+              실패 {failed}
             </span>
           )}
           {rejected > 0 && (

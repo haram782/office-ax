@@ -69,9 +69,12 @@ const SUMMARY_LABEL_BY_OPERATION = {
 
 // status → 뱃지 스타일
 const STATUS_BADGE = {
-  pending:  { cls: 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400', label: '대기' },
-  applied:  { cls: 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400', label: '적용됨' },
-  rejected: { cls: 'bg-red-50 dark:bg-red-900/20 text-red-400', label: '거절됨' },
+  pending:    { cls: 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400', label: '대기' },
+  accepted:   { cls: 'bg-blue-50 dark:bg-blue-900/25 text-blue-600 dark:text-blue-400', label: '생성 대기' },
+  generating: { cls: 'bg-blue-50 dark:bg-blue-900/25 text-blue-600 dark:text-blue-400', label: '생성 중' },
+  applied:    { cls: 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400', label: '반영됨' },
+  failed:     { cls: 'bg-red-50 dark:bg-red-900/20 text-red-500', label: '생성 실패' },
+  rejected:   { cls: 'bg-red-50 dark:bg-red-900/20 text-red-400', label: '거절됨' },
 }
 
 /**
@@ -108,11 +111,23 @@ function anchorLabel(anchor) {
 /**
  * 개별 변경 제안 카드.
  *
- * @param {{ suggestion, status, isSelected, isPending, isAutoRejected, onSelect, onAccept, onReject, onReset }} props
+ * @param {{ suggestion, status, isSelected, isPending, isAutoRejected, canEdit, canReset, onSelect, onAccept, onReject, onReset }} props
  * @param {boolean} [isPending=false] - API 호출 중 여부. true이면 버튼을 비활성화한다.
  * @param {boolean} [isAutoRejected=false] - 서버가 confidence 충돌로 자동 반려한 항목인지 여부.
  */
-export function ChangeSuggestionCard({ suggestion, status, isSelected, isPending = false, isAutoRejected = false, onSelect, onAccept, onReject, onReset }) {
+export function ChangeSuggestionCard({
+  suggestion,
+  status,
+  isSelected,
+  isPending = false,
+  isAutoRejected = false,
+  canEdit = true,
+  canReset = true,
+  onSelect,
+  onAccept,
+  onReject,
+  onReset,
+}) {
   const { title, original, replacement, reason, anchor, changeType, severity, operation, patch } = suggestion
 
   const effectiveStatus = status ?? 'pending'
@@ -212,7 +227,7 @@ export function ChangeSuggestionCard({ suggestion, status, isSelected, isPending
         )}
 
         {/* 대기 상태에만 적용/거절 버튼 표시 — API 호출 중(isPending)이면 비활성화 */}
-        {effectiveStatus === 'pending' && (
+        {canEdit && effectiveStatus === 'pending' && (
           <div className="flex items-center gap-1 flex-shrink-0">
             <button
               onClick={e => { e.stopPropagation(); onReject() }}
@@ -238,7 +253,7 @@ export function ChangeSuggestionCard({ suggestion, status, isSelected, isPending
         )}
 
         {/* 적용/거절 후 대기 상태로 되돌리기 */}
-        {effectiveStatus !== 'pending' && (
+        {canReset && effectiveStatus !== 'pending' && (
           <button
             onClick={e => { e.stopPropagation(); onReset?.() }}
             title="대기 상태로 되돌리기"

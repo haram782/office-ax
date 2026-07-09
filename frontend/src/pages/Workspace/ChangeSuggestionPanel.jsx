@@ -9,7 +9,7 @@ import { ChangeSuggestionCard } from './ChangeSuggestionCard'
  *
  * @param {{
  *   suggestions:          Array,
- *   statuses:             { [id]: 'pending' | 'applied' | 'rejected' },
+ *   statuses:             { [id]: 'pending' | 'accepted' | 'generating' | 'applied' | 'failed' | 'rejected' },
  *   pendingIds:           Set<string>,
  *   onSetStatus:          (id: string, next: string) => void,
  *   onAcceptAll:          () => void,
@@ -22,6 +22,7 @@ import { ChangeSuggestionCard } from './ChangeSuggestionCard'
  *   versionId:            number|string|null,
  *   patchStatus:          null|'generating'|'ready'|'failed',
  *   onPatch:              (() => void)|null,
+ *   canEditStatuses:      boolean,
  * }} props
  */
 export function ChangeSuggestionPanel({
@@ -39,6 +40,7 @@ export function ChangeSuggestionPanel({
   versionId    = null,
   patchStatus  = null,
   onPatch      = null,
+  canEditStatuses = true,
 }) {
   const handleSelect = useCallback((id) => {
     // 같은 카드 재클릭 시 선택 해제
@@ -79,6 +81,8 @@ export function ChangeSuggestionPanel({
               isSelected={selectedSuggestionId === s.id}
               isPending={pendingIds.has(s.id)}
               isAutoRejected={autoRejectedIds.has(s.id)}
+              canEdit={canEditStatuses}
+              canReset={canEditStatuses}
               onSelect={() => handleSelect(s.id)}
               onAccept={() => onSetStatus(s.id, 'applied')}
               onReject={() => onSetStatus(s.id, 'rejected')}
