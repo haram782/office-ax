@@ -114,6 +114,9 @@ function cellHighlightCls(h, selectedHighlightId) {
   }
   switch (h.status ?? 'pending') {
     case 'applied':  return 'bg-emerald-50/80 dark:bg-emerald-900/20 ring-1 ring-inset ring-emerald-300 dark:ring-emerald-700'
+    case 'accepted':
+    case 'generating': return 'bg-blue-50/80 dark:bg-blue-900/20 ring-1 ring-inset ring-blue-300 dark:ring-blue-700'
+    case 'failed':   return 'bg-red-50/50 dark:bg-red-900/10 ring-1 ring-inset ring-red-300 dark:ring-red-800'
     case 'rejected': return 'opacity-50 bg-red-50/40 dark:bg-red-900/10 ring-1 ring-inset ring-red-200 dark:ring-red-800'
     case 'pending':  return 'bg-amber-50/80 dark:bg-amber-900/20 ring-1 ring-inset ring-amber-300 dark:ring-amber-700'
     default:         return ''
@@ -128,6 +131,9 @@ function correctionRowCls(h, selectedHighlightId) {
   }
   switch (h.status ?? 'pending') {
     case 'applied':  return 'bg-emerald-50/40 dark:bg-emerald-900/10'
+    case 'accepted':
+    case 'generating': return 'bg-blue-50/40 dark:bg-blue-900/10'
+    case 'failed':   return 'bg-red-50/30 dark:bg-red-900/10'
     case 'rejected': return 'opacity-50 bg-red-50/20 dark:bg-red-900/10'
     case 'pending':  return 'bg-amber-50/30 dark:bg-amber-900/10'
     default:         return ''
@@ -288,7 +294,7 @@ function ExcelViewer({ previewData, highlights = [], selectedHighlightId = null,
                     <span className="text-emerald-600 font-semibold truncate">{c.corrected}</span>
                   </div>
                   {/* 제안 상태 인디케이터 */}
-                  {matchH && matchH.status !== 'pending' && (
+                  {matchH && !['pending', 'accepted', 'generating'].includes(matchH.status) && (
                     <span className={`flex-shrink-0 text-[10px] font-semibold
                       ${matchH.status === 'applied'  ? 'text-emerald-500' : 'text-red-400'}
                     `}>
@@ -729,7 +735,10 @@ function DocxViewer({ previewData, highlights = [], selectedHighlightId = null, 
 // status → notice 배경/테두리/텍스트 색상 클래스 (DOCX/HWP/PPTX 공용)
 const NOTICE_STATUS_CLS = {
   pending:  'bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-700 text-amber-800 dark:text-amber-300',
+  accepted: 'bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-700 text-blue-800 dark:text-blue-300',
+  generating: 'bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-700 text-blue-800 dark:text-blue-300',
   applied:  'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-700 text-emerald-800 dark:text-emerald-300',
+  failed:   'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-700 text-red-700 dark:text-red-300',
   rejected: 'bg-zinc-100 dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 text-zinc-400 dark:text-zinc-500',
 }
 
@@ -1075,6 +1084,10 @@ function HwpViewer({ previewData, highlights = [], selectedHighlightId = null, o
                 const isSelected = h.id === selectedHighlightId
                 const statusCls = h.status === 'applied'
                   ? 'border-emerald-500/85 shadow-[0_0_0_2px_rgba(16,185,129,0.16)]'
+                  : h.status === 'accepted' || h.status === 'generating'
+                    ? 'border-blue-500/85 shadow-[0_0_0_2px_rgba(59,130,246,0.16)]'
+                  : h.status === 'failed'
+                    ? 'border-red-500/80 shadow-[0_0_0_2px_rgba(239,68,68,0.14)]'
                   : h.status === 'rejected'
                     ? 'border-zinc-400/70 shadow-[0_0_0_2px_rgba(113,113,122,0.12)]'
                     : 'border-amber-500/85 shadow-[0_0_0_2px_rgba(245,158,11,0.16)]'

@@ -14,6 +14,13 @@ function sameId(a, b) {
   return a != null && b != null && String(a) === String(b)
 }
 
+function hasAppliedOperation(version, suggestion) {
+  const ids = version?.applied_change_ids ?? []
+  if (!Array.isArray(ids) || ids.length === 0) return false
+  const idSet = new Set(ids.map(id => String(id)))
+  return idSet.has(String(suggestion.id))
+}
+
 /**
  * 워크스페이스 중앙 문서 뷰어 영역.
  * 파일이 선택된 경우 ViewerShell + resolveViewer()로 뷰어를 렌더한다.
@@ -65,6 +72,10 @@ export function WorkspaceCenter({
   // versionId(채팅발 새 draft)가 바뀌면 즉시 재조회해 탭에 반영한다 (Fix B)
   const { versions } = useDocumentVersions(uploadId, rawPatchStatus, versionId)
   const autoPatchTriggeredVersionRef = useRef(null)
+  const editingVersion = useMemo(
+    () => versions.find(v => sameId(v.id, versionId)) ?? null,
+    [versions, versionId],
+  )
 
   const triggerDraftPatch = useCallback(async () => {
     if (!versionId) return
@@ -77,10 +88,9 @@ export function WorkspaceCenter({
   // 버전이 이미 ready/failed이면 trigger를 호출하지 않아 불필요한 스피너를 방지한다.
   const handleAcceptAllAndPatch = useCallback(async (changeIds = null) => {
     await handleAcceptAll(changeIds)
-    const currentVersion = versions.find(v => sameId(v.id, versionId))
-    const needsPatch = versionId && (!currentVersion || currentVersion.status === 'draft')
+    const needsPatch = versionId && (!editingVersion || editingVersion.status === 'draft')
     if (needsPatch) await triggerDraftPatch()
-  }, [handleAcceptAll, versionId, versions, triggerDraftPatch])
+  }, [handleAcceptAll, versionId, editingVersion, triggerDraftPatch])
 
   // 채팅 [전체 반영] 버튼이 accept-all+patch 함수를 호출할 수 있도록 부모에 등록
   useLayoutEffect(() => {
@@ -92,7 +102,7 @@ export function WorkspaceCenter({
   // 실제 상태를 반환해 autoSelectedRef 동기화와 뷰어 자동 전환이 동작하도록 한다.
   const patchStatus = useMemo(() => {
     if (versionId && versions.length > 0) {
-      const current = versions.find(v => sameId(v.id, versionId))
+      const current = editingVersion
       if (current && current.status !== 'draft' && current.status !== 'original') {
         // usePatchTrigger 타임아웃이 rawPatchStatus를 'failed'로 전환한 경우,
         // versions가 아직 'generating'이어도 'failed'를 우선 반영한다
@@ -101,7 +111,7 @@ export function WorkspaceCenter({
       }
     }
     return rawPatchStatus
-  }, [rawPatchStatus, versions, versionId])
+  }, [rawPatchStatus, versions.length, versionId, editingVersion])
 
   // 선택된 버전 ID (기본값: 원본 버전 ID 또는 null)
   const [selectedVersionId, setSelectedVersionId] = useState(null)
@@ -127,8 +137,7 @@ export function WorkspaceCenter({
     if (rawPatchStatus === 'generating') return
     if (suggestions.length === 0 || appliedSuggestionCount === 0 || pendingSuggestionCount > 0) return
 
-    const currentVersion = versions.find(v => sameId(v.id, versionId))
-    if (!currentVersion || currentVersion.status !== 'draft') return
+    if (!editingVersion || editingVersion.status !== 'draft') return
 
     triggerDraftPatch()
   }, [
@@ -138,7 +147,7 @@ export function WorkspaceCenter({
     suggestions.length,
     appliedSuggestionCount,
     pendingSuggestionCount,
-    versions,
+    editingVersion,
     triggerDraftPatch,
   ])
 
@@ -209,18 +218,50 @@ export function WorkspaceCenter({
       handleSelectVersion(readyVersion)
     }
     // DB 상태 동기화: ready 버전의 applied_change_ids가 있으면 그 기준으로, 없으면 전체 applied
-    const appliedIds = new Set(readyVersion.applied_change_ids ?? [])
     setStatuses(prev => {
       const next = { ...prev }
       for (const s of suggestions) {
-        if (!s.changeDbId) continue
-        if (appliedIds.size === 0 || appliedIds.has(s.changeDbId)) {
+        if (hasAppliedOperation(readyVersion, s)) {
           next[s.id] = 'applied'
         }
       }
       return next
     })
   }, [patchStatus, versionId, versions, handleSelectVersion, suggestions, setStatuses])
+
+  const canEditSuggestionStatuses = useMemo(
+    () => !['generating', 'ready', 'failed'].includes(patchStatus),
+    [patchStatus],
+  )
+
+  const displayStatuses = useMemo(() => {
+    const next = {}
+    for (const s of suggestions) {
+      const status = statuses[s.id] ?? s.status ?? 'pending'
+
+      if (editingVersion?.status === 'ready') {
+        if (hasAppliedOperation(editingVersion, s)) {
+          next[s.id] = 'applied'
+        } else {
+          next[s.id] = status === 'rejected' ? 'rejected' : 'failed'
+        }
+        continue
+      }
+
+      if (status === 'applied') {
+        if (patchStatus === 'generating' || editingVersion?.status === 'generating') {
+          next[s.id] = 'generating'
+        } else if (patchStatus === 'failed' || editingVersion?.status === 'failed') {
+          next[s.id] = 'failed'
+        } else {
+          next[s.id] = 'accepted'
+        }
+      } else {
+        next[s.id] = status
+      }
+    }
+    return next
+  }, [suggestions, statuses, editingVersion, patchStatus])
 
   // 뷰어에 전달할 fileUrl — 수정본 선택 시 Blob URL, 원본 선택 시 previewData.fileUrl
   const selectedVersion = useMemo(() => {
@@ -238,8 +279,13 @@ export function WorkspaceCenter({
     return sameId(selectedVersionId, versionId)
   }, [selectedVersionId, versionId, suggestions.length])
 
+  const displayHighlights = useMemo(
+    () => highlights.map(h => ({ ...h, status: displayStatuses[h.id] ?? h.status })),
+    [highlights, displayStatuses],
+  )
+
   const visibleSuggestions = selectedShowsCurrentChanges ? suggestions : []
-  const visibleHighlights = selectedShowsCurrentChanges ? highlights : []
+  const visibleHighlights = selectedShowsCurrentChanges ? displayHighlights : []
 
   // 최종본 다운로드 (Fix A) — 선택된 버전 기준으로 실제 파일을 내려받는다.
   // 수정본: 버전 파일 API의 Blob을 a[download]로 저장. 원본: 원본 fileUrl 저장.
@@ -317,7 +363,7 @@ export function WorkspaceCenter({
         visibleSuggestions.length > 0 ? (
           <ChangeSuggestionPanel
             suggestions={visibleSuggestions}
-            statuses={statuses}
+            statuses={displayStatuses}
             pendingIds={pendingIds}
             onSetStatus={handleSetStatus}
             onAcceptAll={handleAcceptAllAndPatch}
@@ -330,6 +376,7 @@ export function WorkspaceCenter({
             versionId={versionId}
             patchStatus={patchStatus}
             onPatch={selectedShowsCurrentChanges && versionId ? trigger : null}
+            canEditStatuses={canEditSuggestionStatuses}
           />
         ) : null
       }
