@@ -56,6 +56,25 @@ class TestClaudeCodeCLIClientNormal(unittest.TestCase):
         self.assertTrue(result.model_used.startswith("claude-cli/"))
 
     @patch("subprocess.run")
+    def test_provider_and_token_source_are_explicit(self, mock_run):
+        """
+        [버그 수정] provider/token_source를 명시하지 않으면 AnalysisResult
+        dataclass의 위험한 기본값(provider="", token_source="provider_reported")을
+        그대로 물려받는다. CLI subprocess는 실제 토큰 수를 알 수 없으므로
+        token_source는 반드시 'unavailable'이어야 하고, provider도 'claude_cli'로
+        명시해야 UsageEvent/대시보드에서 이 호출을 올바르게 식별할 수 있다.
+        """
+        mock_run.return_value = _make_proc(stdout=_VALID_JSON)
+
+        client = ClaudeCodeCLIClient()
+        result = client.analyze("문서 내용", "시스템 프롬프트")
+
+        self.assertEqual(result.provider, "claude_cli")
+        self.assertEqual(result.token_source, "unavailable")
+        self.assertEqual(result.input_tokens, 0)
+        self.assertEqual(result.output_tokens, 0)
+
+    @patch("subprocess.run")
     def test_cmd_contains_system_and_user_prompt(self, mock_run):
         """CLI -p 인자에 system_prompt와 user 입력이 모두 포함된다."""
         mock_run.return_value = _make_proc(stdout=_VALID_JSON)

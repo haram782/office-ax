@@ -236,6 +236,45 @@ class ChatPatchIntentHappyPathTest(TestCase):
         self.assertEqual(assistant_msg.snippet_data.get("changes"), [])
         self.assertEqual(assistant_msg.snippet_data.get("plan_id"), "plan_empty_intent_001")
 
+    def test_empty_patch_plan_message_uses_llm_specific_summary(self):
+        """
+        [버그 수정] operations=[]일 때 LLM이 생성한 구체적 사유(summary)를 그대로
+        채팅 메시지로 보여줘야 한다. 기존에는 이 summary를 버리고 뻔한 안내문으로
+        덮어써서, 25초 걸린 LLM의 상세 판단 근거가 사용자에게 전혀 전달되지 않았다.
+        """
+        detailed_summary = (
+            "문서 내 '동의' 문구를 '미동의'로 일괄 교체하는 요청이나, "
+            "'동의'가 여러 문맥에서 반복 등장해 위치를 특정할 수 없음"
+        )
+        notify_patch_plan_generated(
+            chat_message_id=self.user_msg.pk,
+            upload_id=self.upload.pk,
+            prompt="동의를 미동의로 바꿔줘",
+            result={**_MOCK_EMPTY_PATCH_PLAN, "summary": detailed_summary},
+        )
+
+        assistant_msg = ChatMessage.objects.filter(
+            session=self.session, role=ChatMessage.Role.ASSISTANT,
+        ).last()
+        self.assertEqual(assistant_msg.content, detailed_summary)
+
+    def test_empty_patch_plan_without_summary_falls_back_to_generic_message(self):
+        """[회귀] summary가 비어 있으면 기존의 일반 안내 문구로 폴백한다."""
+        notify_patch_plan_generated(
+            chat_message_id=self.user_msg.pk,
+            upload_id=self.upload.pk,
+            prompt="없는 텍스트 교체",
+            result={**_MOCK_EMPTY_PATCH_PLAN, "summary": ""},
+        )
+
+        assistant_msg = ChatMessage.objects.filter(
+            session=self.session, role=ChatMessage.Role.ASSISTANT,
+        ).last()
+        self.assertEqual(
+            assistant_msg.content,
+            "요청하신 내용에 해당하는 수정 항목을 찾지 못했습니다. 더 구체적인 내용으로 다시 요청해 주세요.",
+        )
+
     @patch("apps.chat.tasks.current_app.send_task", side_effect=RuntimeError("redis down"))
     def test_patch_intent_enqueue_failure_creates_error_message(self, _mock_send_task):
         """ax-engine enqueue 실패 시 태스크 예외 대신 오류 어시스턴트 메시지를 남긴다."""

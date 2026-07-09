@@ -447,8 +447,11 @@ def notify_patch_plan_generated(
     plan_id = patch_result.get("plan_id", "")
 
     if version_id is None:
-        # operations 빈 배열 → 수정할 항목 없음 안내
-        content = "요청하신 내용에 해당하는 수정 항목을 찾지 못했습니다. 더 구체적인 내용으로 다시 요청해 주세요."
+        # operations 빈 배열 → LLM이 판단한 구체적 사유(summary)를 그대로 보여준다.
+        # 왜 조작을 만들지 않았는지(예: 동일 문구가 여러 문맥에 반복돼 위치 특정 불가)를
+        # LLM이 이미 분석해 반환하므로, 뻔한 안내문으로 덮어써 버리면 그 판단 근거가
+        # 사용자에게 전달되지 않는다. summary가 비어 있을 때만 일반 안내문으로 폴백한다.
+        content = result.get("summary") or "요청하신 내용에 해당하는 수정 항목을 찾지 못했습니다. 더 구체적인 내용으로 다시 요청해 주세요."
         snippet_data = {
             "type":       "patch_plan",
             "version_id": None,
