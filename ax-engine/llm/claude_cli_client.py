@@ -53,6 +53,11 @@ class ClaudeCodeCLIClient(BaseLLMClient):
             detected_errors=parsed.get("errors", []),
             model_used=f"claude-cli/{self._model_label}",
             parsed_data=parsed,
+            provider="claude_cli",
+            # CLI subprocess는 실제 토큰 사용량을 알 수 없다.
+            # 명시하지 않으면 dataclass 기본값(provider_reported)을 물려받아
+            # UsageEvent/대시보드에 "0 토큰을 공급자가 보고함"이라는 잘못된 정보가 남는다.
+            token_source="unavailable",
         )
 
     def _run_cli(self, cmd: list[str]) -> str:
