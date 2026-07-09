@@ -323,6 +323,51 @@ class PdfRedactOverlayTest(TestCase):
             "한글 replacement 텍스트가 Helvetica fallback으로 깨지지 않고 추출돼야 한다",
         )
 
+    def test_redact_overlay_cjk_replacement_font_is_embedded(self):
+        """
+        [버그 수정] 한글 replacement에 쓰인 폰트가 PDF에 실제로 임베드돼야 한다.
+
+        fontname="korea-s"는 텍스트 추출은 되지만 실제 글리프 데이터를 PDF에
+        담지 않는 "참조 전용" 폰트다(뷰어가 시스템에 Batang 폰트를 갖고 있다고
+        가정) — Adobe 등 데스크톱 뷰어는 시스템 폰트로 대체해 보여주지만, 브라우저
+        pdf.js는 대체하지 못해 텍스트가 완전히 투명하게 렌더링된다. 이 회귀는
+        get_text() 추출만으로는 못 잡으므로(추출은 항상 성공) get_fonts()로
+        실제 임베드 여부(ext != 'n/a')를 직접 확인해야 한다.
+        """
+        from apps.documents.patcher import collect_applied_changes, persist_patch_result, render_pdf
+
+        _make_change(
+            self.version,
+            operation_id="op_redact_cjk_embed_01",
+            operation="redact_overlay",
+            anchor={
+                "type": "pdf_bbox",
+                "page": 1,
+                "rect": {"x0": 72, "y0": 88, "x1": 300, "y1": 104},
+                "target_text": "2025 08 11",
+            },
+            original="2025 08 11",
+            replacement="2026년 7월 1일",
+        )
+        changes = collect_applied_changes(self.version, operations=["annotate", "redact_overlay"])
+        with self.upload.file.open("rb") as f:
+            original_bytes = f.read()
+        patch_result = render_pdf(original_bytes, changes)
+
+        import fitz
+        doc = fitz.open(stream=patch_result.output_bytes, filetype="pdf")
+        fonts = [f for page in doc for f in page.get_fonts()]
+        doc.close()
+
+        cjk_fonts = [f for f in fonts if f[3] not in ("Helvetica",)]
+        self.assertTrue(cjk_fonts, "한글 삽입에 쓰인 폰트가 있어야 한다")
+        for xref, ext, ftype, basefont, name, encoding in cjk_fonts:
+            self.assertNotEqual(
+                ext, "n/a",
+                f"'{basefont}' 폰트가 임베드되지 않았다 (참조 전용) — "
+                "pdf.js 등 브라우저 뷰어에서 텍스트가 안 보이는 원인",
+            )
+
 
 @override_settings(MEDIA_ROOT=TEMP_MEDIA)
 class PdfReplaceTextTest(TestCase):
