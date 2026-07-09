@@ -69,6 +69,12 @@ def _build_file_context(upload_log: UploadLog) -> dict:
     """LLM에 전달할 파일 컨텍스트를 upload_log.result에서 추출한다."""
     result = upload_log.result or {}
     snippet = result.get("snippet_data") or {}
+    file_path = ""
+    if upload_log.file:
+        try:
+            file_path = upload_log.file.path
+        except (NotImplementedError, ValueError):
+            file_path = ""
     return {
         "filename": upload_log.original_filename,
         "source_type": result.get(
@@ -80,6 +86,7 @@ def _build_file_context(upload_log: UploadLog) -> dict:
         "summary": result.get("summary", ""),
         "errors": result.get("errors", []),
         "document_text": result.get("document_text", ""),
+        "file_path": file_path,
     }
 
 
