@@ -269,3 +269,25 @@ class PatchPlanLLMDispatchTest(TestCase):
 
         file_context = mock_send_task.call_args.kwargs["kwargs"]["file_context"]
         self.assertEqual(file_context["document_text"], "문서 본문 test")
+
+    @patch("apps.documents.services.patch_plan.current_app.send_task")
+    def test_generate_patch_plan_passes_source_file_path_to_ax_engine(self, mock_send_task):
+        """document_text가 없는 기존 분석 레코드도 ax-engine이 원본 파일을 다시 읽을 수 있어야 한다."""
+        async_result = MagicMock()
+        async_result.get.return_value = _MOCK_EMPTY_PLAN
+        mock_send_task.return_value = async_result
+
+        user = _make_user("patch_plan_file_path_user")
+        upload = _make_done_upload(user, hash_val="patch_plan_file_path_hash")
+        upload.result.pop("document_text", None)
+        upload.file.name = "uploads/sample.hwp"
+        upload.save(update_fields=["result", "file"])
+
+        from apps.documents.services.patch_plan import PatchPlanService
+
+        with patch.object(upload.file.storage, "path", return_value="/tmp/sample.hwp"):
+            PatchPlanService.generate(upload.pk, "test를 수정해줘", user)
+
+        file_context = mock_send_task.call_args.kwargs["kwargs"]["file_context"]
+        self.assertEqual(file_context["document_text"], "")
+        self.assertEqual(file_context["file_path"], "/tmp/sample.hwp")

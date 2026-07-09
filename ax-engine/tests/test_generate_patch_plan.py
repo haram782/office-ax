@@ -16,6 +16,7 @@ from llm.base import AnalysisResult
 from tasks.generate_patch_plan import (
     _build_patch_plan_prompt,
     _coerce_patch_plan,
+    _document_text_for_simple_plan,
     _maybe_build_simple_replace_plan,
     _run_generate_patch_plan,
     _send_callback,
@@ -89,6 +90,24 @@ class GeneratePatchPlanTaskTest(unittest.TestCase):
 
         self.assertIsNone(plan)
 
+    @patch("tasks.generate_patch_plan.parse_hwp", return_value=("이것은 테스트 문서입니다 Test", {"method": "rhwp"}))
+    def test_simple_hwp_replace_plan_reads_file_when_document_text_missing(self, mock_parse_hwp):
+        """기존 분석 레코드처럼 document_text가 없어도 HWP 원본 파일 fallback을 사용한다."""
+        plan = _maybe_build_simple_replace_plan(
+            "문서 내 'test' 문구를 '박하람'으로 교체",
+            {"source_type": "hwp", "file_path": "/tmp/sample.hwp"},
+        )
+
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan["operations"][0]["operation"], "replace_text")
+        mock_parse_hwp.assert_called_once()
+
+    @patch("tasks.generate_patch_plan.parse_hwp", return_value=("본문 Test", {"method": "rhwp"}))
+    def test_document_text_for_simple_plan_uses_hwp_file_fallback(self, _mock_parse_hwp):
+        text = _document_text_for_simple_plan({"source_type": "hwp", "file_path": "/tmp/sample.hwp"})
+
+        self.assertEqual(text, "본문 Test")
+
     @patch("tasks.generate_patch_plan.get_llm_client")
     def test_run_generate_patch_plan_uses_registered_llm_client(self, mock_get_client):
         """get_llm_client()로 선택된 클라이언트가 PatchPlan 생성을 수행한다."""
@@ -119,6 +138,18 @@ class GeneratePatchPlanTaskTest(unittest.TestCase):
         )
 
         self.assertEqual(plan["operations"][0]["operation"], "replace_text")
+        mock_get_client.assert_not_called()
+
+    @patch("tasks.generate_patch_plan.get_llm_client")
+    @patch("tasks.generate_patch_plan.parse_hwp", return_value=("Test", {"method": "rhwp"}))
+    def test_run_generate_patch_plan_skips_llm_with_hwp_file_fallback(self, _mock_parse_hwp, mock_get_client):
+        """document_text 없는 기존 업로드도 file_path fallback으로 LLM을 건너뛴다."""
+        plan = _run_generate_patch_plan(
+            "문서 내 'test' 문구를 '박하람'으로 교체",
+            {"filename": "sample.hwp", "source_type": "hwp", "file_path": "/tmp/sample.hwp"},
+        )
+
+        self.assertEqual(plan["operations"][0]["replacement"], "박하람")
         mock_get_client.assert_not_called()
 
     def test_coerce_patch_plan_contains_usage_keys(self):

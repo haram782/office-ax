@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
+from pathlib import Path
 from uuid import uuid4
 
 from celery import shared_task
 from celery.utils.log import get_task_logger
 
 from llm import AnalysisResult, get_llm_client
+from parsers.hwp_parser import parse_hwp
 from prompts.patch_plan import PATCH_PLAN_SYSTEM_PROMPT
 
 logger = get_task_logger(__name__)
@@ -59,6 +61,23 @@ def _count_text_occurrences(document_text: str, target: str) -> int:
     return len(re.findall(re.escape(target), document_text, flags=re.IGNORECASE))
 
 
+def _document_text_for_simple_plan(file_context: dict) -> str:
+    """단순 치환 판별에 쓸 본문을 가져온다. 없으면 HWP 원본 파일에서 읽는다."""
+    document_text = file_context.get("document_text") or ""
+    if document_text:
+        return document_text
+
+    source_type = file_context.get("source_type", "")
+    file_path = file_context.get("file_path") or ""
+    if source_type in {"hwp", "hwpx"} and file_path:
+        try:
+            text, _meta = parse_hwp(Path(file_path))
+            return text
+        except Exception as exc:
+            logger.debug("PatchPlan HWP 본문 fallback 실패 | file=%s | %s", file_path, exc)
+    return ""
+
+
 def _maybe_build_simple_replace_plan(prompt: str, file_context: dict) -> dict | None:
     """본문에 존재하는 단순 텍스트 교체는 LLM 없이 deterministic PatchPlan으로 만든다."""
     source_type = file_context.get("source_type", "")
@@ -73,7 +92,7 @@ def _maybe_build_simple_replace_plan(prompt: str, file_context: dict) -> dict | 
     if not original or not replacement or original == replacement:
         return None
 
-    document_text = file_context.get("document_text") or ""
+    document_text = _document_text_for_simple_plan(file_context)
     occurrences = _count_text_occurrences(document_text, original)
     if occurrences < 1:
         return None
