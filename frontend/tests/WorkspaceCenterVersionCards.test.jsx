@@ -45,7 +45,7 @@ function renderCenter(props = {}) {
       showBanner={false}
       onDismissBanner={vi.fn()}
       suggestedWorkflow={null}
-      localPatchData={{ version_id: 2, patch_changes: [] }}
+      localPatchData={props.localPatchData ?? { version_id: 2, patch_changes: [] }}
       onAcceptAllReady={props.onAcceptAllReady ?? vi.fn()}
     />,
   )
@@ -128,5 +128,32 @@ describe('WorkspaceCenter 버전별 수정 카드', () => {
 
     expect(handleAcceptAll).toHaveBeenCalledWith(null)
     expect(trigger).toHaveBeenCalledTimes(1)
+  })
+
+  it('현재 버전이 draft이고 제안이 이미 적용됨이면 수정본 생성을 자동 트리거한다', async () => {
+    const trigger = vi.fn().mockResolvedValue(undefined)
+
+    mockUsePatchTrigger.mockReturnValue({ patchStatus: null, trigger })
+    mockUseChangeSuggestions.mockReturnValue({
+      suggestions: [{ id: 's1', title: '박하람 텍스트 교체', status: 'applied' }],
+      statuses: { s1: 'applied' },
+      setStatuses: vi.fn(),
+      selectedSuggestionId: null,
+      setSelectedSuggestionId: vi.fn(),
+      highlights: [{ id: 's1', status: 'applied' }],
+      pendingIds: new Set(),
+      isAcceptingAll: false,
+      acceptAllError: null,
+      autoRejectedIds: new Set(),
+      handleSetStatus: vi.fn(),
+      handleAcceptAll: vi.fn(),
+      handleSelectHighlight: vi.fn(),
+    })
+
+    renderCenter({ localPatchData: { version_id: '2', patch_changes: [] } })
+
+    await waitFor(() => {
+      expect(trigger).toHaveBeenCalledTimes(1)
+    })
   })
 })

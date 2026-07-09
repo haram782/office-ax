@@ -10,6 +10,10 @@ import { AutomationBanner }         from './AutomationBanner'
 import { ChangeSuggestionPanel }    from './ChangeSuggestionPanel'
 import { VersionTabs }              from './VersionTabs'
 
+function sameId(a, b) {
+  return a != null && b != null && String(a) === String(b)
+}
+
 /**
  * 워크스페이스 중앙 문서 뷰어 영역.
  * 파일이 선택된 경우 ViewerShell + resolveViewer()로 뷰어를 렌더한다.
@@ -60,15 +64,23 @@ export function WorkspaceCenter({
   // 버전 탭 — rawPatchStatus가 'generating'일 때 polling 시작.
   // versionId(채팅발 새 draft)가 바뀌면 즉시 재조회해 탭에 반영한다 (Fix B)
   const { versions } = useDocumentVersions(uploadId, rawPatchStatus, versionId)
+  const autoPatchTriggeredVersionRef = useRef(null)
+
+  const triggerDraftPatch = useCallback(async () => {
+    if (!versionId) return
+    if (sameId(autoPatchTriggeredVersionRef.current, versionId)) return
+    autoPatchTriggeredVersionRef.current = versionId
+    await trigger()
+  }, [versionId, trigger])
 
   // accept-all 후 자동으로 patcher를 실행해 수정본 생성까지 한 번에 처리한다.
   // 버전이 이미 ready/failed이면 trigger를 호출하지 않아 불필요한 스피너를 방지한다.
   const handleAcceptAllAndPatch = useCallback(async (changeIds = null) => {
     await handleAcceptAll(changeIds)
-    const currentVersion = versions.find(v => String(v.id) === String(versionId))
+    const currentVersion = versions.find(v => sameId(v.id, versionId))
     const needsPatch = versionId && (!currentVersion || currentVersion.status === 'draft')
-    if (needsPatch) await trigger()
-  }, [handleAcceptAll, versionId, versions, trigger])
+    if (needsPatch) await triggerDraftPatch()
+  }, [handleAcceptAll, versionId, versions, triggerDraftPatch])
 
   // 채팅 [전체 반영] 버튼이 accept-all+patch 함수를 호출할 수 있도록 부모에 등록
   useLayoutEffect(() => {
@@ -80,7 +92,7 @@ export function WorkspaceCenter({
   // 실제 상태를 반환해 autoSelectedRef 동기화와 뷰어 자동 전환이 동작하도록 한다.
   const patchStatus = useMemo(() => {
     if (versionId && versions.length > 0) {
-      const current = versions.find(v => v.id === versionId)
+      const current = versions.find(v => sameId(v.id, versionId))
       if (current && current.status !== 'draft' && current.status !== 'original') {
         // usePatchTrigger 타임아웃이 rawPatchStatus를 'failed'로 전환한 경우,
         // versions가 아직 'generating'이어도 'failed'를 우선 반영한다
@@ -97,6 +109,40 @@ export function WorkspaceCenter({
   const lastEditingVersionIdRef = useRef(null)
 
   useEffect(() => {
+    autoPatchTriggeredVersionRef.current = null
+  }, [versionId])
+
+  const pendingSuggestionCount = useMemo(
+    () => suggestions.filter(s => (statuses[s.id] ?? s.status ?? 'pending') === 'pending').length,
+    [suggestions, statuses],
+  )
+  const appliedSuggestionCount = useMemo(
+    () => suggestions.filter(s => (statuses[s.id] ?? s.status ?? 'pending') === 'applied').length,
+    [suggestions, statuses],
+  )
+
+  // 방어적 자동 생성: 채팅/패널 어느 경로든 "적용됨 + 초안"이 남으면 수정본 생성을 시작한다.
+  useEffect(() => {
+    if (!uploadId || !versionId) return
+    if (rawPatchStatus === 'generating') return
+    if (suggestions.length === 0 || appliedSuggestionCount === 0 || pendingSuggestionCount > 0) return
+
+    const currentVersion = versions.find(v => sameId(v.id, versionId))
+    if (!currentVersion || currentVersion.status !== 'draft') return
+
+    triggerDraftPatch()
+  }, [
+    uploadId,
+    versionId,
+    rawPatchStatus,
+    suggestions.length,
+    appliedSuggestionCount,
+    pendingSuggestionCount,
+    versions,
+    triggerDraftPatch,
+  ])
+
+  useEffect(() => {
     lastEditingVersionIdRef.current = null
     setSelectedVersionId(null)
     setVersionBlobUrl(prev => {
@@ -109,7 +155,7 @@ export function WorkspaceCenter({
   useEffect(() => {
     if (versions.length === 0) return
     if (selectedVersionId !== null) return
-    const editingVersion = versionId ? versions.find(v => v.id === versionId) : null
+    const editingVersion = versionId ? versions.find(v => sameId(v.id, versionId)) : null
     const original = versions.find(v => v.status === 'original')
     setSelectedVersionId((editingVersion ?? original ?? versions[0]).id)
   }, [versions, selectedVersionId, versionId])
@@ -156,7 +202,7 @@ export function WorkspaceCenter({
 
   useEffect(() => {
     if (patchStatus !== 'ready' || !versionId) return
-    const readyVersion = versions.find(v => v.id === versionId && v.status === 'ready')
+    const readyVersion = versions.find(v => sameId(v.id, versionId) && v.status === 'ready')
     if (!readyVersion) return
     if (!autoSelectedRef.current) {
       autoSelectedRef.current = true
@@ -179,7 +225,7 @@ export function WorkspaceCenter({
   // 뷰어에 전달할 fileUrl — 수정본 선택 시 Blob URL, 원본 선택 시 previewData.fileUrl
   const selectedVersion = useMemo(() => {
     if (!selectedVersionId || versions.length === 0) return null
-    return versions.find(v => v.id === selectedVersionId) ?? null
+    return versions.find(v => sameId(v.id, selectedVersionId)) ?? null
   }, [selectedVersionId, versions])
 
   const selectedUsesOriginalFile = useMemo(() => {
@@ -189,7 +235,7 @@ export function WorkspaceCenter({
 
   const selectedShowsCurrentChanges = useMemo(() => {
     if (!versionId || !selectedVersionId) return suggestions.length > 0
-    return String(selectedVersionId) === String(versionId)
+    return sameId(selectedVersionId, versionId)
   }, [selectedVersionId, versionId, suggestions.length])
 
   const visibleSuggestions = selectedShowsCurrentChanges ? suggestions : []
@@ -198,7 +244,7 @@ export function WorkspaceCenter({
   // 최종본 다운로드 (Fix A) — 선택된 버전 기준으로 실제 파일을 내려받는다.
   // 수정본: 버전 파일 API의 Blob을 a[download]로 저장. 원본: 원본 fileUrl 저장.
   const handleDownload = useCallback(async () => {
-    const selected = versions.find(v => v.id === selectedVersionId)
+    const selected = versions.find(v => sameId(v.id, selectedVersionId))
     const filename = previewData?.filename ?? 'document'
 
     const saveAs = (href, name) => {

@@ -71,7 +71,7 @@ export default function Workspace() {
   const localPatchData = useMemo(() => {
     const last = [...messages].reverse().find(
       m => m.snippet_data?.type === 'patch_plan' &&
-           (viewingFileId == null || m.snippet_data?.upload_id === viewingFileId),
+           (viewingFileId == null || String(m.snippet_data?.upload_id) === String(viewingFileId)),
     )
     if (!last) return null
     const pd = last.snippet_data
