@@ -96,6 +96,17 @@ describe('MessageBubble — patch_plan 말풍선', () => {
     expect(screen.getByRole('button', { name: /전체 반영/ })).toBeTruthy()
   })
 
+  it('[happy] snippet_data.type=patch_plan 이면 [선택 반영] 버튼이 렌더된다', () => {
+    render(
+      <MessageBubble
+        message={PATCH_PLAN_MSG}
+        onAcceptPatch={vi.fn()}
+        onRejectPatch={vi.fn()}
+      />
+    )
+    expect(screen.getByRole('button', { name: /선택 반영/ })).toBeTruthy()
+  })
+
   it('[happy] snippet_data.type=patch_plan 이면 [보류] 버튼이 렌더된다', () => {
     render(
       <MessageBubble
@@ -131,6 +142,19 @@ describe('MessageBubble — patch_plan 말풍선', () => {
     await waitFor(() => expect(onAcceptPatch).toHaveBeenCalledTimes(1))
   })
 
+  it('[happy] [선택 반영] 클릭 시 선택된 change id 배열로 onAcceptPatch가 호출된다', async () => {
+    const onAcceptPatch = vi.fn().mockResolvedValue(undefined)
+    render(
+      <MessageBubble
+        message={PATCH_PLAN_MSG}
+        onAcceptPatch={onAcceptPatch}
+        onRejectPatch={vi.fn()}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /선택 반영/ }))
+    await waitFor(() => expect(onAcceptPatch).toHaveBeenCalledWith([1, 2]))
+  })
+
   it('[happy] [보류] 클릭 시 onRejectPatch가 호출된다', () => {
     const onRejectPatch = vi.fn()
     render(
@@ -142,6 +166,39 @@ describe('MessageBubble — patch_plan 말풍선', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: /보류/ }))
     expect(onRejectPatch).toHaveBeenCalledTimes(1)
+  })
+
+  it('[happy] 반영 성공 후 액션 UI가 사라진다', async () => {
+    const onAcceptPatch = vi.fn().mockResolvedValue(undefined)
+    render(
+      <MessageBubble
+        message={PATCH_PLAN_MSG}
+        onAcceptPatch={onAcceptPatch}
+        onRejectPatch={vi.fn()}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /전체 반영/ }))
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: /전체 반영/ })).toBeNull())
+    expect(screen.queryByRole('button', { name: /선택 반영/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /보류/ })).toBeNull()
+    expect(screen.queryByRole('checkbox')).toBeNull()
+  })
+
+  it('[happy] 보류 후 액션 UI가 사라진다', () => {
+    render(
+      <MessageBubble
+        message={PATCH_PLAN_MSG}
+        onAcceptPatch={vi.fn()}
+        onRejectPatch={vi.fn()}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /보류/ }))
+
+    expect(screen.queryByRole('button', { name: /전체 반영/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /선택 반영/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /보류/ })).toBeNull()
+    expect(screen.queryByRole('checkbox')).toBeNull()
   })
 
   it('[happy] 메시지 content가 말풍선에 표시된다', () => {
