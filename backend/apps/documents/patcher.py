@@ -9,8 +9,14 @@
 render_* 사용 규칙:
   - DocumentChange ORM 인스턴스를 인자로 받을 수 있다.
   - 단, 함수 안에서 .save() / .objects.filter() 등 DB 접근은 절대 하지 않는다.
-  - 예외를 caller로 전파하지 않는다 — 모든 실패는 PatchResult.failed_items로 표현한다.
+  - 예외를 caller로 전파하지 않는다 — 실패는 PatchResult.failed_items로,
+    "위치 후보가 여러 개라 자동 반영을 멈춘 경우"(render_pdf 전용)는
+    needs_confirmation_items로 구분해 표현한다(anchor_resolution.py AnchorStatus 참고).
   - applied_ids가 비어있으면 output_bytes = b""로 설정한다.
+
+PDF의 text_match anchor 해석은 이 모듈이 아니라 anchor_resolution.py의
+AnchorResolver가 담당한다 — render_pdf는 그 결과(RESOLVED/AMBIGUOUS/NOT_FOUND/
+UNSUPPORTED)를 렌더링 여부·실패 사유 분류에만 사용한다.
 """
 from __future__ import annotations
 
@@ -102,6 +108,10 @@ class PatchResult:
     applied_ids: list[str] = field(default_factory=list)
     failed_items: list[dict] = field(default_factory=list)
     # failed_items 원소 형식: {"operation_id": str, "reason": str}
+    # AnchorResolver가 AMBIGUOUS로 판정해 자동 반영을 멈춘 항목 (render_pdf 전용).
+    # failed_items와 분리하는 이유: "위치를 못 찾음/지원 안 함"과 "후보가 여러 개라
+    # 확인이 필요함"은 원인과 후속 조치(재시도 vs 사용자 확인)가 다르다.
+    needs_confirmation_items: list[dict] = field(default_factory=list)
 
 
 # ── 1단계: collect ─────────────────────────────────────────────────────────────
@@ -890,7 +900,10 @@ def render_pdf(original_bytes: bytes, changes: list) -> PatchResult:
     """
     PDF bytes + applied change 목록 → PatchResult.
 
-    annotate/redact_overlay operation: anchor로 rect를 해석하고 페이지에 적용한다.
+    annotate/redact_overlay operation: AnchorResolver로 anchor를 해석하고 페이지에
+    적용한다. RESOLVED만 실제로 렌더링하며, AMBIGUOUS(후보 여러 개)는
+    needs_confirmation_items로, NOT_FOUND/UNSUPPORTED는 failed_items로 분리한다
+    (anchor_resolution.py — "모호하면 자동 반영하지 않는다" 원칙).
     """
     try:
         import fitz
@@ -910,39 +923,47 @@ def render_pdf(original_bytes: bytes, changes: list) -> PatchResult:
             [{"operation_id": c.operation_id, "reason": f"PDF 로드 실패: {exc}"} for c in changes],
         )
 
+    from .anchor_resolution import AnchorResolver, AnchorStatus, build_pdf_document_layout
+
+    layout = build_pdf_document_layout(doc)
+    resolver = AnchorResolver()
+
     applied_ids: list[str] = []
     failed_items: list[dict] = []
+    needs_confirmation_items: list[dict] = []
 
     for change in changes:
-        rect_result = _resolve_pdf_rect(doc, change.anchor)
+        result = resolver.resolve(change.anchor, layout)
 
-        if rect_result is None:
-            failed_items.append({
-                "operation_id": change.operation_id,
-                "reason": f"PDF anchor 해석 실패: {change.anchor}",
-            })
-            logger.warning("render_pdf: anchor 해석 실패 | op=%s | anchor=%s", change.operation_id, change.anchor)
-            continue
-
-        page_idx, fitz_rect = rect_result
-        page = doc[page_idx]
-
-        if change.operation == "annotate":
-            _apply_pdf_annotate(page, fitz_rect, change)
+        if result.status == AnchorStatus.RESOLVED:
+            page = doc[result.page]
+            if change.operation == "annotate":
+                _apply_pdf_annotate(page, result.rect, change)
+            else:
+                _apply_pdf_redact_overlay(page, result.rect, change)
+            applied_ids.append(change.operation_id)
+        elif result.status == AnchorStatus.AMBIGUOUS:
+            needs_confirmation_items.append({"operation_id": change.operation_id, "reason": result.reason})
+            logger.warning(
+                "render_pdf: anchor 후보 다수 | op=%s | reason=%s", change.operation_id, result.reason,
+            )
         else:
-            _apply_pdf_redact_overlay(page, fitz_rect, change)
-
-        applied_ids.append(change.operation_id)
+            reason = result.reason or f"PDF anchor 해석 실패: {change.anchor}"
+            failed_items.append({"operation_id": change.operation_id, "reason": reason})
+            logger.warning(
+                "render_pdf: anchor 해석 실패 | op=%s | status=%s | reason=%s",
+                change.operation_id, result.status, reason,
+            )
 
     if not applied_ids:
         doc.close()
-        return PatchResult(b"", [], failed_items)
+        return PatchResult(b"", [], failed_items, needs_confirmation_items)
 
     output = io.BytesIO()
     doc.save(output)
     doc.close()
     output.seek(0)
-    return PatchResult(output.read(), applied_ids, failed_items)
+    return PatchResult(output.read(), applied_ids, failed_items, needs_confirmation_items)
 
 
 def render_hwp(original_bytes: bytes, changes: list) -> PatchResult:
@@ -1029,22 +1050,33 @@ def persist_patch_result(version, result: PatchResult, ext: str, changes: list) 
     패치 결과를 DB와 storage에 반영한다.
 
     - failed_items에 해당하는 DocumentChange.status를 FAILED로 갱신
-    - applied_ids가 비어있으면 version.status = FAILED
+    - needs_confirmation_items에 해당하는 DocumentChange.status를 NEEDS_CONFIRMATION으로 갱신
+      (자동 반영하지 않고 사용자 확인을 기다리는 상태 — FAILED와 구분)
+    - applied_ids가 비어있고 needs_confirmation_items만 있으면 version.status = NEEDS_CONFIRMATION
+    - applied_ids가 비어있고 failed_items가 있으면 version.status = FAILED
     - applied_ids가 있으면:
         artifact_file을 storage에 저장 (인프라 경계 — try/except 격리)
-        version.applied_change_ids, version.status = READY 갱신
+        version.applied_change_ids, version.needs_confirmation_change_ids, version.status = READY 갱신
     """
     from django.core.files.base import ContentFile
     from .models import DocumentChange, DocumentVersion
 
-    # failed_items에 해당하는 change 상태를 FAILED로 갱신
     failed_op_ids = {item["operation_id"] for item in result.failed_items}
+    needs_confirmation_op_ids = {item["operation_id"] for item in result.needs_confirmation_items}
     for change in changes:
         if change.operation_id in failed_op_ids:
             change.status = DocumentChange.Status.FAILED
             change.save(update_fields=["status", "updated_at"])
+        elif change.operation_id in needs_confirmation_op_ids:
+            change.status = DocumentChange.Status.NEEDS_CONFIRMATION
+            change.save(update_fields=["status", "updated_at"])
 
     if not result.applied_ids:
+        # needs_confirmation만 있고 hard failure가 없으면 "위치 확인 필요"로 구분한다.
+        if result.needs_confirmation_items and not result.failed_items:
+            reason = "; ".join(item["reason"] for item in result.needs_confirmation_items)
+            _set_needs_confirmation(version, reason)
+            return
         # failed_items에 구체적 실패 사유가 있으면 그것을 error_message로 사용한다.
         # 없으면 generic 메시지를 쓴다(예: changes 자체가 없는 경우).
         if result.failed_items:
@@ -1068,8 +1100,14 @@ def persist_patch_result(version, result: PatchResult, ext: str, changes: list) 
         return
 
     version.applied_change_ids = result.applied_ids
+    version.needs_confirmation_change_ids = [
+        item["operation_id"] for item in result.needs_confirmation_items
+    ]
     version.status = DocumentVersion.Status.READY
-    version.save(update_fields=["artifact_file", "artifact_format", "applied_change_ids", "status", "updated_at"])
+    version.save(update_fields=[
+        "artifact_file", "artifact_format", "applied_change_ids",
+        "needs_confirmation_change_ids", "status", "updated_at",
+    ])
 
 
 # ── 내부 헬퍼 (render_pdf 전용) ──────────────────────────────────────────────
@@ -1082,107 +1120,30 @@ def _set_failed(version, error_message: str) -> None:
     version.save(update_fields=["status", "error_message", "updated_at"])
 
 
-# 조각을 같은 occurrence로 묶을 때 허용할 최대 X간격 — 텍스트 높이의 배수.
-# 실사용 문서에서 라벨(년/월) 사이 간격은 텍스트 높이의 ~1.1배였고, 표의
-# 다른 셀에 있는 별개 발생은 ~20배였다 — 그 사이에서 넉넉히 잡는다.
-_FRAGMENT_MERGE_GAP_RATIO = 4.0
-
-
-def _group_search_rects_into_occurrences(rects: list) -> list:
-    """
-    search_for()가 반환한 rect 목록을 실제 발생(occurrence) 단위로 묶는다.
-
-    다중 단어 검색어는 PDF 내부 span 경계(폰트 전환, 별도 시점에 겹쳐
-    그려진 텍스트 등)에 따라 하나의 논리적 매치가 여러 rect로 쪼개져
-    반환될 수 있다 — 예: "2026 6 27"이 "년"·"월" 라벨과 겹쳐 있으면
-    "2026"/"6"/"27" 세 조각으로 나뉜다. 이걸 첫 조각만 쓰면 일부만
-    지워지고 나머지는 새로 그린 텍스트와 겹친다.
-
-    같은 줄(Y좌표 겹침)이면서 간격이 좁은(X간격 < 텍스트 높이의
-    _FRAGMENT_MERGE_GAP_RATIO배) 연속 rect는 하나의 occurrence로 묶어
-    그 경계 사각형(union)을 반환한다. Y가 겹쳐도 간격이 넓으면(표의
-    다른 셀 등) 별개 occurrence로 유지한다.
-    """
-    if not rects:
-        return []
-
-    groups: list[list] = [[rects[0]]]
-    for r in rects[1:]:
-        prev = groups[-1][-1]
-        y_overlaps = not (r.y1 < prev.y0 or r.y0 > prev.y1)
-        text_height = prev.y1 - prev.y0
-        gap = r.x0 - prev.x1
-        close_enough = gap < text_height * _FRAGMENT_MERGE_GAP_RATIO
-        if y_overlaps and close_enough:
-            groups[-1].append(r)
-        else:
-            groups.append([r])
-
-    return [_union_rects(group) for group in groups]
-
-
-def _union_rects(rects: list):
-    import fitz
-
-    return fitz.Rect(
-        min(r.x0 for r in rects),
-        min(r.y0 for r in rects),
-        max(r.x1 for r in rects),
-        max(r.y1 for r in rects),
-    )
+def _set_needs_confirmation(version, error_message: str) -> None:
+    """version 상태를 NEEDS_CONFIRMATION으로 설정한다 — FAILED와 달리 재시도가 아니라 사용자 확인이 필요함을 의미한다."""
+    from .models import DocumentVersion
+    version.status = DocumentVersion.Status.NEEDS_CONFIRMATION
+    version.error_message = error_message
+    version.save(update_fields=["status", "error_message", "updated_at"])
 
 
 def _resolve_pdf_rect(doc, anchor: dict):
     """
-    anchor 딕셔너리에서 (0-based 페이지 인덱스, fitz.Rect)를 반환한다.
+    anchor 딕셔너리에서 (0-based 페이지 인덱스, fitz.Rect)를 반환하는 하위호환 래퍼.
 
-    pdf_bbox: page(1-based) → 0-based 변환, rect 딕셔너리 → fitz.Rect
-    text_match: search_for()로 텍스트 위치 탐색 후 조각을 occurrence
-    단위로 묶어(_group_search_rects_into_occurrences) occurrence 번째
-    결과를 반환한다.
-    반환 None: 텍스트 없음, 페이지 범위 초과, rect 정보 누락
+    실제 해석은 anchor_resolution.AnchorResolver가 담당한다(모듈 상단 주석 참고).
+    RESOLVED가 아니면(AMBIGUOUS 포함) None을 반환한다 — render_pdf는 이 래퍼를
+    거치지 않고 resolver를 직접 호출해 AMBIGUOUS/NOT_FOUND를 구분하지만, 이
+    함수는 단순 조회용으로 남겨둔 하위호환 지점이다.
     """
-    import fitz
+    from .anchor_resolution import AnchorResolver, AnchorStatus, build_pdf_document_layout
 
-    anchor_type = anchor.get("type", "")
-
-    if anchor_type == "pdf_bbox":
-        page_num = anchor.get("page", 1)
-        page_idx = page_num - 1
-        if page_idx < 0 or page_idx >= len(doc):
-            return None
-        r = anchor.get("rect", {})
-        if not r:
-            return None
-        try:
-            rect = fitz.Rect(r["x0"], r["y0"], r["x1"], r["y1"])
-        except (KeyError, TypeError):
-            return None
-        return (page_idx, rect)
-
-    if anchor_type == "text_match":
-        target = anchor.get("target_text", "")
-        if not target:
-            return None
-        page_hint = anchor.get("page")
-        occurrence = max(1, anchor.get("occurrence", 1))
-
-        if page_hint is not None:
-            page_idx = int(page_hint) - 1
-            pages_to_search = [(page_idx, doc[page_idx])] if 0 <= page_idx < len(doc) else []
-        else:
-            pages_to_search = [(i, doc[i]) for i in range(len(doc))]
-
-        hit_count = 0
-        for idx, page in pages_to_search:
-            for r in _group_search_rects_into_occurrences(page.search_for(target)):
-                hit_count += 1
-                if hit_count == occurrence:
-                    return (idx, r)
-
+    layout = build_pdf_document_layout(doc)
+    result = AnchorResolver().resolve(anchor, layout)
+    if result.status != AnchorStatus.RESOLVED:
         return None
-
-    return None
+    return (result.page, result.rect)
 
 
 def _apply_pdf_annotate(page, rect, change) -> None:

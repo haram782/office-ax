@@ -648,3 +648,105 @@ class PdfFailureTest(TestCase):
             DocumentVersion.Status.READY,
             "하나라도 성공하면 version.status는 READY여야 한다",
         )
+
+    def test_not_found_produces_no_artifact(self):
+        """[AnchorResolver 연동] 해석 실패 시 renderer가 artifact를 만들지 않아야 한다."""
+        from apps.documents.patcher import collect_applied_changes, render_pdf
+
+        _make_change(
+            self.version,
+            operation_id="op_no_artifact",
+            operation="annotate",
+            anchor={"type": "text_match", "target_text": "존재하지 않는 텍스트"},
+        )
+        changes = collect_applied_changes(self.version, operations=["annotate", "redact_overlay"])
+        patch_result = render_pdf(self.pdf_bytes, changes)
+
+        self.assertEqual(patch_result.output_bytes, b"", "실패만 있으면 artifact bytes가 생성되면 안 된다")
+        self.assertEqual(patch_result.applied_ids, [])
+
+
+def _build_pdf_two_occurrences() -> bytes:
+    """같은 Y좌표에 동일 문구 "개인정보"를 두 번 그린 PDF (occurrence 모호성 테스트용)."""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 300), "개인정보", fontsize=11, fontname="korea-s", color=(0, 0, 0))
+    page.insert_text((400, 300), "개인정보", fontsize=11, fontname="korea-s", color=(0, 0, 0))
+    buf = io.BytesIO()
+    doc.save(buf)
+    doc.close()
+    return buf.getvalue()
+
+
+class PdfAnchorAmbiguousTest(TestCase):
+    """
+    [앵커 해석 레이어] 후보가 여러 개인 text_match anchor는 자동 반영하지 않고
+    NEEDS_CONFIRMATION으로 멈춰야 한다 (anchor_resolution.AnchorStatus.AMBIGUOUS).
+    """
+
+    def setUp(self):
+        self.user = _make_user("pdf_ambiguous_user")
+        self.pdf_bytes = _build_pdf_two_occurrences()
+        self.upload = _make_upload(self.user, "ambiguous.pdf", self.pdf_bytes, "pdf_ambiguous_hash")
+        self.version = _make_version(self.upload, self.user)
+
+    def test_ambiguous_only_change_sets_needs_confirmation_not_applied(self):
+        """occurrence 없이 후보 2개 → change/version 모두 NEEDS_CONFIRMATION, artifact 없음."""
+        from apps.documents.patcher import collect_applied_changes, persist_patch_result, render_pdf
+
+        change = _make_change(
+            self.version,
+            operation_id="op_ambiguous_01",
+            operation="annotate",
+            # occurrence 미지정 — 후보 2개라 AMBIGUOUS가 되어야 한다
+            anchor={"type": "text_match", "target_text": "개인정보"},
+            replacement="무관",
+        )
+        changes = collect_applied_changes(self.version, operations=["annotate", "redact_overlay"])
+        patch_result = render_pdf(self.pdf_bytes, changes)
+
+        self.assertEqual(patch_result.applied_ids, [])
+        self.assertEqual(len(patch_result.needs_confirmation_items), 1)
+        self.assertEqual(patch_result.output_bytes, b"", "모호한 항목만 있으면 artifact가 생성되면 안 된다")
+
+        persist_patch_result(self.version, patch_result, "pdf", changes)
+
+        change.refresh_from_db()
+        self.version.refresh_from_db()
+        self.assertEqual(change.status, DocumentChange.Status.NEEDS_CONFIRMATION)
+        self.assertEqual(self.version.status, DocumentVersion.Status.NEEDS_CONFIRMATION)
+        self.assertFalse(self.version.artifact_file)
+
+    def test_ambiguous_change_alongside_resolved_change_is_not_silently_applied(self):
+        """모호한 항목 + 해석 가능한 항목이 섞이면, 모호한 항목은 반영되지 않고 NEEDS_CONFIRMATION으로 남아야 한다."""
+        from apps.documents.patcher import collect_applied_changes, persist_patch_result, render_pdf
+
+        ambiguous_change = _make_change(
+            self.version,
+            operation_id="op_mixed_ambiguous",
+            operation="annotate",
+            anchor={"type": "text_match", "target_text": "개인정보"},
+            replacement="무관",
+        )
+        resolved_change = _make_change(
+            self.version,
+            operation_id="op_mixed_resolved",
+            operation="annotate",
+            anchor={"type": "pdf_bbox", "page": 1, "rect": {"x0": 10, "y0": 10, "x1": 50, "y1": 30}},
+            replacement="정상 반영",
+        )
+        changes = collect_applied_changes(self.version, operations=["annotate", "redact_overlay"])
+        patch_result = render_pdf(self.pdf_bytes, changes)
+        persist_patch_result(self.version, patch_result, "pdf", changes)
+
+        ambiguous_change.refresh_from_db()
+        resolved_change.refresh_from_db()
+        self.version.refresh_from_db()
+
+        self.assertEqual(resolved_change.status, DocumentChange.Status.APPLIED)
+        self.assertEqual(ambiguous_change.status, DocumentChange.Status.NEEDS_CONFIRMATION)
+        self.assertEqual(self.version.status, DocumentVersion.Status.READY)
+        self.assertIn("op_mixed_ambiguous", self.version.needs_confirmation_change_ids)
+        self.assertNotIn("op_mixed_ambiguous", self.version.applied_change_ids)
