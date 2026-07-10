@@ -239,7 +239,10 @@ export function WorkspaceCenter({
   }, [patchStatus, versionId, versions, handleSelectVersion, suggestions, setStatuses])
 
   const canEditSuggestionStatuses = useMemo(
-    () => !['generating', 'ready', 'failed'].includes(patchStatus),
+    // needs_confirmation: patcher가 이미 실행을 끝낸 종결 상태이므로 ready/failed와
+    // 마찬가지로 재수정 편집을 막는다 — 편집을 허용하면 BE가 이미 확정한 상태와
+    // 프론트 로컬 상태가 어긋난다.
+    () => !['generating', 'ready', 'failed', 'needs_confirmation'].includes(patchStatus),
     [patchStatus],
   )
 
@@ -248,7 +251,10 @@ export function WorkspaceCenter({
     for (const s of suggestions) {
       const status = statuses[s.id] ?? s.status ?? 'pending'
 
-      if (editingVersion?.status === 'ready') {
+      // ready: 부분 성공(일부 applied + 일부 needs_confirmation/실패)으로 끝난 버전.
+      // needs_confirmation: 버전 전체가 후보 모호로 멈춘 경우(applied_change_ids가 비어있음) —
+      // 두 경우 모두 needs_confirmation_change_ids를 같은 방식으로 조회할 수 있어야 한다.
+      if (editingVersion?.status === 'ready' || editingVersion?.status === 'needs_confirmation') {
         if (hasAppliedOperation(editingVersion, s)) {
           next[s.id] = 'applied'
         } else if (hasNeedsConfirmationOperation(editingVersion, s)) {

@@ -1052,11 +1052,14 @@ def persist_patch_result(version, result: PatchResult, ext: str, changes: list) 
     - failed_items에 해당하는 DocumentChange.status를 FAILED로 갱신
     - needs_confirmation_items에 해당하는 DocumentChange.status를 NEEDS_CONFIRMATION으로 갱신
       (자동 반영하지 않고 사용자 확인을 기다리는 상태 — FAILED와 구분)
+    - version.needs_confirmation_change_ids는 version.status가 READY/FAILED/NEEDS_CONFIRMATION
+      무엇으로 끝나든 항상 needs_confirmation_items 기준으로 갱신한다 — 프론트가 버전 상태와
+      무관하게 "어떤 change가 확인이 필요한지" 조회할 수 있어야 한다(applied_change_ids와 대칭)
     - applied_ids가 비어있고 needs_confirmation_items만 있으면 version.status = NEEDS_CONFIRMATION
     - applied_ids가 비어있고 failed_items가 있으면 version.status = FAILED
     - applied_ids가 있으면:
         artifact_file을 storage에 저장 (인프라 경계 — try/except 격리)
-        version.applied_change_ids, version.needs_confirmation_change_ids, version.status = READY 갱신
+        version.applied_change_ids, version.status = READY 갱신
     """
     from django.core.files.base import ContentFile
     from .models import DocumentChange, DocumentVersion
@@ -1070,6 +1073,12 @@ def persist_patch_result(version, result: PatchResult, ext: str, changes: list) 
         elif change.operation_id in needs_confirmation_op_ids:
             change.status = DocumentChange.Status.NEEDS_CONFIRMATION
             change.save(update_fields=["status", "updated_at"])
+
+    # needs_confirmation_change_ids는 version.status(READY/FAILED/NEEDS_CONFIRMATION 중
+    # 어느 것으로 끝나든)와 무관하게 항상 최신으로 반영한다 — 프론트가 "실패"와 "위치 확인
+    # 필요"를 구분하려면 이 값이 필요하다(READY로 끝나는 부분 성공 케이스뿐 아니라
+    # 버전 전체가 NEEDS_CONFIRMATION/FAILED로 끝나는 아래 이른 반환 경로에서도 마찬가지다).
+    version.needs_confirmation_change_ids = sorted(needs_confirmation_op_ids)
 
     if not result.applied_ids:
         # needs_confirmation만 있고 hard failure가 없으면 "위치 확인 필요"로 구분한다.
@@ -1100,9 +1109,6 @@ def persist_patch_result(version, result: PatchResult, ext: str, changes: list) 
         return
 
     version.applied_change_ids = result.applied_ids
-    version.needs_confirmation_change_ids = [
-        item["operation_id"] for item in result.needs_confirmation_items
-    ]
     version.status = DocumentVersion.Status.READY
     version.save(update_fields=[
         "artifact_file", "artifact_format", "applied_change_ids",
@@ -1113,11 +1119,19 @@ def persist_patch_result(version, result: PatchResult, ext: str, changes: list) 
 # ── 내부 헬퍼 (render_pdf 전용) ──────────────────────────────────────────────
 
 def _set_failed(version, error_message: str) -> None:
-    """version 상태를 FAILED로 설정하고 에러 메시지를 저장한다."""
+    """
+    version 상태를 FAILED로 설정하고 에러 메시지를 저장한다.
+
+    needs_confirmation_change_ids도 함께 저장한다 — persist_patch_result가 이 함수를
+    부르기 전에 그 필드를 이미 인스턴스에 설정해뒀을 수 있고(예: needs_confirmation과
+    failed가 섞여 결국 FAILED로 끝나는 경우), tasks.py의 다른 이른 실패 경로(파일 없음
+    등)처럼 손대지 않은 경우엔 update_fields에 있어도 기존 값을 그대로 다시 쓸 뿐이라
+    안전하다.
+    """
     from .models import DocumentVersion
     version.status = DocumentVersion.Status.FAILED
     version.error_message = error_message
-    version.save(update_fields=["status", "error_message", "updated_at"])
+    version.save(update_fields=["status", "error_message", "needs_confirmation_change_ids", "updated_at"])
 
 
 def _set_needs_confirmation(version, error_message: str) -> None:
@@ -1125,7 +1139,7 @@ def _set_needs_confirmation(version, error_message: str) -> None:
     from .models import DocumentVersion
     version.status = DocumentVersion.Status.NEEDS_CONFIRMATION
     version.error_message = error_message
-    version.save(update_fields=["status", "error_message", "updated_at"])
+    version.save(update_fields=["status", "error_message", "needs_confirmation_change_ids", "updated_at"])
 
 
 def _resolve_pdf_rect(doc, anchor: dict):

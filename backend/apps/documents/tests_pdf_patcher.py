@@ -718,6 +718,10 @@ class PdfAnchorAmbiguousTest(TestCase):
         self.assertEqual(change.status, DocumentChange.Status.NEEDS_CONFIRMATION)
         self.assertEqual(self.version.status, DocumentVersion.Status.NEEDS_CONFIRMATION)
         self.assertFalse(self.version.artifact_file)
+        # [코드리뷰 지적] version.status만 바뀌고 needs_confirmation_change_ids가 비어 있으면
+        # 프론트(WorkspaceCenter)가 어떤 change가 확인이 필요한지 알 수 없다 — applied_change_ids와
+        # 동일하게 이 경로에서도 채워져야 한다.
+        self.assertEqual(self.version.needs_confirmation_change_ids, ["op_ambiguous_01"])
 
     def test_ambiguous_change_alongside_resolved_change_is_not_silently_applied(self):
         """모호한 항목 + 해석 가능한 항목이 섞이면, 모호한 항목은 반영되지 않고 NEEDS_CONFIRMATION으로 남아야 한다."""

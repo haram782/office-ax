@@ -56,6 +56,22 @@ const READY_VERSIONS_NEEDS_CONFIRMATION = [
   },
 ]
 
+// 버전 전체가 후보 모호로 끝난 경우 — applied_change_ids가 비어 있고 version.status
+// 자체가 'needs_confirmation'이다(READY_VERSIONS_NEEDS_CONFIRMATION은 부분 성공으로
+// status='ready'인 경우라 서로 다른 코드 경로를 검증한다).
+const NEEDS_CONFIRMATION_ONLY_VERSIONS = [
+  VERSIONS[0],
+  {
+    id: 2,
+    version_number: 2,
+    status: 'needs_confirmation',
+    label: '박하람 교체안',
+    created_at: '2026-07-08T05:20:00',
+    applied_change_ids: [],
+    needs_confirmation_change_ids: ['s1'],
+  },
+]
+
 function renderCenter(props = {}) {
   return render(
     <WorkspaceCenter
@@ -252,5 +268,36 @@ describe('WorkspaceCenter 버전별 수정 카드', () => {
 
     expect(await screen.findByText('위치 확인 필요')).toBeInTheDocument()
     expect(screen.queryByText('생성 실패')).not.toBeInTheDocument()
+  })
+
+  it('[코드리뷰 지적 수정] 버전 전체가 needs_confirmation으로 끝나도(ready가 아니어도) 위치 확인 필요로 표시하고 편집을 막는다', async () => {
+    mockUseDocumentVersions.mockReturnValue({ versions: NEEDS_CONFIRMATION_ONLY_VERSIONS })
+    mockUseChangeSuggestions.mockReturnValue({
+      suggestions: [{ id: 's1', title: '박하람 텍스트 교체', status: 'pending' }],
+      statuses: { s1: 'pending' },
+      setStatuses: vi.fn(),
+      selectedSuggestionId: null,
+      setSelectedSuggestionId: vi.fn(),
+      highlights: [{ id: 's1', status: 'pending' }],
+      pendingIds: new Set(),
+      isAcceptingAll: false,
+      acceptAllError: null,
+      autoRejectedIds: new Set(),
+      handleSetStatus: vi.fn(),
+      handleAcceptAll: vi.fn(),
+      handleSelectHighlight: vi.fn(),
+    })
+
+    renderCenter()
+
+    // editingVersion.status === 'ready'만 검사하던 옛 코드라면 이 카드는 이 분기를
+    // 타지 않고 아래 'applied' 분기로 빠져 '생성 대기'처럼 보였을 것이다.
+    expect(await screen.findByText('위치 확인 필요')).toBeInTheDocument()
+    expect(screen.queryByText('생성 대기')).not.toBeInTheDocument()
+    expect(screen.queryByText('반영됨')).not.toBeInTheDocument()
+
+    // needs_confirmation은 종결 상태이므로 적용/거절 버튼이 다시 노출되면 안 된다
+    // (canEditSuggestionStatuses가 이 상태를 인식하지 못하면 버튼이 다시 활성화된다).
+    expect(screen.queryByTitle('적용')).not.toBeInTheDocument()
   })
 })

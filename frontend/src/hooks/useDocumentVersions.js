@@ -17,7 +17,9 @@ function findVersion(list, versionId) {
 }
 
 function isTerminalVersionStatus(status) {
-  return status === 'ready' || status === 'failed'
+  // needs_confirmation: AnchorResolver가 후보 여러 개라 자동 반영을 멈춘 상태 —
+  // ready/failed와 마찬가지로 patcher 실행이 끝난 종결 상태이므로 polling을 멈춰야 한다.
+  return status === 'ready' || status === 'failed' || status === 'needs_confirmation'
 }
 
 /**
