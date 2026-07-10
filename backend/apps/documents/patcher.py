@@ -949,6 +949,10 @@ def render_pdf(original_bytes: bytes, changes: list) -> PatchResult:
     적용한다. RESOLVED만 실제로 렌더링하며, AMBIGUOUS(후보 여러 개)는
     needs_confirmation_items로, NOT_FOUND/UNSUPPORTED는 failed_items로 분리한다
     (anchor_resolution.py — "모호하면 자동 반영하지 않는다" 원칙).
+
+    적용 후에는 수정본 bytes를 다시 열어 구조적 invariant를 검증한다
+    (design v1 7.1절 1~2항, _validate_pdf_render). 검증 실패 시 artifact를
+    내보내지 않고 applied였던 항목을 code=render_validation_failed로 failed 처리한다.
     """
     try:
         import fitz
@@ -976,6 +980,8 @@ def render_pdf(original_bytes: bytes, changes: list) -> PatchResult:
     applied_ids: list[str] = []
     failed_items: list[dict] = []
     needs_confirmation_items: list[dict] = []
+    # 검증 단계에서 change별 rect·페이지를 다시 쓰기 위해 적용 이력을 보존한다
+    applied_records: list[dict] = []
 
     for change in changes:
         result = resolver.resolve(change.anchor, layout)
@@ -987,8 +993,13 @@ def render_pdf(original_bytes: bytes, changes: list) -> PatchResult:
             else:
                 _apply_pdf_redact_overlay(page, result.rect, change)
             applied_ids.append(change.operation_id)
+            applied_records.append({"change": change, "page": result.page, "rect": result.rect})
         elif result.status == AnchorStatus.AMBIGUOUS:
-            needs_confirmation_items.append({"operation_id": change.operation_id, "reason": result.reason})
+            needs_confirmation_items.append({
+                "operation_id": change.operation_id,
+                "reason": result.reason,
+                "code": FAILURE_CODE_AMBIGUOUS_ANCHOR,
+            })
             logger.warning(
                 "render_pdf: anchor 후보 다수 | op=%s | reason=%s", change.operation_id, result.reason,
             )
@@ -1008,7 +1019,24 @@ def render_pdf(original_bytes: bytes, changes: list) -> PatchResult:
     doc.save(output)
     doc.close()
     output.seek(0)
-    return PatchResult(output.read(), applied_ids, failed_items, needs_confirmation_items)
+    output_bytes = output.read()
+
+    # post-render 검증 — 하나라도 실패하면 artifact 전체를 내보내지 않는다.
+    # 수정본 bytes에는 모든 applied change의 변형이 섞여 있어 실패 항목만
+    # 떼어낼 수 없기 때문이다(부분 성공 불가).
+    validation_failures = _validate_pdf_render(layout, output_bytes, applied_records)
+    if validation_failures:
+        failure_by_id = {item["operation_id"]: item for item in validation_failures}
+        for record in applied_records:
+            op_id = record["change"].operation_id
+            failed_items.append(failure_by_id.get(op_id) or {
+                "operation_id": op_id,
+                "reason": "같은 결과물의 다른 변경이 render 검증에 실패해 함께 중단됨",
+                "code": FAILURE_CODE_RENDER_VALIDATION_FAILED,
+            })
+        return PatchResult(b"", [], failed_items, needs_confirmation_items)
+
+    return PatchResult(output_bytes, applied_ids, failed_items, needs_confirmation_items)
 
 
 def render_hwp(original_bytes: bytes, changes: list) -> PatchResult:
@@ -1254,3 +1282,155 @@ def _apply_pdf_redact_overlay(page, rect, change) -> None:
         fontname=fontname,
         color=(0, 0, 0),
     )
+
+
+# ── render_pdf post-render 검증 (design v1 7.1절 invariant 1~2 — 베타 전 smoke check) ──
+
+def _validate_pdf_render(layout, output_bytes: bytes, applied_records: list[dict]) -> list[dict]:
+    """
+    수정본 PDF의 구조적 invariant를 검증한다. 실패 항목 목록(failed_items 형식)을
+    반환하며 빈 목록이면 통과다.
+
+    검증 순서 (구체적인 사유를 먼저 보고하도록 배치):
+      1. 수정본이 예외 없이 열리고 페이지 수가 유지되는지 (invariant 2)
+      2. redact/replace 계열 change마다 replacement가 rect 근처에서 재추출되고
+         original이 그 자리에서 사라졌는지 (invariant 1) — build_pdf_document_layout의
+         token 추출을 그대로 재사용해 PR #29~#31이 고친 버그 클래스를 재검증한다
+      3. 원래 텍스트가 있던 페이지가 예상 밖으로 비지 않았는지 (invariant 2)
+
+    invariant 3~4(rect 겹침·과대 redact 영역)는 베타 후 범위다 (design v1 10.2절).
+    """
+    import fitz
+
+    from .anchor_resolution import build_pdf_document_layout
+
+    def _all_failed(reason: str) -> list[dict]:
+        return [
+            {
+                "operation_id": record["change"].operation_id,
+                "reason": reason,
+                "code": FAILURE_CODE_RENDER_VALIDATION_FAILED,
+            }
+            for record in applied_records
+        ]
+
+    try:
+        modified = fitz.open(stream=output_bytes, filetype="pdf")
+    except Exception as exc:
+        # 렌더 산출물 자체가 열리지 않음 — 라이브러리 경계 실패도 검증 실패로 수렴시킨다
+        return _all_failed(f"render 검증 실패: 수정본 PDF를 열 수 없음 ({exc})")
+
+    try:
+        if len(modified) != len(layout.pages):
+            return _all_failed(
+                f"render 검증 실패: 페이지 수가 변함 (원본 {len(layout.pages)} → 수정본 {len(modified)})"
+            )
+
+        modified_layout = build_pdf_document_layout(modified)
+
+        failures: list[dict] = []
+        for record in applied_records:
+            change = record["change"]
+            # annotate는 텍스트를 바꾸지 않으므로 invariant 1 대상이 아니다
+            if change.operation == "annotate":
+                continue
+            reason = _validate_pdf_text_change(
+                modified_layout.pages[record["page"]],
+                record["rect"],
+                change,
+                modified[record["page"]].rect,
+            )
+            if reason is not None:
+                failures.append({
+                    "operation_id": change.operation_id,
+                    "reason": reason,
+                    "code": FAILURE_CODE_RENDER_VALIDATION_FAILED,
+                })
+                logger.warning(
+                    "render_pdf: 검증 실패 | op=%s | reason=%s", change.operation_id, reason,
+                )
+        if failures:
+            return failures
+
+        empty_page_reason = _find_unexpected_empty_page(
+            layout.pages, modified_layout.pages, applied_records,
+        )
+        if empty_page_reason is not None:
+            logger.warning("render_pdf: 검증 실패 | reason=%s", empty_page_reason)
+            return _all_failed(empty_page_reason)
+        return []
+    finally:
+        modified.close()
+
+
+def _validate_pdf_text_change(page_tokens: list, rect, change, page_rect) -> str | None:
+    """
+    invariant 1: replacement가 rect 근처(같은 줄 대역)에서 재추출되고 original은
+    rect 자리에서 사라졌는지 확인한다. 통과 시 None, 실패 시 사유 문자열.
+
+    비교는 공백을 제거한 문자열로 한다 — token 결합 시 공백 규칙이 문서마다 달라
+    (anchor_resolution._build_nospace_index와 동일한 이유) 공백 차이 오탐을 막는다.
+    """
+    import fitz
+
+    replacement = _strip_whitespace(change.replacement or "")
+    original = _strip_whitespace(change.original or change.anchor.get("target_text") or "")
+    font_size = change.patch.get("font_size", 11) if change.patch else 11
+
+    if replacement:
+        # 삽입 텍스트는 (rect.x0, rect.y1-2) 기준으로 오른쪽으로 그려지므로 오른쪽
+        # 경계는 페이지 끝까지 여유 있게 잡는다 (같은 줄 대역 overapproximation).
+        band = fitz.Rect(rect.x0 - 2, rect.y0 - font_size, page_rect.x1, rect.y1 + font_size)
+        band_text = _strip_whitespace(_tokens_text_in_clip(page_tokens, band))
+        if replacement not in band_text:
+            return (
+                f"render 검증 실패: replacement {change.replacement!r}가 수정 위치 근처에서 "
+                "추출되지 않음 (텍스트가 실제로 그려지지 않았을 가능성)"
+            )
+
+    # replacement가 original을 포함하면(예: '6' → '6월') 잔존처럼 보이는 오탐을
+    # 피할 수 없으므로 그 경우에만 잔존 확인을 건너뛴다.
+    if original and original not in replacement:
+        local = fitz.Rect(rect.x0 - 2, rect.y0 - 2, rect.x1 + 2, rect.y1 + 2)
+        local_text = _strip_whitespace(_tokens_text_in_clip(page_tokens, local))
+        if original in local_text:
+            return (
+                f"render 검증 실패: original {change.original!r}이(가) 수정 위치에 "
+                "여전히 남아 있음 (redaction 누락 가능성)"
+            )
+
+    return None
+
+
+def _find_unexpected_empty_page(
+    original_pages: list, modified_pages: list, applied_records: list[dict],
+) -> str | None:
+    """
+    invariant 2: 원래 텍스트가 있던 페이지가 수정 후 비어 있으면 사유를 반환한다.
+
+    replacement가 빈 문자열인 redact(텍스트 삭제 목적)가 적용된 페이지는
+    의도적으로 비었을 수 있으므로 검사에서 제외한다.
+    """
+    exempt_pages = {
+        record["page"]
+        for record in applied_records
+        if record["change"].operation != "annotate" and not (record["change"].replacement or "")
+    }
+    for page_idx, original_tokens in enumerate(original_pages):
+        if not original_tokens or page_idx in exempt_pages:
+            continue
+        if page_idx < len(modified_pages) and not modified_pages[page_idx]:
+            return f"render 검증 실패: {page_idx + 1}페이지가 수정 후 예상 밖으로 비어 있음"
+    return None
+
+
+def _strip_whitespace(text: str) -> str:
+    """모든 공백 문자를 제거한다 (token 결합 방식과 무관한 비교용)."""
+    return re.sub(r"\s+", "", text)
+
+
+def _tokens_text_in_clip(page_tokens: list, clip) -> str:
+    """clip 영역과 겹치는 token들의 텍스트를 읽기순서 그대로 공백 없이 이어붙인다."""
+    import fitz
+
+    return "".join(t.text for t in page_tokens if fitz.Rect(t.bbox).intersects(clip))
