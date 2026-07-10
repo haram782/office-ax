@@ -387,6 +387,9 @@ def patch_document_version(version_id: int) -> None:
         applied_changes=len(result.applied_ids),
         failed_changes=len(result.failed_items),
         error_message=version.error_message if final_status == UsageEvent.Status.FAILED else None,
+        # 조기 실패 경로(source_file_missing 등)와 동일하게, render/persist 실패도
+        # 안정된 실패 사유 코드를 metadata.reason으로 남긴다 (design v1 8절)
+        reason=_primary_failure_code(result) if final_status == UsageEvent.Status.FAILED else None,
     )
 
 
@@ -400,6 +403,24 @@ def _record_patch_artifact_event(version, upload_log, status: str, **metadata) -
         status=status,
         metadata={"version_id": version.pk, **{k: v for k, v in metadata.items() if v is not None}},
     )
+
+
+def _primary_failure_code(result) -> str | None:
+    """
+    PatchResult에서 대표 실패 사유 코드를 고른다 (usage event metadata용).
+
+    hard failure(failed_items)의 코드가 위치 확인 대기(needs_confirmation_items)의
+    코드보다 우선한다 — 버전이 FAILED로 끝났다면 그쪽이 대표 원인이다.
+    코드가 없는 기존 실패(대상 텍스트 없음 등)는 None을 반환해 reason 키를
+    기록하지 않는다.
+    """
+    for item in result.failed_items:
+        if item.get("code"):
+            return item["code"]
+    for item in result.needs_confirmation_items:
+        if item.get("code"):
+            return item["code"]
+    return None
 
 # ── 핵심 알고리즘 ─────────────────────────────────────────────────────────────
 
