@@ -1082,12 +1082,64 @@ def _set_failed(version, error_message: str) -> None:
     version.save(update_fields=["status", "error_message", "updated_at"])
 
 
+# 조각을 같은 occurrence로 묶을 때 허용할 최대 X간격 — 텍스트 높이의 배수.
+# 실사용 문서에서 라벨(년/월) 사이 간격은 텍스트 높이의 ~1.1배였고, 표의
+# 다른 셀에 있는 별개 발생은 ~20배였다 — 그 사이에서 넉넉히 잡는다.
+_FRAGMENT_MERGE_GAP_RATIO = 4.0
+
+
+def _group_search_rects_into_occurrences(rects: list) -> list:
+    """
+    search_for()가 반환한 rect 목록을 실제 발생(occurrence) 단위로 묶는다.
+
+    다중 단어 검색어는 PDF 내부 span 경계(폰트 전환, 별도 시점에 겹쳐
+    그려진 텍스트 등)에 따라 하나의 논리적 매치가 여러 rect로 쪼개져
+    반환될 수 있다 — 예: "2026 6 27"이 "년"·"월" 라벨과 겹쳐 있으면
+    "2026"/"6"/"27" 세 조각으로 나뉜다. 이걸 첫 조각만 쓰면 일부만
+    지워지고 나머지는 새로 그린 텍스트와 겹친다.
+
+    같은 줄(Y좌표 겹침)이면서 간격이 좁은(X간격 < 텍스트 높이의
+    _FRAGMENT_MERGE_GAP_RATIO배) 연속 rect는 하나의 occurrence로 묶어
+    그 경계 사각형(union)을 반환한다. Y가 겹쳐도 간격이 넓으면(표의
+    다른 셀 등) 별개 occurrence로 유지한다.
+    """
+    if not rects:
+        return []
+
+    groups: list[list] = [[rects[0]]]
+    for r in rects[1:]:
+        prev = groups[-1][-1]
+        y_overlaps = not (r.y1 < prev.y0 or r.y0 > prev.y1)
+        text_height = prev.y1 - prev.y0
+        gap = r.x0 - prev.x1
+        close_enough = gap < text_height * _FRAGMENT_MERGE_GAP_RATIO
+        if y_overlaps and close_enough:
+            groups[-1].append(r)
+        else:
+            groups.append([r])
+
+    return [_union_rects(group) for group in groups]
+
+
+def _union_rects(rects: list):
+    import fitz
+
+    return fitz.Rect(
+        min(r.x0 for r in rects),
+        min(r.y0 for r in rects),
+        max(r.x1 for r in rects),
+        max(r.y1 for r in rects),
+    )
+
+
 def _resolve_pdf_rect(doc, anchor: dict):
     """
     anchor 딕셔너리에서 (0-based 페이지 인덱스, fitz.Rect)를 반환한다.
 
     pdf_bbox: page(1-based) → 0-based 변환, rect 딕셔너리 → fitz.Rect
-    text_match: search_for()로 텍스트 위치 탐색, occurrence 번째 결과 반환
+    text_match: search_for()로 텍스트 위치 탐색 후 조각을 occurrence
+    단위로 묶어(_group_search_rects_into_occurrences) occurrence 번째
+    결과를 반환한다.
     반환 None: 텍스트 없음, 페이지 범위 초과, rect 정보 누락
     """
     import fitz
@@ -1123,7 +1175,7 @@ def _resolve_pdf_rect(doc, anchor: dict):
 
         hit_count = 0
         for idx, page in pages_to_search:
-            for r in page.search_for(target):
+            for r in _group_search_rects_into_occurrences(page.search_for(target)):
                 hit_count += 1
                 if hit_count == occurrence:
                     return (idx, r)

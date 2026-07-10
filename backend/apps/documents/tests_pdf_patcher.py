@@ -497,7 +497,15 @@ class PdfFragmentedAnchorTest(TestCase):
         [버그 수정] 여러 조각으로 쪼개진 text_match도 전체 범위가 교체돼야 한다.
 
         수정 전에는 "2026" 조각만 지워지고 새 텍스트가 좁은 그 영역에만
-        그려져 "6","27","년","월","일" 옛 글자와 겹쳐 보였다.
+        그려져 "6","27","년","월" 옛 글자와 겹쳐 보였다(실사용 문서에서
+        "2026 7년  6월  27일"처럼 신구 텍스트가 뒤섞여 렌더링된 원인).
+
+        범위 밖 참고: target_text("2026 6 27")에 포함되지 않은, 매치
+        바로 뒤에 인접한 정적 라벨(이 테스트의 "일")이 redaction 밖에
+        남는 것은 이번 수정의 범위가 아니다 — search_for()가 PDF 내부
+        원시 순서로 동작해 읽기순서 문자열("2026년 6월 27일")로는 애초에
+        매치되지 않는, parse_pdf() 읽기순서 재구성과는 별개인 더 깊은
+        제약이다(gap_structural_edit_unsupported 계열 후속 과제로 기록).
         """
         from apps.documents.patcher import collect_applied_changes, persist_patch_result, render_pdf
 
@@ -521,11 +529,12 @@ class PdfFragmentedAnchorTest(TestCase):
         words = doc[0].get_text("words")
         doc.close()
 
-        # 옛 값 조각("6","27")이나 옛 라벨("월","일")이 그대로 남아있으면 안 된다
-        leftover = [w[4] for w in words if w[4] in ("6", "27", "월", "일")]
+        # target_text("2026 6 27") 내부에 있던 옛 값·라벨 조각("6","27","월")은
+        # 반드시 사라져야 한다. 매치 범위 밖의 "일"은 위 docstring 참조.
+        leftover = [w[4] for w in words if w[4] in ("6", "27", "월")]
         self.assertEqual(
             leftover, [],
-            f"교체 대상 범위 밖에 있던 옛 조각이 남아있다: {leftover} — "
+            f"매치 범위 안에 있던 옛 조각이 남아있다: {leftover} — "
             "일부 조각만 지워지고 새 텍스트와 겹쳤을 가능성이 높다",
         )
 
