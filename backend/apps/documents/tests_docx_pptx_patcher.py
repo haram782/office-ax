@@ -534,3 +534,147 @@ class UnsupportedFormatTest(TestCase):
             version.error_message,
             "error_message에 지원하지 않는 포맷 이름이 포함되어야 한다",
         )
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA)
+class TextAnchorContractKeyTest(TestCase):
+    """
+    [버그 수정] text 계열 anchor 계약 키(target_text) 테스트.
+
+    patch-plan-schema-v0 7.2절과 LLM 프롬프트(prompts/patch_plan.py)는 text_match
+    anchor의 대상 키를 "target_text"로 정의하는데, 기존 DOCX/PPTX patcher는
+    "text_match" 키만 읽었다 — 실제 LLM/규칙 기반 플랜의 anchor로는 대상을 항상
+    빈 문자열로 읽어 동작하지 않았다(계약-구현 불일치). PDF resolver는 이미
+    target_text를 읽으므로 DOCX/PPTX만 맞춘다.
+    """
+
+    def setUp(self):
+        self.user = _make_user("anchor_contract_user")
+
+    def test_docx_target_text_key_unique_match_applies(self):
+        """계약 키 target_text로 유일 매치가 정상 교체된다."""
+        from apps.documents.patcher import collect_applied_changes, render_docx
+        from docx import Document
+
+        docx_bytes = _build_docx_bytes_multi(["계약금액 1,000원"])
+        upload = _make_upload(
+            self.user, "docx", "contract_key.docx", docx_bytes, hash_val="docx_contract_key_hash"
+        )
+        version = _make_version(upload, self.user)
+        _make_change(
+            version,
+            operation_id="op_docx_contract_key",
+            operation="replace_text",
+            anchor={"type": "text_match", "target_text": "계약금액", "occurrence": 1},
+            original="계약금액",
+            replacement="총계약금액",
+        )
+        changes = collect_applied_changes(version, operations=["replace_text"])
+        with upload.file.open("rb") as f:
+            original_bytes = f.read()
+        result = render_docx(original_bytes, changes)
+
+        self.assertEqual(
+            result.applied_ids,
+            ["op_docx_contract_key"],
+            "계약 키 target_text anchor로도 교체가 적용되어야 한다",
+        )
+        self.assertEqual(result.failed_items, [])
+        doc = Document(io.BytesIO(result.output_bytes))
+        full_text = "\n".join(p.text for p in doc.paragraphs)
+        self.assertIn("총계약금액", full_text)
+
+    def test_docx_target_text_key_duplicate_stops_with_needs_confirmation(self):
+        """계약 키 target_text에서도 다중 매치는 NEEDS_CONFIRMATION으로 멈춘다."""
+        from apps.documents.patcher import collect_applied_changes, render_docx
+
+        docx_bytes = _build_docx_bytes_multi(
+            ["계약금액 1,000원", "비고: 계약금액은 부가세 포함"]
+        )
+        upload = _make_upload(
+            self.user, "docx", "contract_key_dup.docx", docx_bytes,
+            hash_val="docx_contract_key_dup_hash",
+        )
+        version = _make_version(upload, self.user)
+        _make_change(
+            version,
+            operation_id="op_docx_contract_dup",
+            operation="replace_text",
+            anchor={"type": "text_match", "target_text": "계약금액"},
+            original="계약금액",
+            replacement="총계약금액",
+        )
+        changes = collect_applied_changes(version, operations=["replace_text"])
+        with upload.file.open("rb") as f:
+            original_bytes = f.read()
+        result = render_docx(original_bytes, changes)
+
+        self.assertEqual(result.applied_ids, [])
+        self.assertEqual(len(result.needs_confirmation_items), 1)
+        self.assertEqual(result.needs_confirmation_items[0].get("code"), "ambiguous_anchor")
+
+    def test_pptx_target_text_key_applies_without_prepend_corruption(self):
+        """
+        [회귀] PPTX도 계약 키 target_text를 읽어야 한다 — 기존에는 빈 문자열로
+        읽혀 첫 단락 맨 앞에 replacement가 침묵 삽입되는 오염이 발생했다.
+        """
+        from apps.documents.patcher import collect_applied_changes, render_pptx
+        from pptx import Presentation
+
+        pptx_bytes = _build_pptx_bytes("발표자료 v1")
+        upload = _make_upload(
+            self.user, "pptx", "contract_key.pptx", pptx_bytes, hash_val="pptx_contract_key_hash"
+        )
+        version = _make_version(upload, self.user)
+        _make_change(
+            version,
+            operation_id="op_pptx_contract_key",
+            operation="replace_text",
+            anchor={"type": "text_match", "target_text": "v1", "slide_index": 0, "shape_index": 0},
+            original="v1",
+            replacement="v2",
+        )
+        changes = collect_applied_changes(version, operations=["replace_text"])
+        with upload.file.open("rb") as f:
+            original_bytes = f.read()
+        result = render_pptx(original_bytes, changes)
+
+        self.assertEqual(result.applied_ids, ["op_pptx_contract_key"])
+        prs = Presentation(io.BytesIO(result.output_bytes))
+        texts = [
+            para.text
+            for slide in prs.slides
+            for shape in slide.shapes
+            if shape.has_text_frame
+            for para in shape.text_frame.paragraphs
+        ]
+        joined = "\n".join(texts)
+        self.assertIn("발표자료 v2", joined, "target_text 위치가 정확히 교체되어야 한다")
+        self.assertNotIn("v2발표자료", joined, "맨 앞 침묵 삽입 오염이 있어서는 안 된다")
+
+    def test_pptx_empty_target_text_fails_explicitly(self):
+        """[경계] 대상 키가 모두 비어 있으면 침묵 삽입 대신 failed_items로 실패한다."""
+        from apps.documents.patcher import collect_applied_changes, render_pptx
+
+        pptx_bytes = _build_pptx_bytes("발표자료 v1")
+        upload = _make_upload(
+            self.user, "pptx", "contract_key_empty.pptx", pptx_bytes,
+            hash_val="pptx_contract_key_empty_hash",
+        )
+        version = _make_version(upload, self.user)
+        _make_change(
+            version,
+            operation_id="op_pptx_empty_key",
+            operation="replace_text",
+            anchor={"type": "text_match", "slide_index": 0, "shape_index": 0},
+            original="",
+            replacement="오염텍스트",
+        )
+        changes = collect_applied_changes(version, operations=["replace_text"])
+        with upload.file.open("rb") as f:
+            original_bytes = f.read()
+        result = render_pptx(original_bytes, changes)
+
+        self.assertEqual(result.applied_ids, [], "빈 대상 키가 applied로 처리되면 안 된다")
+        self.assertEqual(len(result.failed_items), 1)
+        self.assertEqual(result.failed_items[0]["operation_id"], "op_pptx_empty_key")
