@@ -224,6 +224,9 @@ class DocumentVersion(models.Model):
         GENERATING = "generating", "생성 중"    # patcher 실행 중
         READY      = "ready",      "완료"       # 수정본 생성 완료
         FAILED     = "failed",     "실패"       # patcher 실패
+        # anchor 후보가 여러 개라 자동 반영을 멈춘 상태 — AnchorResolver.AMBIGUOUS
+        # 결과만 있고 하나라도 성공(READY)한 change가 없을 때 (anchor_resolution.py 참고)
+        NEEDS_CONFIRMATION = "needs_confirmation", "위치 확인 필요"
 
     upload_log = models.ForeignKey(
         UploadLog,
@@ -253,6 +256,9 @@ class DocumentVersion(models.Model):
     )
     # patcher가 실제 파일에 반영한 operation_id 목록
     applied_change_ids = models.JSONField(default=list, blank=True)
+    # AnchorResolver가 AMBIGUOUS로 판정해 자동 반영을 멈춘 operation_id 목록
+    # (applied_change_ids와 동일한 패턴 — 프론트가 별도 조회 없이 상태를 구분하기 위함)
+    needs_confirmation_change_ids = models.JSONField(default=list, blank=True)
     # patcher 실패 시 사유 기록 (정상 완료 시 빈 문자열)
     error_message = models.TextField(blank=True, default="")
     # patch 완료 결과물 — GET 다운로드는 이 파일을 그대로 반환한다(재생성하지 않음)
@@ -307,6 +313,9 @@ class DocumentChange(models.Model):
         APPLIED  = "applied",  "적용됨"
         REJECTED = "rejected", "거부"
         FAILED   = "failed",   "실패"   # patcher 실패 대비 유지
+        # anchor 후보가 여러 개(AnchorResolver.AMBIGUOUS)라 자동 반영하지 않고
+        # 멈춘 상태 — FAILED와 달리 "위치를 특정할 수 없어 확인이 필요함"을 의미한다
+        NEEDS_CONFIRMATION = "needs_confirmation", "위치 확인 필요"
 
     version = models.ForeignKey(
         DocumentVersion,

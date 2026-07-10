@@ -75,6 +75,9 @@ const STATUS_BADGE = {
   applied:    { cls: 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400', label: '반영됨' },
   failed:     { cls: 'bg-red-50 dark:bg-red-900/20 text-red-500', label: '생성 실패' },
   rejected:   { cls: 'bg-red-50 dark:bg-red-900/20 text-red-400', label: '거절됨' },
+  // BE AnchorResolver가 후보를 여러 개 찾아 자동 반영을 멈춘 상태(needs_confirmation) —
+  // "실패"가 아니라 "위치를 특정하지 못해 확인이 필요함"을 구분해서 보여준다.
+  needs_confirmation: { cls: 'bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400', label: '위치 확인 필요' },
 }
 
 /**

@@ -21,6 +21,15 @@ function hasAppliedOperation(version, suggestion) {
   return idSet.has(String(suggestion.id))
 }
 
+// AnchorResolver가 후보 여러 개(ambiguous)라 자동 반영을 멈춘 change인지 확인한다.
+// applied_change_ids와 동일한 패턴 — version 응답에 이미 포함돼 있어 별도 조회가 필요 없다.
+function hasNeedsConfirmationOperation(version, suggestion) {
+  const ids = version?.needs_confirmation_change_ids ?? []
+  if (!Array.isArray(ids) || ids.length === 0) return false
+  const idSet = new Set(ids.map(id => String(id)))
+  return idSet.has(String(suggestion.id))
+}
+
 /**
  * 워크스페이스 중앙 문서 뷰어 영역.
  * 파일이 선택된 경우 ViewerShell + resolveViewer()로 뷰어를 렌더한다.
@@ -230,7 +239,10 @@ export function WorkspaceCenter({
   }, [patchStatus, versionId, versions, handleSelectVersion, suggestions, setStatuses])
 
   const canEditSuggestionStatuses = useMemo(
-    () => !['generating', 'ready', 'failed'].includes(patchStatus),
+    // needs_confirmation: patcher가 이미 실행을 끝낸 종결 상태이므로 ready/failed와
+    // 마찬가지로 재수정 편집을 막는다 — 편집을 허용하면 BE가 이미 확정한 상태와
+    // 프론트 로컬 상태가 어긋난다.
+    () => !['generating', 'ready', 'failed', 'needs_confirmation'].includes(patchStatus),
     [patchStatus],
   )
 
@@ -239,9 +251,16 @@ export function WorkspaceCenter({
     for (const s of suggestions) {
       const status = statuses[s.id] ?? s.status ?? 'pending'
 
-      if (editingVersion?.status === 'ready') {
+      // ready: 부분 성공(일부 applied + 일부 needs_confirmation/실패)으로 끝난 버전.
+      // needs_confirmation: 버전 전체가 후보 모호로 멈춘 경우(applied_change_ids가 비어있음) —
+      // 두 경우 모두 needs_confirmation_change_ids를 같은 방식으로 조회할 수 있어야 한다.
+      if (editingVersion?.status === 'ready' || editingVersion?.status === 'needs_confirmation') {
         if (hasAppliedOperation(editingVersion, s)) {
           next[s.id] = 'applied'
+        } else if (hasNeedsConfirmationOperation(editingVersion, s)) {
+          // 후보가 여러 개라 BE가 자동 반영을 멈춘 항목 — "실패"가 아니라
+          // "위치 확인 필요"로 구분해야 사용자가 재시도 대신 anchor를 좁혀 재요청할 수 있다
+          next[s.id] = 'needs_confirmation'
         } else {
           next[s.id] = status === 'rejected' ? 'rejected' : 'failed'
         }

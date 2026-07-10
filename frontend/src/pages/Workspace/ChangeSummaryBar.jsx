@@ -9,6 +9,10 @@ const PATCH_BTN = {
   generating:  { label: '수정본 생성 중…',  disabled: true,  cls: 'text-zinc-400 border-zinc-200 dark:border-zinc-700' },
   ready:       { label: '수정본 생성됨',    disabled: true,  cls: 'text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-700' },
   failed:      { label: '생성 실패 — 다시 시도', disabled: false, cls: 'text-red-500 border-red-200 dark:border-red-700 hover:border-red-300' },
+  // AnchorResolver가 후보 여러 개라 자동 반영을 멈춘 상태 — 매핑이 없으면 PATCH_BTN.null로
+  // 빠져 "수정본 생성" 새 버튼처럼 보인다(마치 아무 일도 없었던 것처럼). "실패"와도 달라야
+  // 하므로(재시도가 아니라 위치 확인이 우선) 별도 항목으로 둔다.
+  needs_confirmation: { label: '위치 확인 필요', disabled: true, cls: 'text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-700' },
 }
 
 /**
@@ -20,7 +24,7 @@ const PATCH_BTN = {
  *   acceptAllError: string|null,
  *   uploadId:     number|string|null,
  *   versionId:    number|string|null,
- *   patchStatus:  null|'generating'|'ready'|'failed',
+ *   patchStatus:  null|'generating'|'ready'|'failed'|'needs_confirmation',
  *   onPatch:      (() => void)|null,
  * }} props
  */

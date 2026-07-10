@@ -451,6 +451,120 @@ class PdfReplaceTextTest(TestCase):
 
 
 @override_settings(MEDIA_ROOT=TEMP_MEDIA)
+def _build_pdf_bytes_fragmented_field() -> bytes:
+    """
+    라벨("년 월 일")을 먼저 그리고 채워진 값("2026 6 27")을 나중에
+    라벨 사이사이 위치에 그린 합성 PDF를 만든다.
+
+    실제 버그 문서와 동일한 패턴: search_for("2026 6 27")가 "2026","6","27"
+    세 조각(rect)으로 쪼개져 반환된다 — 코드가 첫 조각만 쓰면 일부만
+    지워지고 나머지는 겹쳐 그려진다.
+    """
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((235, 715), "년", fontsize=11, fontname="korea-s", color=(0, 0, 0))
+    page.insert_text((295, 715), "월", fontsize=11, fontname="korea-s", color=(0, 0, 0))
+    page.insert_text((345, 715), "일", fontsize=11, fontname="korea-s", color=(0, 0, 0))
+    page.insert_text((190, 715), "2026", fontsize=11, fontname="helv", color=(0, 0, 0))
+    page.insert_text((265, 715), "6", fontsize=11, fontname="helv", color=(0, 0, 0))
+    page.insert_text((315, 715), "27", fontsize=11, fontname="helv", color=(0, 0, 0))
+    buf = io.BytesIO()
+    doc.save(buf)
+    doc.close()
+    return buf.getvalue()
+
+
+class PdfFragmentedAnchorTest(TestCase):
+    """
+    text_match 앵커가 여러 조각(rect)으로 쪼개지는 경우 테스트 (버그 신고 2026-07-10).
+
+    실사용 문서에서 "신청일자를 2026년 7월 1일로" 요청이 "반영됨"으로
+    처리됐는데도 실제로는 "2026 7년 6월 27일"처럼 새 값과 옛 값이 겹쳐
+    렌더링됐다 — search_for()가 반환한 여러 조각 중 첫 조각만 지우고
+    그렸기 때문이다.
+    """
+
+    def setUp(self):
+        self.user = _make_user("pdf_fragment_user")
+        self.pdf_bytes = _build_pdf_bytes_fragmented_field()
+        self.upload = _make_upload(self.user, "fragment.pdf", self.pdf_bytes, "pdf_fragment_hash")
+        self.version = _make_version(self.upload, self.user)
+
+    def test_fragmented_match_replaces_entire_span_not_first_fragment_only(self):
+        """
+        [버그 수정] 여러 조각으로 쪼개진 text_match도 전체 범위가 교체돼야 한다.
+
+        수정 전에는 "2026" 조각만 지워지고 새 텍스트가 좁은 그 영역에만
+        그려져 "6","27","년","월" 옛 글자와 겹쳐 보였다(실사용 문서에서
+        "2026 7년  6월  27일"처럼 신구 텍스트가 뒤섞여 렌더링된 원인).
+
+        범위 밖 참고: target_text("2026 6 27")에 포함되지 않은, 매치
+        바로 뒤에 인접한 정적 라벨(이 테스트의 "일")이 redaction 밖에
+        남는 것은 이번 수정의 범위가 아니다 — search_for()가 PDF 내부
+        원시 순서로 동작해 읽기순서 문자열("2026년 6월 27일")로는 애초에
+        매치되지 않는, parse_pdf() 읽기순서 재구성과는 별개인 더 깊은
+        제약이다(gap_structural_edit_unsupported 계열 후속 과제로 기록).
+        """
+        from apps.documents.patcher import collect_applied_changes, persist_patch_result, render_pdf
+
+        _make_change(
+            self.version,
+            operation_id="op_frag_01",
+            operation="redact_overlay",
+            anchor={"type": "text_match", "occurrence": 1, "target_text": "2026 6 27"},
+            original="2026 6 27",
+            replacement="2026년 7월 1일",
+        )
+        changes = collect_applied_changes(self.version, operations=["annotate", "redact_overlay"])
+        patch_result = render_pdf(self.pdf_bytes, changes)
+        persist_patch_result(self.version, patch_result, "pdf", changes)
+
+        self.version.refresh_from_db()
+        self.assertEqual(self.version.status, DocumentVersion.Status.READY)
+
+        import fitz
+        doc = fitz.open(stream=patch_result.output_bytes, filetype="pdf")
+        words = doc[0].get_text("words")
+        doc.close()
+
+        # target_text("2026 6 27") 내부에 있던 옛 값·라벨 조각("6","27","월")은
+        # 반드시 사라져야 한다. 매치 범위 밖의 "일"은 위 docstring 참조.
+        leftover = [w[4] for w in words if w[4] in ("6", "27", "월")]
+        self.assertEqual(
+            leftover, [],
+            f"매치 범위 안에 있던 옛 조각이 남아있다: {leftover} — "
+            "일부 조각만 지워지고 새 텍스트와 겹쳤을 가능성이 높다",
+        )
+
+    def test_unrelated_same_line_occurrence_is_not_merged(self):
+        """
+        [안전] 같은 줄(Y좌표)에 있어도 멀리 떨어진(X간격 큰) 별개 발생은
+        하나로 합쳐지면 안 된다 — 서로 다른 표 셀/컬럼의 같은 단어 등.
+        """
+        import fitz
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        # 같은 Y, 멀리 떨어진 X에 동일 문구 두 번 — 서로 다른 발생
+        page.insert_text((72, 300), "개인정보", fontsize=11, fontname="korea-s", color=(0, 0, 0))
+        page.insert_text((400, 300), "개인정보", fontsize=11, fontname="korea-s", color=(0, 0, 0))
+
+        from apps.documents.patcher import _resolve_pdf_rect
+
+        rect_result_1 = _resolve_pdf_rect(doc, {"type": "text_match", "occurrence": 1, "target_text": "개인정보"})
+        rect_result_2 = _resolve_pdf_rect(doc, {"type": "text_match", "occurrence": 2, "target_text": "개인정보"})
+        doc.close()
+
+        self.assertIsNotNone(rect_result_1)
+        self.assertIsNotNone(rect_result_2)
+        # 두 발생의 rect가 서로 달라야 한다(하나로 합쳐지지 않았다는 뜻)
+        self.assertNotEqual(rect_result_1[1], rect_result_2[1])
+        # 각 rect의 폭이 좁아야 한다(두 발생이 하나의 넓은 박스로 합쳐지지 않았다는 뜻)
+        self.assertLess(rect_result_1[1].width, 60)
+        self.assertLess(rect_result_2[1].width, 60)
+
+
 class PdfFailureTest(TestCase):
     """PDF 패처 실패 케이스 테스트."""
 
@@ -534,3 +648,109 @@ class PdfFailureTest(TestCase):
             DocumentVersion.Status.READY,
             "하나라도 성공하면 version.status는 READY여야 한다",
         )
+
+    def test_not_found_produces_no_artifact(self):
+        """[AnchorResolver 연동] 해석 실패 시 renderer가 artifact를 만들지 않아야 한다."""
+        from apps.documents.patcher import collect_applied_changes, render_pdf
+
+        _make_change(
+            self.version,
+            operation_id="op_no_artifact",
+            operation="annotate",
+            anchor={"type": "text_match", "target_text": "존재하지 않는 텍스트"},
+        )
+        changes = collect_applied_changes(self.version, operations=["annotate", "redact_overlay"])
+        patch_result = render_pdf(self.pdf_bytes, changes)
+
+        self.assertEqual(patch_result.output_bytes, b"", "실패만 있으면 artifact bytes가 생성되면 안 된다")
+        self.assertEqual(patch_result.applied_ids, [])
+
+
+def _build_pdf_two_occurrences() -> bytes:
+    """같은 Y좌표에 동일 문구 "개인정보"를 두 번 그린 PDF (occurrence 모호성 테스트용)."""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 300), "개인정보", fontsize=11, fontname="korea-s", color=(0, 0, 0))
+    page.insert_text((400, 300), "개인정보", fontsize=11, fontname="korea-s", color=(0, 0, 0))
+    buf = io.BytesIO()
+    doc.save(buf)
+    doc.close()
+    return buf.getvalue()
+
+
+class PdfAnchorAmbiguousTest(TestCase):
+    """
+    [앵커 해석 레이어] 후보가 여러 개인 text_match anchor는 자동 반영하지 않고
+    NEEDS_CONFIRMATION으로 멈춰야 한다 (anchor_resolution.AnchorStatus.AMBIGUOUS).
+    """
+
+    def setUp(self):
+        self.user = _make_user("pdf_ambiguous_user")
+        self.pdf_bytes = _build_pdf_two_occurrences()
+        self.upload = _make_upload(self.user, "ambiguous.pdf", self.pdf_bytes, "pdf_ambiguous_hash")
+        self.version = _make_version(self.upload, self.user)
+
+    def test_ambiguous_only_change_sets_needs_confirmation_not_applied(self):
+        """occurrence 없이 후보 2개 → change/version 모두 NEEDS_CONFIRMATION, artifact 없음."""
+        from apps.documents.patcher import collect_applied_changes, persist_patch_result, render_pdf
+
+        change = _make_change(
+            self.version,
+            operation_id="op_ambiguous_01",
+            operation="annotate",
+            # occurrence 미지정 — 후보 2개라 AMBIGUOUS가 되어야 한다
+            anchor={"type": "text_match", "target_text": "개인정보"},
+            replacement="무관",
+        )
+        changes = collect_applied_changes(self.version, operations=["annotate", "redact_overlay"])
+        patch_result = render_pdf(self.pdf_bytes, changes)
+
+        self.assertEqual(patch_result.applied_ids, [])
+        self.assertEqual(len(patch_result.needs_confirmation_items), 1)
+        self.assertEqual(patch_result.output_bytes, b"", "모호한 항목만 있으면 artifact가 생성되면 안 된다")
+
+        persist_patch_result(self.version, patch_result, "pdf", changes)
+
+        change.refresh_from_db()
+        self.version.refresh_from_db()
+        self.assertEqual(change.status, DocumentChange.Status.NEEDS_CONFIRMATION)
+        self.assertEqual(self.version.status, DocumentVersion.Status.NEEDS_CONFIRMATION)
+        self.assertFalse(self.version.artifact_file)
+        # [코드리뷰 지적] version.status만 바뀌고 needs_confirmation_change_ids가 비어 있으면
+        # 프론트(WorkspaceCenter)가 어떤 change가 확인이 필요한지 알 수 없다 — applied_change_ids와
+        # 동일하게 이 경로에서도 채워져야 한다.
+        self.assertEqual(self.version.needs_confirmation_change_ids, ["op_ambiguous_01"])
+
+    def test_ambiguous_change_alongside_resolved_change_is_not_silently_applied(self):
+        """모호한 항목 + 해석 가능한 항목이 섞이면, 모호한 항목은 반영되지 않고 NEEDS_CONFIRMATION으로 남아야 한다."""
+        from apps.documents.patcher import collect_applied_changes, persist_patch_result, render_pdf
+
+        ambiguous_change = _make_change(
+            self.version,
+            operation_id="op_mixed_ambiguous",
+            operation="annotate",
+            anchor={"type": "text_match", "target_text": "개인정보"},
+            replacement="무관",
+        )
+        resolved_change = _make_change(
+            self.version,
+            operation_id="op_mixed_resolved",
+            operation="annotate",
+            anchor={"type": "pdf_bbox", "page": 1, "rect": {"x0": 10, "y0": 10, "x1": 50, "y1": 30}},
+            replacement="정상 반영",
+        )
+        changes = collect_applied_changes(self.version, operations=["annotate", "redact_overlay"])
+        patch_result = render_pdf(self.pdf_bytes, changes)
+        persist_patch_result(self.version, patch_result, "pdf", changes)
+
+        ambiguous_change.refresh_from_db()
+        resolved_change.refresh_from_db()
+        self.version.refresh_from_db()
+
+        self.assertEqual(resolved_change.status, DocumentChange.Status.APPLIED)
+        self.assertEqual(ambiguous_change.status, DocumentChange.Status.NEEDS_CONFIRMATION)
+        self.assertEqual(self.version.status, DocumentVersion.Status.READY)
+        self.assertIn("op_mixed_ambiguous", self.version.needs_confirmation_change_ids)
+        self.assertNotIn("op_mixed_ambiguous", self.version.applied_change_ids)

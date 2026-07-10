@@ -120,6 +120,6 @@ class DocumentVersionSummarySerializer(serializers.ModelSerializer):
         model = DocumentVersion
         fields = [
             "id", "version_number", "status", "label", "summary",
-            "applied_change_ids", "created_at", "updated_at",
+            "applied_change_ids", "needs_confirmation_change_ids", "created_at", "updated_at",
         ]
         read_only_fields = fields
