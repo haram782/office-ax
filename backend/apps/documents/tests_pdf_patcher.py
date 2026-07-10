@@ -451,6 +451,111 @@ class PdfReplaceTextTest(TestCase):
 
 
 @override_settings(MEDIA_ROOT=TEMP_MEDIA)
+def _build_pdf_bytes_fragmented_field() -> bytes:
+    """
+    라벨("년 월 일")을 먼저 그리고 채워진 값("2026 6 27")을 나중에
+    라벨 사이사이 위치에 그린 합성 PDF를 만든다.
+
+    실제 버그 문서와 동일한 패턴: search_for("2026 6 27")가 "2026","6","27"
+    세 조각(rect)으로 쪼개져 반환된다 — 코드가 첫 조각만 쓰면 일부만
+    지워지고 나머지는 겹쳐 그려진다.
+    """
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((235, 715), "년", fontsize=11, fontname="korea-s", color=(0, 0, 0))
+    page.insert_text((295, 715), "월", fontsize=11, fontname="korea-s", color=(0, 0, 0))
+    page.insert_text((345, 715), "일", fontsize=11, fontname="korea-s", color=(0, 0, 0))
+    page.insert_text((190, 715), "2026", fontsize=11, fontname="helv", color=(0, 0, 0))
+    page.insert_text((265, 715), "6", fontsize=11, fontname="helv", color=(0, 0, 0))
+    page.insert_text((315, 715), "27", fontsize=11, fontname="helv", color=(0, 0, 0))
+    buf = io.BytesIO()
+    doc.save(buf)
+    doc.close()
+    return buf.getvalue()
+
+
+class PdfFragmentedAnchorTest(TestCase):
+    """
+    text_match 앵커가 여러 조각(rect)으로 쪼개지는 경우 테스트 (버그 신고 2026-07-10).
+
+    실사용 문서에서 "신청일자를 2026년 7월 1일로" 요청이 "반영됨"으로
+    처리됐는데도 실제로는 "2026 7년 6월 27일"처럼 새 값과 옛 값이 겹쳐
+    렌더링됐다 — search_for()가 반환한 여러 조각 중 첫 조각만 지우고
+    그렸기 때문이다.
+    """
+
+    def setUp(self):
+        self.user = _make_user("pdf_fragment_user")
+        self.pdf_bytes = _build_pdf_bytes_fragmented_field()
+        self.upload = _make_upload(self.user, "fragment.pdf", self.pdf_bytes, "pdf_fragment_hash")
+        self.version = _make_version(self.upload, self.user)
+
+    def test_fragmented_match_replaces_entire_span_not_first_fragment_only(self):
+        """
+        [버그 수정] 여러 조각으로 쪼개진 text_match도 전체 범위가 교체돼야 한다.
+
+        수정 전에는 "2026" 조각만 지워지고 새 텍스트가 좁은 그 영역에만
+        그려져 "6","27","년","월","일" 옛 글자와 겹쳐 보였다.
+        """
+        from apps.documents.patcher import collect_applied_changes, persist_patch_result, render_pdf
+
+        _make_change(
+            self.version,
+            operation_id="op_frag_01",
+            operation="redact_overlay",
+            anchor={"type": "text_match", "occurrence": 1, "target_text": "2026 6 27"},
+            original="2026 6 27",
+            replacement="2026년 7월 1일",
+        )
+        changes = collect_applied_changes(self.version, operations=["annotate", "redact_overlay"])
+        patch_result = render_pdf(self.pdf_bytes, changes)
+        persist_patch_result(self.version, patch_result, "pdf", changes)
+
+        self.version.refresh_from_db()
+        self.assertEqual(self.version.status, DocumentVersion.Status.READY)
+
+        import fitz
+        doc = fitz.open(stream=patch_result.output_bytes, filetype="pdf")
+        words = doc[0].get_text("words")
+        doc.close()
+
+        # 옛 값 조각("6","27")이나 옛 라벨("월","일")이 그대로 남아있으면 안 된다
+        leftover = [w[4] for w in words if w[4] in ("6", "27", "월", "일")]
+        self.assertEqual(
+            leftover, [],
+            f"교체 대상 범위 밖에 있던 옛 조각이 남아있다: {leftover} — "
+            "일부 조각만 지워지고 새 텍스트와 겹쳤을 가능성이 높다",
+        )
+
+    def test_unrelated_same_line_occurrence_is_not_merged(self):
+        """
+        [안전] 같은 줄(Y좌표)에 있어도 멀리 떨어진(X간격 큰) 별개 발생은
+        하나로 합쳐지면 안 된다 — 서로 다른 표 셀/컬럼의 같은 단어 등.
+        """
+        import fitz
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        # 같은 Y, 멀리 떨어진 X에 동일 문구 두 번 — 서로 다른 발생
+        page.insert_text((72, 300), "개인정보", fontsize=11, fontname="korea-s", color=(0, 0, 0))
+        page.insert_text((400, 300), "개인정보", fontsize=11, fontname="korea-s", color=(0, 0, 0))
+
+        from apps.documents.patcher import _resolve_pdf_rect
+
+        rect_result_1 = _resolve_pdf_rect(doc, {"type": "text_match", "occurrence": 1, "target_text": "개인정보"})
+        rect_result_2 = _resolve_pdf_rect(doc, {"type": "text_match", "occurrence": 2, "target_text": "개인정보"})
+        doc.close()
+
+        self.assertIsNotNone(rect_result_1)
+        self.assertIsNotNone(rect_result_2)
+        # 두 발생의 rect가 서로 달라야 한다(하나로 합쳐지지 않았다는 뜻)
+        self.assertNotEqual(rect_result_1[1], rect_result_2[1])
+        # 각 rect의 폭이 좁아야 한다(두 발생이 하나의 넓은 박스로 합쳐지지 않았다는 뜻)
+        self.assertLess(rect_result_1[1].width, 60)
+        self.assertLess(rect_result_2[1].width, 60)
+
+
 class PdfFailureTest(TestCase):
     """PDF 패처 실패 케이스 테스트."""
 
