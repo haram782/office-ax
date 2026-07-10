@@ -43,6 +43,19 @@ const READY_VERSIONS = [
   },
 ]
 
+const READY_VERSIONS_NEEDS_CONFIRMATION = [
+  VERSIONS[0],
+  {
+    id: 2,
+    version_number: 2,
+    status: 'ready',
+    label: '박하람 교체안',
+    created_at: '2026-07-08T05:20:00',
+    applied_change_ids: [],
+    needs_confirmation_change_ids: ['s1'],
+  },
+]
+
 function renderCenter(props = {}) {
   return render(
     <WorkspaceCenter
@@ -215,5 +228,29 @@ describe('WorkspaceCenter 버전별 수정 카드', () => {
     expect(await screen.findByText('반영됨')).toBeInTheDocument()
     expect(screen.queryByText('거절됨')).not.toBeInTheDocument()
     expect(screen.queryByText('되돌리기')).not.toBeInTheDocument()
+  })
+
+  it('[버그 수정] AnchorResolver가 후보를 여러 개 찾아 멈춘 항목은 실패가 아니라 위치 확인 필요로 표시한다', async () => {
+    mockUseDocumentVersions.mockReturnValue({ versions: READY_VERSIONS_NEEDS_CONFIRMATION })
+    mockUseChangeSuggestions.mockReturnValue({
+      suggestions: [{ id: 's1', title: '박하람 텍스트 교체', status: 'pending' }],
+      statuses: { s1: 'pending' },
+      setStatuses: vi.fn(),
+      selectedSuggestionId: null,
+      setSelectedSuggestionId: vi.fn(),
+      highlights: [{ id: 's1', status: 'pending' }],
+      pendingIds: new Set(),
+      isAcceptingAll: false,
+      acceptAllError: null,
+      autoRejectedIds: new Set(),
+      handleSetStatus: vi.fn(),
+      handleAcceptAll: vi.fn(),
+      handleSelectHighlight: vi.fn(),
+    })
+
+    renderCenter()
+
+    expect(await screen.findByText('위치 확인 필요')).toBeInTheDocument()
+    expect(screen.queryByText('생성 실패')).not.toBeInTheDocument()
   })
 })

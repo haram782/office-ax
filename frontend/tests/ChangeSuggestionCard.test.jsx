@@ -149,6 +149,14 @@ describe('ChangeSuggestionCard — set_formula', () => {
   })
 })
 
+describe('ChangeSuggestionCard — needs_confirmation 상태 뱃지', () => {
+  it('[버그 수정] AnchorResolver가 후보를 여러 개 찾아 멈춘 change는 "위치 확인 필요"로 표시하고 실패로 표시하지 않는다', () => {
+    renderCard(makeSuggestion({ id: 'op_needs_confirm_1' }), { status: 'needs_confirmation' })
+    expect(screen.getByText('위치 확인 필요')).toBeTruthy()
+    expect(screen.queryByText('생성 실패')).toBeNull()
+  })
+})
+
 describe('ChangeSuggestionCard — 기존 replace_cell UI 회귀 확인', () => {
   it('replace_cell suggestion은 여전히 original → replacement diff를 보여준다', () => {
     const suggestion = makeSuggestion({

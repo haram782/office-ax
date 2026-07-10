@@ -21,6 +21,15 @@ function hasAppliedOperation(version, suggestion) {
   return idSet.has(String(suggestion.id))
 }
 
+// AnchorResolver가 후보 여러 개(ambiguous)라 자동 반영을 멈춘 change인지 확인한다.
+// applied_change_ids와 동일한 패턴 — version 응답에 이미 포함돼 있어 별도 조회가 필요 없다.
+function hasNeedsConfirmationOperation(version, suggestion) {
+  const ids = version?.needs_confirmation_change_ids ?? []
+  if (!Array.isArray(ids) || ids.length === 0) return false
+  const idSet = new Set(ids.map(id => String(id)))
+  return idSet.has(String(suggestion.id))
+}
+
 /**
  * 워크스페이스 중앙 문서 뷰어 영역.
  * 파일이 선택된 경우 ViewerShell + resolveViewer()로 뷰어를 렌더한다.
@@ -242,6 +251,10 @@ export function WorkspaceCenter({
       if (editingVersion?.status === 'ready') {
         if (hasAppliedOperation(editingVersion, s)) {
           next[s.id] = 'applied'
+        } else if (hasNeedsConfirmationOperation(editingVersion, s)) {
+          // 후보가 여러 개라 BE가 자동 반영을 멈춘 항목 — "실패"가 아니라
+          // "위치 확인 필요"로 구분해야 사용자가 재시도 대신 anchor를 좁혀 재요청할 수 있다
+          next[s.id] = 'needs_confirmation'
         } else {
           next[s.id] = status === 'rejected' ? 'rejected' : 'failed'
         }
