@@ -734,14 +734,27 @@ def apply_xlsx_formula(wb, change) -> None:
     ws[change.anchor["cell"]] = formula
 
 
+def _text_anchor_target(anchor: dict) -> str:
+    """
+    text 계열 anchor에서 대상 텍스트를 읽는다.
+
+    계약 키는 "target_text"다(patch-plan-schema-v0 7.2절, LLM 프롬프트,
+    PDF AnchorResolver 모두 동일). "text_match"는 DOCX/PPTX patcher가
+    과거에 읽던 legacy 키로, 기존 저장된 DocumentChange 하위호환을 위해
+    fallback으로만 유지한다.
+    """
+    return anchor.get("target_text") or anchor.get("text_match") or ""
+
+
 def render_docx(original_bytes: bytes, changes: list) -> PatchResult:
     """
     DOCX bytes + applied change 목록 → PatchResult.
 
-    replace_text operation: anchor.text_match 문자열을 포함하는 단락을 찾아
-    run 재구성 방식으로 교체한다. 일치 단락 없으면 failed_items에 기록.
+    replace_text operation: anchor.target_text(legacy: text_match) 문자열을
+    포함하는 단락을 찾아 run 재구성 방식으로 교체한다.
+    일치 단락 없으면 failed_items에 기록.
 
-    변형 전에 문서 전체(단락 단위)의 text_match 발생 횟수를 먼저 센다 —
+    변형 전에 문서 전체(단락 단위)의 대상 텍스트 발생 횟수를 먼저 센다 —
     같은 문구가 2번 이상 나오면 첫 번째를 조용히 바꾸는 대신
     needs_confirmation_items(code=ambiguous_anchor)로 멈춘다
     (design v1 10.1절 "DOCX 다중 매치 침묵 처리 수정", render_pdf의
@@ -773,16 +786,16 @@ def render_docx(original_bytes: bytes, changes: list) -> PatchResult:
     needs_confirmation_items: list[dict] = []
 
     for change in changes:
-        target_text = change.anchor.get("text_match", "")
+        target_text = _text_anchor_target(change.anchor)
 
-        # 빈 text_match는 모든 단락에 "매치"되어 임의 위치 삽입으로 이어지므로
+        # 빈 대상 텍스트는 모든 단락에 "매치"되어 임의 위치 삽입으로 이어지므로
         # 발생 횟수를 세기 전에 명시적으로 실패시킨다.
         if not target_text:
             failed_items.append({
                 "operation_id": change.operation_id,
-                "reason": "anchor.text_match가 비어 있음",
+                "reason": "anchor.target_text가 비어 있음",
             })
-            logger.warning("render_docx: text_match 비어 있음 | op=%s", change.operation_id)
+            logger.warning("render_docx: target_text 비어 있음 | op=%s", change.operation_id)
             continue
 
         # 변형 전에 전체 발생 횟수를 센다 — 단락 간 중복과 단락 내 중복 모두 포함.
@@ -837,7 +850,7 @@ def render_pptx(original_bytes: bytes, changes: list) -> PatchResult:
     PPTX bytes + applied change 목록 → PatchResult.
 
     replace_text operation: anchor.slide_index(0-based), anchor.shape_index(0-based),
-    anchor.text_match 로 대상 텍스트를 특정해 교체한다.
+    anchor.target_text(legacy: text_match)로 대상 텍스트를 특정해 교체한다.
     슬라이드·셰이프 범위 초과, 텍스트 없음 → failed_items에 기록.
     """
     try:
@@ -864,7 +877,17 @@ def render_pptx(original_bytes: bytes, changes: list) -> PatchResult:
     for change in changes:
         slide_index = change.anchor.get("slide_index", 0)
         shape_index = change.anchor.get("shape_index")
-        target_text = change.anchor.get("text_match", "")
+        target_text = _text_anchor_target(change.anchor)
+
+        # 빈 대상 텍스트는 첫 단락 맨 앞에 replacement가 침묵 삽입되는 오염으로
+        # 이어지므로(str.replace("", ...) 동작) 명시적으로 실패시킨다.
+        if not target_text:
+            failed_items.append({
+                "operation_id": change.operation_id,
+                "reason": "anchor.target_text가 비어 있음",
+            })
+            logger.warning("render_pptx: target_text 비어 있음 | op=%s", change.operation_id)
+            continue
 
         if slide_index >= len(prs.slides):
             failed_items.append({
