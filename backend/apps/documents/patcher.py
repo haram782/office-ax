@@ -10,7 +10,7 @@ render_* 사용 규칙:
   - DocumentChange ORM 인스턴스를 인자로 받을 수 있다.
   - 단, 함수 안에서 .save() / .objects.filter() 등 DB 접근은 절대 하지 않는다.
   - 예외를 caller로 전파하지 않는다 — 실패는 PatchResult.failed_items로,
-    "위치 후보가 여러 개라 자동 반영을 멈춘 경우"(render_pdf 전용)는
+    "위치 후보가 여러 개라 자동 반영을 멈춘 경우"(render_pdf·render_docx)는
     needs_confirmation_items로 구분해 표현한다(anchor_resolution.py AnchorStatus 참고).
   - applied_ids가 비어있으면 output_bytes = b""로 설정한다.
 
@@ -31,6 +31,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+# ── 실패 사유 코드 (document-edit-execution-layer-design-v1-ko.md 8절) ──────────
+
+# "생성 실패"와 "위치 확인 필요"를 구분하는 UX를 위해 실패 사유를 안정된 코드로
+# 고정한다. human-readable reason과 별개로 failed_items/needs_confirmation_items
+# 원소의 "code" 키에 담는다. 전체 코드 표는 설계 문서 8절 참조 — 여기에는
+# patcher가 직접 발급하는 코드만 둔다.
+FAILURE_CODE_AMBIGUOUS_ANCHOR = "ambiguous_anchor"
+FAILURE_CODE_RENDER_VALIDATION_FAILED = "render_validation_failed"
 
 
 # ── set_cell_style 상수 (document-format-editing-ax-v1-ko.md 7절 기준) ───────────
@@ -108,7 +118,9 @@ class PatchResult:
     applied_ids: list[str] = field(default_factory=list)
     failed_items: list[dict] = field(default_factory=list)
     # failed_items 원소 형식: {"operation_id": str, "reason": str}
-    # AnchorResolver가 AMBIGUOUS로 판정해 자동 반영을 멈춘 항목 (render_pdf 전용).
+    # (안정된 실패 사유 코드가 있는 경우 "code" 키를 추가로 담는다 — 설계 문서 8절)
+    # 후보가 여러 개라 자동 반영을 멈춘 항목 (render_pdf의 AnchorResolver AMBIGUOUS,
+    # render_docx의 text_match 다중 매치).
     # failed_items와 분리하는 이유: "위치를 못 찾음/지원 안 함"과 "후보가 여러 개라
     # 확인이 필요함"은 원인과 후속 조치(재시도 vs 사용자 확인)가 다르다.
     needs_confirmation_items: list[dict] = field(default_factory=list)
@@ -729,6 +741,12 @@ def render_docx(original_bytes: bytes, changes: list) -> PatchResult:
     replace_text operation: anchor.text_match 문자열을 포함하는 단락을 찾아
     run 재구성 방식으로 교체한다. 일치 단락 없으면 failed_items에 기록.
 
+    변형 전에 문서 전체(단락 단위)의 text_match 발생 횟수를 먼저 센다 —
+    같은 문구가 2번 이상 나오면 첫 번째를 조용히 바꾸는 대신
+    needs_confirmation_items(code=ambiguous_anchor)로 멈춘다
+    (design v1 10.1절 "DOCX 다중 매치 침묵 처리 수정", render_pdf의
+    AnchorResolver AMBIGUOUS와 동일한 UX).
+
     주의: 첫 번째 run의 서식을 유지하고 나머지 run을 비우는 방식이므로
           교체 후 폰트·크기는 첫 번째 run 서식을 따른다.
     """
@@ -752,24 +770,32 @@ def render_docx(original_bytes: bytes, changes: list) -> PatchResult:
 
     applied_ids: list[str] = []
     failed_items: list[dict] = []
+    needs_confirmation_items: list[dict] = []
 
     for change in changes:
         target_text = change.anchor.get("text_match", "")
-        replaced = False
 
+        # 빈 text_match는 모든 단락에 "매치"되어 임의 위치 삽입으로 이어지므로
+        # 발생 횟수를 세기 전에 명시적으로 실패시킨다.
+        if not target_text:
+            failed_items.append({
+                "operation_id": change.operation_id,
+                "reason": "anchor.text_match가 비어 있음",
+            })
+            logger.warning("render_docx: text_match 비어 있음 | op=%s", change.operation_id)
+            continue
+
+        # 변형 전에 전체 발생 횟수를 센다 — 단락 간 중복과 단락 내 중복 모두 포함.
+        matched_para = None
+        occurrence_count = 0
         for para in doc.paragraphs:
             full_text = "".join(run.text for run in para.runs)
-            if target_text not in full_text:
-                continue
-            new_text = full_text.replace(target_text, change.replacement, 1)
-            if para.runs:
-                para.runs[0].text = new_text
-                for run in para.runs[1:]:
-                    run.text = ""
-            replaced = True
-            break
+            count = full_text.count(target_text)
+            if count and matched_para is None:
+                matched_para = para
+            occurrence_count += count
 
-        if not replaced:
+        if occurrence_count == 0:
             failed_items.append({
                 "operation_id": change.operation_id,
                 "reason": f"대상 텍스트 없음: {target_text!r}",
@@ -777,14 +803,33 @@ def render_docx(original_bytes: bytes, changes: list) -> PatchResult:
             logger.warning("render_docx: 대상 텍스트 없음 | op=%s | text_match=%r", change.operation_id, target_text)
             continue
 
+        if occurrence_count > 1:
+            needs_confirmation_items.append({
+                "operation_id": change.operation_id,
+                "reason": f"{target_text!r}에 대해 {occurrence_count}개의 매치가 있어 위치 확인이 필요함",
+                "code": FAILURE_CODE_AMBIGUOUS_ANCHOR,
+            })
+            logger.warning(
+                "render_docx: text_match 다중 매치 | op=%s | text_match=%r | count=%d",
+                change.operation_id, target_text, occurrence_count,
+            )
+            continue
+
+        # 유일 매치 — 기존 교체 동작 (첫 run에 전체 텍스트를 싣고 나머지 run 비움)
+        full_text = "".join(run.text for run in matched_para.runs)
+        new_text = full_text.replace(target_text, change.replacement, 1)
+        if matched_para.runs:
+            matched_para.runs[0].text = new_text
+            for run in matched_para.runs[1:]:
+                run.text = ""
         applied_ids.append(change.operation_id)
 
     if not applied_ids:
-        return PatchResult(b"", [], failed_items)
+        return PatchResult(b"", [], failed_items, needs_confirmation_items)
 
     output = io.BytesIO()
     doc.save(output)
-    return PatchResult(output.getvalue(), applied_ids, failed_items)
+    return PatchResult(output.getvalue(), applied_ids, failed_items, needs_confirmation_items)
 
 
 def render_pptx(original_bytes: bytes, changes: list) -> PatchResult:
