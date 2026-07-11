@@ -263,6 +263,9 @@ T3(및 PDF T2의 vision fallback)에서 page render image나 crop을 LLM에 넘�
 ### 10.2 베타 후
 
 - `TargetResolver` wire contract 정식화와 DOCX resolver 클래스화 (5절)
+- DOCX 표 내부 텍스트 탐색: 현재 `doc.paragraphs` 순회는 표 셀 단락을 포함하지
+  않아, 같은 문구가 본문 1회 + 표 안 1회 나오면 다중 매치로 감지되지 않고 본문만
+  수정된다 — DOCX resolver 클래스화 시 표 셀 순회를 함께 넣는다
 - HWP subprocess 응답을 wire contract에 맞춤
 - PDF 표 감지 (pdfplumber/camelot) 기반 T2 candidate_source
 - T2 operation (`update_table_cell`, 행/열 삽입 등 — 구조 수정 보류 해제 논의 포함)
