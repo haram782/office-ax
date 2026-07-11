@@ -80,6 +80,20 @@ LLM, 백엔드, patcher, 프론트가 공유하는 구조화된 변경 계약이
 
 새 operation을 추가하거나 `DocumentChange` 저장 구조를 바꿀 때 반드시 함께 갱신한다.
 
+### 문서 수정/생성 실행 레이어 설계
+
+- `architecture/document-edit-execution-layer-design-v1-ko.md`
+
+LLM-백엔드 책임 분리, 작업 복잡도 계층(T0~T3), TargetResolver 일반화(wire contract), Patch Contract 확장 방향, render validation, 베타 전 최소 범위를 다룬다.
+
+다음 내용을 확인할 때 읽는다.
+
+- AnchorResolver를 DOCX/HWP로 확장하는 방식
+- T2(표/필드 수정) anchor variant와 candidate_source 설계
+- confidence 이원화 (semantic vs resolution)
+- PDF 구조적 invariant 검증 목록
+- 이미지/PII 정책 미결 옵션
+
 ### 스택/라이브러리 판단
 
 - `architecture/stack-library-audit-v1-ko.md`

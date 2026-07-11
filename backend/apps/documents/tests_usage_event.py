@@ -6,19 +6,39 @@ UsageEvent / record_usage_event 테스트.
   2. best-effort 실패 처리 — DB 저장이 예외를 던져도 원래 흐름을 깨지 않고 None 반환
   3. 이번 달 / 본인 필터링 — 대시보드 집계 대상 범위 검증
   4. token_source 판별 — provider_reported / unavailable
+  5. patch artifact 실패 이벤트 — PatchResult의 안정된 실패 사유 코드가
+     metadata.reason으로 기록됨 (design v1 8절)
 """
+import io
+import tempfile
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.core.files.base import ContentFile
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from apps.documents.models import FileStructure, UploadLog, UsageEvent
+from apps.documents.models import (
+    DocumentChange,
+    DocumentVersion,
+    FileStructure,
+    UploadLog,
+    UsageEvent,
+)
 from apps.documents.services.usage import record_usage_event, usage_metadata_from_result
 
 User = get_user_model()
+
+# 파일 저장 격리용 임시 MEDIA_ROOT (patch artifact 테스트에서 업로드 파일 필요)
+TEMP_MEDIA = tempfile.mkdtemp(prefix="office_ax_usage_event_")
+
+
+def teardown_module(_module):
+    """모듈 종료 시 임시 디렉터리 정리."""
+    import shutil
+    shutil.rmtree(TEMP_MEDIA, ignore_errors=True)
 
 
 def _make_user(username="usage_tester"):
@@ -322,3 +342,164 @@ class TestUnsupportedScanRecording(TestCase):
 
         event = UsageEvent.objects.get(upload_log=self.upload_log)
         self.assertEqual(event.status, UsageEvent.Status.SUCCESS)
+
+
+# ── patch artifact 실패 사유 코드 기록 ────────────────────────────────────────
+
+
+def _docx_two_matches_bytes() -> bytes:
+    """같은 문구가 두 단락에 나오는 DOCX (ambiguous_anchor 유발용)."""
+    from docx import Document
+    doc = Document()
+    doc.add_paragraph("계약금액 1,000원")
+    doc.add_paragraph("비고: 계약금액은 부가세 포함")
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def _pdf_cjk_bytes(text: str) -> bytes:
+    """CJK 텍스트 한 줄짜리 단일 페이지 PDF."""
+    import fitz
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), text, fontsize=12, fontname="korea-s", color=(0, 0, 0))
+    buf = io.BytesIO()
+    doc.save(buf)
+    doc.close()
+    return buf.getvalue()
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA)
+class PatchArtifactFailureCodeTest(TestCase):
+    """
+    patch artifact 생성 실패 시 UsageEvent metadata에 안정된 실패 사유 코드가
+    기록되는지 검증 (design v1 8절 — 실패 사유 코드 정리).
+
+    조기 실패 경로(source_file_missing/unsupported_format 등)는 이미 metadata.reason에
+    코드를 기록한다 — 여기서는 render/persist까지 진행된 뒤의 실패가 PatchResult
+    항목의 code를 물려받는지 확인한다.
+    """
+
+    def setUp(self):
+        self.user = _make_user("patch_failure_code_user")
+
+    def _make_patch_fixture(self, source_type, filename, file_bytes, hash_val):
+        fs, _ = FileStructure.objects.get_or_create(
+            hash=hash_val,
+            defaults={"source_type": source_type, "column_schema": []},
+        )
+        upload = UploadLog.objects.create(
+            user=self.user,
+            file_structure=fs,
+            original_filename=filename,
+            status=UploadLog.Status.DONE,
+        )
+        upload.file.save(filename, ContentFile(file_bytes), save=True)
+        version = DocumentVersion.objects.create(
+            upload_log=upload,
+            version_number=2,
+            status=DocumentVersion.Status.DRAFT,
+            label="draft",
+            created_by=self.user,
+        )
+        return upload, version
+
+    def _make_applied_change(self, version, operation_id, operation, anchor, original, replacement):
+        return DocumentChange.objects.create(
+            version=version,
+            operation_id=operation_id,
+            operation=operation,
+            title="테스트 변경",
+            original=original,
+            replacement=replacement,
+            anchor=anchor,
+            confidence=0.9,
+            status=DocumentChange.Status.APPLIED,
+        )
+
+    def _artifact_event(self):
+        return UsageEvent.objects.get(
+            event_type=UsageEvent.EventType.PATCH_ARTIFACT_GENERATION,
+        )
+
+    def test_docx_ambiguous_match_records_ambiguous_anchor_reason(self):
+        """DOCX 다중 매치 → NEEDS_CONFIRMATION 종료 → 이벤트 FAILED + reason=ambiguous_anchor."""
+        from apps.documents.tasks import patch_document_version
+
+        upload, version = self._make_patch_fixture(
+            "docx", "ambiguous.docx", _docx_two_matches_bytes(), "usage_docx_ambiguous_hash",
+        )
+        self._make_applied_change(
+            version,
+            operation_id="op_usage_docx_dup",
+            operation="replace_text",
+            anchor={"type": "text_match", "text_match": "계약금액"},
+            original="계약금액",
+            replacement="총계약금액",
+        )
+        patch_document_version(version.pk)
+
+        event = self._artifact_event()
+        self.assertEqual(event.status, UsageEvent.Status.FAILED)
+        self.assertEqual(
+            event.metadata.get("reason"),
+            "ambiguous_anchor",
+            "위치 확인 대기로 끝난 patch 이벤트에는 reason=ambiguous_anchor가 기록되어야 한다",
+        )
+
+    def test_pdf_render_validation_failure_records_reason_code(self):
+        """PDF render 검증 실패 → 이벤트 FAILED + reason=render_validation_failed."""
+        from apps.documents.tasks import patch_document_version
+
+        upload, version = self._make_patch_fixture(
+            FileStructure.SourceType.PDF, "validate.pdf", _pdf_cjk_bytes("접수번호"),
+            "usage_pdf_validation_hash",
+        )
+        self._make_applied_change(
+            version,
+            operation_id="op_usage_pdf_val",
+            operation="replace_text",
+            anchor={"type": "text_match", "target_text": "접수번호", "page": 1, "occurrence": 1},
+            original="접수번호",
+            replacement="접수완료",
+        )
+
+        def _redact_without_insert(page, rect, change):
+            # replacement 삽입 없이 redaction만 수행 — 검증 실패 유발
+            page.add_redact_annot(rect, fill=(1, 1, 1))
+            page.apply_redactions()
+
+        with patch(
+            "apps.documents.patcher._apply_pdf_redact_overlay",
+            side_effect=_redact_without_insert,
+        ):
+            patch_document_version(version.pk)
+
+        event = self._artifact_event()
+        self.assertEqual(event.status, UsageEvent.Status.FAILED)
+        self.assertEqual(event.metadata.get("reason"), "render_validation_failed")
+
+    def test_failure_without_stable_code_omits_reason_key(self):
+        """[경계] 코드가 없는 실패(대상 텍스트 없음)는 reason 키를 기록하지 않는다."""
+        from apps.documents.tasks import patch_document_version
+
+        upload, version = self._make_patch_fixture(
+            "docx", "notfound.docx", _docx_two_matches_bytes(), "usage_docx_notfound_hash",
+        )
+        self._make_applied_change(
+            version,
+            operation_id="op_usage_docx_notfound",
+            operation="replace_text",
+            anchor={"type": "text_match", "text_match": "존재하지 않는 문구"},
+            original="존재하지 않는 문구",
+            replacement="무관",
+        )
+        patch_document_version(version.pk)
+
+        event = self._artifact_event()
+        self.assertEqual(event.status, UsageEvent.Status.FAILED)
+        self.assertNotIn(
+            "reason", event.metadata,
+            "안정 코드가 없는 실패에 임의 reason이 기록되면 안 된다",
+        )

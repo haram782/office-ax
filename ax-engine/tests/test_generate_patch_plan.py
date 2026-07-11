@@ -90,6 +90,26 @@ class GeneratePatchPlanTaskTest(unittest.TestCase):
 
         self.assertIsNone(plan)
 
+    def test_simple_replace_plan_omits_occurrence_when_multiple_matches(self):
+        """
+        [버그 수정] 본문에 같은 문구가 2번 이상 나오면 anchor에 occurrence를
+        지정하지 않아야 한다 — occurrence=1을 하드코딩하면 resolver의 모호성
+        보호(AMBIGUOUS → NEEDS_CONFIRMATION)를 우회해 첫 매치를 침묵 교체한다.
+        """
+        plan = _maybe_build_simple_replace_plan(
+            "문서 내 '금액' 문구를 '합계금액'으로 교체",
+            {"source_type": "pdf_digital", "document_text": "금액 100원 그리고 금액 200원"},
+        )
+
+        self.assertIsNotNone(plan)
+        op = plan["operations"][0]
+        self.assertNotIn(
+            "occurrence",
+            op["anchor"],
+            "다중 출현 시 occurrence를 지정하면 resolver 모호성 보호가 우회된다",
+        )
+        self.assertEqual(op["risk"]["level"], "medium")
+
     @patch("tasks.generate_patch_plan.parse_hwp", return_value=("이것은 테스트 문서입니다 Test", {"method": "rhwp"}))
     def test_simple_hwp_replace_plan_reads_file_when_document_text_missing(self, mock_parse_hwp):
         """기존 분석 레코드처럼 document_text가 없어도 HWP 원본 파일 fallback을 사용한다."""

@@ -10,7 +10,7 @@ render_* 사용 규칙:
   - DocumentChange ORM 인스턴스를 인자로 받을 수 있다.
   - 단, 함수 안에서 .save() / .objects.filter() 등 DB 접근은 절대 하지 않는다.
   - 예외를 caller로 전파하지 않는다 — 실패는 PatchResult.failed_items로,
-    "위치 후보가 여러 개라 자동 반영을 멈춘 경우"(render_pdf 전용)는
+    "위치 후보가 여러 개라 자동 반영을 멈춘 경우"(render_pdf·render_docx)는
     needs_confirmation_items로 구분해 표현한다(anchor_resolution.py AnchorStatus 참고).
   - applied_ids가 비어있으면 output_bytes = b""로 설정한다.
 
@@ -31,6 +31,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+# ── 실패 사유 코드 (document-edit-execution-layer-design-v1-ko.md 8절) ──────────
+
+# "생성 실패"와 "위치 확인 필요"를 구분하는 UX를 위해 실패 사유를 안정된 코드로
+# 고정한다. human-readable reason과 별개로 failed_items/needs_confirmation_items
+# 원소의 "code" 키에 담는다. 전체 코드 표는 설계 문서 8절 참조 — 여기에는
+# patcher가 직접 발급하는 코드만 둔다.
+FAILURE_CODE_AMBIGUOUS_ANCHOR = "ambiguous_anchor"
+FAILURE_CODE_RENDER_VALIDATION_FAILED = "render_validation_failed"
 
 
 # ── set_cell_style 상수 (document-format-editing-ax-v1-ko.md 7절 기준) ───────────
@@ -108,7 +118,9 @@ class PatchResult:
     applied_ids: list[str] = field(default_factory=list)
     failed_items: list[dict] = field(default_factory=list)
     # failed_items 원소 형식: {"operation_id": str, "reason": str}
-    # AnchorResolver가 AMBIGUOUS로 판정해 자동 반영을 멈춘 항목 (render_pdf 전용).
+    # (안정된 실패 사유 코드가 있는 경우 "code" 키를 추가로 담는다 — 설계 문서 8절)
+    # 후보가 여러 개라 자동 반영을 멈춘 항목 (render_pdf의 AnchorResolver AMBIGUOUS,
+    # render_docx의 text_match 다중 매치).
     # failed_items와 분리하는 이유: "위치를 못 찾음/지원 안 함"과 "후보가 여러 개라
     # 확인이 필요함"은 원인과 후속 조치(재시도 vs 사용자 확인)가 다르다.
     needs_confirmation_items: list[dict] = field(default_factory=list)
@@ -722,12 +734,31 @@ def apply_xlsx_formula(wb, change) -> None:
     ws[change.anchor["cell"]] = formula
 
 
+def _text_anchor_target(anchor: dict) -> str:
+    """
+    text 계열 anchor에서 대상 텍스트를 읽는다.
+
+    계약 키는 "target_text"다(patch-plan-schema-v0 7.2절, LLM 프롬프트,
+    PDF AnchorResolver 모두 동일). "text_match"는 DOCX/PPTX patcher가
+    과거에 읽던 legacy 키로, 기존 저장된 DocumentChange 하위호환을 위해
+    fallback으로만 유지한다.
+    """
+    return anchor.get("target_text") or anchor.get("text_match") or ""
+
+
 def render_docx(original_bytes: bytes, changes: list) -> PatchResult:
     """
     DOCX bytes + applied change 목록 → PatchResult.
 
-    replace_text operation: anchor.text_match 문자열을 포함하는 단락을 찾아
-    run 재구성 방식으로 교체한다. 일치 단락 없으면 failed_items에 기록.
+    replace_text operation: anchor.target_text(legacy: text_match) 문자열을
+    포함하는 단락을 찾아 run 재구성 방식으로 교체한다.
+    일치 단락 없으면 failed_items에 기록.
+
+    변형 전에 문서 전체(단락 단위)의 대상 텍스트 발생 횟수를 먼저 센다 —
+    같은 문구가 2번 이상 나오면 첫 번째를 조용히 바꾸는 대신
+    needs_confirmation_items(code=ambiguous_anchor)로 멈춘다
+    (design v1 10.1절 "DOCX 다중 매치 침묵 처리 수정", render_pdf의
+    AnchorResolver AMBIGUOUS와 동일한 UX).
 
     주의: 첫 번째 run의 서식을 유지하고 나머지 run을 비우는 방식이므로
           교체 후 폰트·크기는 첫 번째 run 서식을 따른다.
@@ -752,24 +783,32 @@ def render_docx(original_bytes: bytes, changes: list) -> PatchResult:
 
     applied_ids: list[str] = []
     failed_items: list[dict] = []
+    needs_confirmation_items: list[dict] = []
 
     for change in changes:
-        target_text = change.anchor.get("text_match", "")
-        replaced = False
+        target_text = _text_anchor_target(change.anchor)
 
+        # 빈 대상 텍스트는 모든 단락에 "매치"되어 임의 위치 삽입으로 이어지므로
+        # 발생 횟수를 세기 전에 명시적으로 실패시킨다.
+        if not target_text:
+            failed_items.append({
+                "operation_id": change.operation_id,
+                "reason": "anchor.target_text가 비어 있음",
+            })
+            logger.warning("render_docx: target_text 비어 있음 | op=%s", change.operation_id)
+            continue
+
+        # 변형 전에 전체 발생 횟수를 센다 — 단락 간 중복과 단락 내 중복 모두 포함.
+        matched_para = None
+        occurrence_count = 0
         for para in doc.paragraphs:
             full_text = "".join(run.text for run in para.runs)
-            if target_text not in full_text:
-                continue
-            new_text = full_text.replace(target_text, change.replacement, 1)
-            if para.runs:
-                para.runs[0].text = new_text
-                for run in para.runs[1:]:
-                    run.text = ""
-            replaced = True
-            break
+            count = full_text.count(target_text)
+            if count and matched_para is None:
+                matched_para = para
+            occurrence_count += count
 
-        if not replaced:
+        if occurrence_count == 0:
             failed_items.append({
                 "operation_id": change.operation_id,
                 "reason": f"대상 텍스트 없음: {target_text!r}",
@@ -777,14 +816,33 @@ def render_docx(original_bytes: bytes, changes: list) -> PatchResult:
             logger.warning("render_docx: 대상 텍스트 없음 | op=%s | text_match=%r", change.operation_id, target_text)
             continue
 
+        if occurrence_count > 1:
+            needs_confirmation_items.append({
+                "operation_id": change.operation_id,
+                "reason": f"{target_text!r}에 대해 {occurrence_count}개의 매치가 있어 위치 확인이 필요함",
+                "code": FAILURE_CODE_AMBIGUOUS_ANCHOR,
+            })
+            logger.warning(
+                "render_docx: text_match 다중 매치 | op=%s | text_match=%r | count=%d",
+                change.operation_id, target_text, occurrence_count,
+            )
+            continue
+
+        # 유일 매치 — 기존 교체 동작 (첫 run에 전체 텍스트를 싣고 나머지 run 비움)
+        full_text = "".join(run.text for run in matched_para.runs)
+        new_text = full_text.replace(target_text, change.replacement, 1)
+        if matched_para.runs:
+            matched_para.runs[0].text = new_text
+            for run in matched_para.runs[1:]:
+                run.text = ""
         applied_ids.append(change.operation_id)
 
     if not applied_ids:
-        return PatchResult(b"", [], failed_items)
+        return PatchResult(b"", [], failed_items, needs_confirmation_items)
 
     output = io.BytesIO()
     doc.save(output)
-    return PatchResult(output.getvalue(), applied_ids, failed_items)
+    return PatchResult(output.getvalue(), applied_ids, failed_items, needs_confirmation_items)
 
 
 def render_pptx(original_bytes: bytes, changes: list) -> PatchResult:
@@ -792,7 +850,7 @@ def render_pptx(original_bytes: bytes, changes: list) -> PatchResult:
     PPTX bytes + applied change 목록 → PatchResult.
 
     replace_text operation: anchor.slide_index(0-based), anchor.shape_index(0-based),
-    anchor.text_match 로 대상 텍스트를 특정해 교체한다.
+    anchor.target_text(legacy: text_match)로 대상 텍스트를 특정해 교체한다.
     슬라이드·셰이프 범위 초과, 텍스트 없음 → failed_items에 기록.
     """
     try:
@@ -819,7 +877,17 @@ def render_pptx(original_bytes: bytes, changes: list) -> PatchResult:
     for change in changes:
         slide_index = change.anchor.get("slide_index", 0)
         shape_index = change.anchor.get("shape_index")
-        target_text = change.anchor.get("text_match", "")
+        target_text = _text_anchor_target(change.anchor)
+
+        # 빈 대상 텍스트는 첫 단락 맨 앞에 replacement가 침묵 삽입되는 오염으로
+        # 이어지므로(str.replace("", ...) 동작) 명시적으로 실패시킨다.
+        if not target_text:
+            failed_items.append({
+                "operation_id": change.operation_id,
+                "reason": "anchor.target_text가 비어 있음",
+            })
+            logger.warning("render_pptx: target_text 비어 있음 | op=%s", change.operation_id)
+            continue
 
         if slide_index >= len(prs.slides):
             failed_items.append({
@@ -904,6 +972,10 @@ def render_pdf(original_bytes: bytes, changes: list) -> PatchResult:
     적용한다. RESOLVED만 실제로 렌더링하며, AMBIGUOUS(후보 여러 개)는
     needs_confirmation_items로, NOT_FOUND/UNSUPPORTED는 failed_items로 분리한다
     (anchor_resolution.py — "모호하면 자동 반영하지 않는다" 원칙).
+
+    적용 후에는 수정본 bytes를 다시 열어 구조적 invariant를 검증한다
+    (design v1 7.1절 1~2항, _validate_pdf_render). 검증 실패 시 artifact를
+    내보내지 않고 applied였던 항목을 code=render_validation_failed로 failed 처리한다.
     """
     try:
         import fitz
@@ -931,6 +1003,8 @@ def render_pdf(original_bytes: bytes, changes: list) -> PatchResult:
     applied_ids: list[str] = []
     failed_items: list[dict] = []
     needs_confirmation_items: list[dict] = []
+    # 검증 단계에서 change별 rect·페이지를 다시 쓰기 위해 적용 이력을 보존한다
+    applied_records: list[dict] = []
 
     for change in changes:
         result = resolver.resolve(change.anchor, layout)
@@ -942,8 +1016,13 @@ def render_pdf(original_bytes: bytes, changes: list) -> PatchResult:
             else:
                 _apply_pdf_redact_overlay(page, result.rect, change)
             applied_ids.append(change.operation_id)
+            applied_records.append({"change": change, "page": result.page, "rect": result.rect})
         elif result.status == AnchorStatus.AMBIGUOUS:
-            needs_confirmation_items.append({"operation_id": change.operation_id, "reason": result.reason})
+            needs_confirmation_items.append({
+                "operation_id": change.operation_id,
+                "reason": result.reason,
+                "code": FAILURE_CODE_AMBIGUOUS_ANCHOR,
+            })
             logger.warning(
                 "render_pdf: anchor 후보 다수 | op=%s | reason=%s", change.operation_id, result.reason,
             )
@@ -963,7 +1042,24 @@ def render_pdf(original_bytes: bytes, changes: list) -> PatchResult:
     doc.save(output)
     doc.close()
     output.seek(0)
-    return PatchResult(output.read(), applied_ids, failed_items, needs_confirmation_items)
+    output_bytes = output.read()
+
+    # post-render 검증 — 하나라도 실패하면 artifact 전체를 내보내지 않는다.
+    # 수정본 bytes에는 모든 applied change의 변형이 섞여 있어 실패 항목만
+    # 떼어낼 수 없기 때문이다(부분 성공 불가).
+    validation_failures = _validate_pdf_render(layout, output_bytes, applied_records)
+    if validation_failures:
+        failure_by_id = {item["operation_id"]: item for item in validation_failures}
+        for record in applied_records:
+            op_id = record["change"].operation_id
+            failed_items.append(failure_by_id.get(op_id) or {
+                "operation_id": op_id,
+                "reason": "같은 결과물의 다른 변경이 render 검증에 실패해 함께 중단됨",
+                "code": FAILURE_CODE_RENDER_VALIDATION_FAILED,
+            })
+        return PatchResult(b"", [], failed_items, needs_confirmation_items)
+
+    return PatchResult(output_bytes, applied_ids, failed_items, needs_confirmation_items)
 
 
 def render_hwp(original_bytes: bytes, changes: list) -> PatchResult:
@@ -1209,3 +1305,155 @@ def _apply_pdf_redact_overlay(page, rect, change) -> None:
         fontname=fontname,
         color=(0, 0, 0),
     )
+
+
+# ── render_pdf post-render 검증 (design v1 7.1절 invariant 1~2 — 베타 전 smoke check) ──
+
+def _validate_pdf_render(layout, output_bytes: bytes, applied_records: list[dict]) -> list[dict]:
+    """
+    수정본 PDF의 구조적 invariant를 검증한다. 실패 항목 목록(failed_items 형식)을
+    반환하며 빈 목록이면 통과다.
+
+    검증 순서 (구체적인 사유를 먼저 보고하도록 배치):
+      1. 수정본이 예외 없이 열리고 페이지 수가 유지되는지 (invariant 2)
+      2. redact/replace 계열 change마다 replacement가 rect 근처에서 재추출되고
+         original이 그 자리에서 사라졌는지 (invariant 1) — build_pdf_document_layout의
+         token 추출을 그대로 재사용해 PR #29~#31이 고친 버그 클래스를 재검증한다
+      3. 원래 텍스트가 있던 페이지가 예상 밖으로 비지 않았는지 (invariant 2)
+
+    invariant 3~4(rect 겹침·과대 redact 영역)는 베타 후 범위다 (design v1 10.2절).
+    """
+    import fitz
+
+    from .anchor_resolution import build_pdf_document_layout
+
+    def _all_failed(reason: str) -> list[dict]:
+        return [
+            {
+                "operation_id": record["change"].operation_id,
+                "reason": reason,
+                "code": FAILURE_CODE_RENDER_VALIDATION_FAILED,
+            }
+            for record in applied_records
+        ]
+
+    try:
+        modified = fitz.open(stream=output_bytes, filetype="pdf")
+    except Exception as exc:
+        # 렌더 산출물 자체가 열리지 않음 — 라이브러리 경계 실패도 검증 실패로 수렴시킨다
+        return _all_failed(f"render 검증 실패: 수정본 PDF를 열 수 없음 ({exc})")
+
+    try:
+        if len(modified) != len(layout.pages):
+            return _all_failed(
+                f"render 검증 실패: 페이지 수가 변함 (원본 {len(layout.pages)} → 수정본 {len(modified)})"
+            )
+
+        modified_layout = build_pdf_document_layout(modified)
+
+        failures: list[dict] = []
+        for record in applied_records:
+            change = record["change"]
+            # annotate는 텍스트를 바꾸지 않으므로 invariant 1 대상이 아니다
+            if change.operation == "annotate":
+                continue
+            reason = _validate_pdf_text_change(
+                modified_layout.pages[record["page"]],
+                record["rect"],
+                change,
+                modified[record["page"]].rect,
+            )
+            if reason is not None:
+                failures.append({
+                    "operation_id": change.operation_id,
+                    "reason": reason,
+                    "code": FAILURE_CODE_RENDER_VALIDATION_FAILED,
+                })
+                logger.warning(
+                    "render_pdf: 검증 실패 | op=%s | reason=%s", change.operation_id, reason,
+                )
+        if failures:
+            return failures
+
+        empty_page_reason = _find_unexpected_empty_page(
+            layout.pages, modified_layout.pages, applied_records,
+        )
+        if empty_page_reason is not None:
+            logger.warning("render_pdf: 검증 실패 | reason=%s", empty_page_reason)
+            return _all_failed(empty_page_reason)
+        return []
+    finally:
+        modified.close()
+
+
+def _validate_pdf_text_change(page_tokens: list, rect, change, page_rect) -> str | None:
+    """
+    invariant 1: replacement가 rect 근처(같은 줄 대역)에서 재추출되고 original은
+    rect 자리에서 사라졌는지 확인한다. 통과 시 None, 실패 시 사유 문자열.
+
+    비교는 공백을 제거한 문자열로 한다 — token 결합 시 공백 규칙이 문서마다 달라
+    (anchor_resolution._build_nospace_index와 동일한 이유) 공백 차이 오탐을 막는다.
+    """
+    import fitz
+
+    replacement = _strip_whitespace(change.replacement or "")
+    original = _strip_whitespace(change.original or change.anchor.get("target_text") or "")
+    font_size = change.patch.get("font_size", 11) if change.patch else 11
+
+    if replacement:
+        # 삽입 텍스트는 (rect.x0, rect.y1-2) 기준으로 오른쪽으로 그려지므로 오른쪽
+        # 경계는 페이지 끝까지 여유 있게 잡는다 (같은 줄 대역 overapproximation).
+        band = fitz.Rect(rect.x0 - 2, rect.y0 - font_size, page_rect.x1, rect.y1 + font_size)
+        band_text = _strip_whitespace(_tokens_text_in_clip(page_tokens, band))
+        if replacement not in band_text:
+            return (
+                f"render 검증 실패: replacement {change.replacement!r}가 수정 위치 근처에서 "
+                "추출되지 않음 (텍스트가 실제로 그려지지 않았을 가능성)"
+            )
+
+    # replacement가 original을 포함하면(예: '6' → '6월') 잔존처럼 보이는 오탐을
+    # 피할 수 없으므로 그 경우에만 잔존 확인을 건너뛴다.
+    if original and original not in replacement:
+        local = fitz.Rect(rect.x0 - 2, rect.y0 - 2, rect.x1 + 2, rect.y1 + 2)
+        local_text = _strip_whitespace(_tokens_text_in_clip(page_tokens, local))
+        if original in local_text:
+            return (
+                f"render 검증 실패: original {change.original!r}이(가) 수정 위치에 "
+                "여전히 남아 있음 (redaction 누락 가능성)"
+            )
+
+    return None
+
+
+def _find_unexpected_empty_page(
+    original_pages: list, modified_pages: list, applied_records: list[dict],
+) -> str | None:
+    """
+    invariant 2: 원래 텍스트가 있던 페이지가 수정 후 비어 있으면 사유를 반환한다.
+
+    replacement가 빈 문자열인 redact(텍스트 삭제 목적)가 적용된 페이지는
+    의도적으로 비었을 수 있으므로 검사에서 제외한다.
+    """
+    exempt_pages = {
+        record["page"]
+        for record in applied_records
+        if record["change"].operation != "annotate" and not (record["change"].replacement or "")
+    }
+    for page_idx, original_tokens in enumerate(original_pages):
+        if not original_tokens or page_idx in exempt_pages:
+            continue
+        if page_idx < len(modified_pages) and not modified_pages[page_idx]:
+            return f"render 검증 실패: {page_idx + 1}페이지가 수정 후 예상 밖으로 비어 있음"
+    return None
+
+
+def _strip_whitespace(text: str) -> str:
+    """모든 공백 문자를 제거한다 (token 결합 방식과 무관한 비교용)."""
+    return re.sub(r"\s+", "", text)
+
+
+def _tokens_text_in_clip(page_tokens: list, clip) -> str:
+    """clip 영역과 겹치는 token들의 텍스트를 읽기순서 그대로 공백 없이 이어붙인다."""
+    import fitz
+
+    return "".join(t.text for t in page_tokens if fitz.Rect(t.bbox).intersects(clip))

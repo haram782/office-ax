@@ -10,9 +10,12 @@ PDF annotate / redact_overlay / replace_text 패처 테스트.
   - anchor 해석 실패(텍스트 없음) → change.status=failed
   - 모든 항목 실패 → version.status=failed
   - 하나라도 성공 → version.status=ready + artifact_file 생성
+  - post-render 검증 (design v1 7.1절 invariant 1~2) → 검증 실패 시 artifact 없이
+    code=render_validation_failed로 멈춤
 """
 import io
 import tempfile
+from unittest.mock import patch as mock_patch
 
 from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
@@ -709,6 +712,11 @@ class PdfAnchorAmbiguousTest(TestCase):
 
         self.assertEqual(patch_result.applied_ids, [])
         self.assertEqual(len(patch_result.needs_confirmation_items), 1)
+        self.assertEqual(
+            patch_result.needs_confirmation_items[0].get("code"),
+            "ambiguous_anchor",
+            "PDF 모호 항목에도 안정된 실패 사유 코드가 있어야 한다 (design v1 8절)",
+        )
         self.assertEqual(patch_result.output_bytes, b"", "모호한 항목만 있으면 artifact가 생성되면 안 된다")
 
         persist_patch_result(self.version, patch_result, "pdf", changes)
@@ -754,3 +762,209 @@ class PdfAnchorAmbiguousTest(TestCase):
         self.assertEqual(self.version.status, DocumentVersion.Status.READY)
         self.assertIn("op_mixed_ambiguous", self.version.needs_confirmation_change_ids)
         self.assertNotIn("op_mixed_ambiguous", self.version.applied_change_ids)
+
+
+def _build_pdf_two_pages() -> bytes:
+    """텍스트가 있는 2페이지 PDF (페이지 수·빈 페이지 invariant 테스트용)."""
+    import fitz
+
+    doc = fitz.open()
+    page1 = doc.new_page(width=595, height=842)
+    page1.insert_text((72, 100), "접수번호", fontsize=12, fontname="korea-s", color=(0, 0, 0))
+    page2 = doc.new_page(width=595, height=842)
+    page2.insert_text((72, 100), "담당자명", fontsize=12, fontname="korea-s", color=(0, 0, 0))
+    buf = io.BytesIO()
+    doc.save(buf)
+    doc.close()
+    return buf.getvalue()
+
+
+def _redact_without_insert(page, rect, change) -> None:
+    """
+    replacement 삽입 없이 redaction만 수행하는 가짜 apply — "검게 칠했는데
+    아무것도 안 들어간" 버그 클래스(PR #29 계열)를 재현한다.
+    """
+    page.add_redact_annot(rect, fill=(1, 1, 1))
+    page.apply_redactions()
+
+
+def _insert_without_redact(page, rect, change) -> None:
+    """redaction 없이 replacement만 겹쳐 그리는 가짜 apply — original 잔존 케이스 재현."""
+    page.insert_font(fontname="NotoSansKR", fontfile=str(
+        __import__("pathlib").Path(__file__).resolve().parent / "fonts" / "NotoSansKR-Regular.ttf"
+    ))
+    page.insert_text((rect.x0, rect.y1 - 2), change.replacement, fontsize=11,
+                     fontname="NotoSansKR", color=(0, 0, 0))
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA)
+class PdfRenderValidationTest(TestCase):
+    """
+    [render 검증] design v1 7.1절 invariant 1~2 smoke check 테스트.
+
+    patch가 적용됐다고 보고돼도 실제 렌더 결과에서 replacement가 추출되지 않거나
+    original이 그 자리에 남아 있거나 문서 구조가 깨졌으면(페이지 수 변화·빈 페이지),
+    artifact를 READY로 내보내지 않고 code=render_validation_failed로 멈춰야 한다.
+    """
+
+    def setUp(self):
+        self.user = _make_user("pdf_validation_user")
+        self.pdf_bytes = _build_pdf_bytes_cjk("접수번호")
+        self.upload = _make_upload(self.user, "validate.pdf", self.pdf_bytes, "pdf_validation_hash")
+        self.version = _make_version(self.upload, self.user)
+
+    def _make_replace_change(self, operation_id="op_pdf_val_01", replacement="접수완료"):
+        return _make_change(
+            self.version,
+            operation_id=operation_id,
+            operation="replace_text",
+            anchor={"type": "text_match", "target_text": "접수번호", "page": 1, "occurrence": 1},
+            original="접수번호",
+            replacement=replacement,
+        )
+
+    def _render(self, original_bytes=None):
+        from apps.documents.patcher import collect_applied_changes, render_pdf
+
+        changes = collect_applied_changes(
+            self.version, operations=["annotate", "redact_overlay", "replace_text"],
+        )
+        return render_pdf(original_bytes or self.pdf_bytes, changes), changes
+
+    def test_invisible_replacement_fails_validation_with_code(self):
+        """[invariant 1] replacement가 추출되지 않으면 artifact 없이 render_validation_failed."""
+        self._make_replace_change()
+        with mock_patch("apps.documents.patcher._apply_pdf_redact_overlay", side_effect=_redact_without_insert):
+            result, _ = self._render()
+
+        self.assertEqual(result.applied_ids, [], "검증 실패 항목이 applied로 보고되면 안 된다")
+        self.assertEqual(result.output_bytes, b"", "검증 실패 시 artifact bytes가 생성되면 안 된다")
+        self.assertEqual(len(result.failed_items), 1)
+        item = result.failed_items[0]
+        self.assertEqual(item["operation_id"], "op_pdf_val_01")
+        self.assertEqual(item.get("code"), "render_validation_failed")
+        self.assertIn("추출되지 않음", item["reason"])
+
+    def test_leftover_original_fails_validation(self):
+        """[invariant 1] redaction 누락으로 original이 rect 자리에 남으면 검증 실패."""
+        self._make_replace_change()
+        with mock_patch("apps.documents.patcher._apply_pdf_redact_overlay", side_effect=_insert_without_redact):
+            result, _ = self._render()
+
+        self.assertEqual(result.applied_ids, [])
+        self.assertEqual(result.output_bytes, b"")
+        self.assertEqual(len(result.failed_items), 1)
+        item = result.failed_items[0]
+        self.assertEqual(item.get("code"), "render_validation_failed")
+        self.assertIn("남아 있음", item["reason"])
+
+    def test_page_count_change_fails_validation(self):
+        """[invariant 2] 수정본 페이지 수가 원본과 다르면 검증 실패."""
+        self.pdf_bytes = _build_pdf_two_pages()
+
+        def _delete_second_page(page, rect, change):
+            page.parent.delete_page(1)
+
+        self._make_replace_change(operation_id="op_pdf_val_pages")
+        with mock_patch("apps.documents.patcher._apply_pdf_redact_overlay", side_effect=_delete_second_page):
+            result, _ = self._render()
+
+        self.assertEqual(result.applied_ids, [])
+        self.assertEqual(result.output_bytes, b"")
+        self.assertEqual(len(result.failed_items), 1)
+        item = result.failed_items[0]
+        self.assertEqual(item.get("code"), "render_validation_failed")
+        self.assertIn("페이지 수", item["reason"])
+
+    def test_unexpected_empty_page_fails_validation(self):
+        """[invariant 2] 원래 텍스트가 있던 페이지가 수정 후 비면 검증 실패."""
+        self.pdf_bytes = _build_pdf_two_pages()
+
+        def _nuke_second_page(page, rect, change):
+            # annotate 자체는 수행하지 않고, 대상이 아닌 2페이지의 텍스트를 전부 지운다
+            other = page.parent[1]
+            other.add_redact_annot(other.rect, fill=(1, 1, 1))
+            other.apply_redactions()
+
+        _make_change(
+            self.version,
+            operation_id="op_pdf_val_empty",
+            operation="annotate",
+            anchor={"type": "pdf_bbox", "page": 1, "rect": {"x0": 72, "y0": 88, "x1": 180, "y1": 104}},
+            replacement="검토 필요",
+        )
+        with mock_patch("apps.documents.patcher._apply_pdf_annotate", side_effect=_nuke_second_page):
+            result, _ = self._render()
+
+        self.assertEqual(result.applied_ids, [])
+        self.assertEqual(result.output_bytes, b"")
+        self.assertEqual(len(result.failed_items), 1)
+        item = result.failed_items[0]
+        self.assertEqual(item.get("code"), "render_validation_failed")
+        self.assertIn("비어 있음", item["reason"])
+
+    def test_empty_replacement_redact_passes_validation(self):
+        """[경계] replacement가 빈 문자열인 삭제형 redact는 페이지가 비어도 통과해야 한다."""
+        self._make_replace_change(operation_id="op_pdf_val_delete", replacement="")
+        result, _ = self._render()
+
+        self.assertEqual(result.applied_ids, ["op_pdf_val_delete"])
+        self.assertEqual(result.failed_items, [])
+        self.assertGreater(len(result.output_bytes), 0, "삭제형 redact는 artifact가 생성되어야 한다")
+
+    def test_mixed_valid_and_invisible_changes_produce_no_artifact(self):
+        """검증 실패가 하나라도 있으면 정상 항목까지 포함해 artifact를 내보내지 않는다."""
+        import fitz
+        from apps.documents import patcher
+
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((72, 100), "접수번호", fontsize=12, fontname="korea-s", color=(0, 0, 0))
+        page.insert_text((72, 200), "담당자명", fontsize=12, fontname="korea-s", color=(0, 0, 0))
+        buf = io.BytesIO()
+        doc.save(buf)
+        doc.close()
+        self.pdf_bytes = buf.getvalue()
+
+        self._make_replace_change(operation_id="op_pdf_val_good")
+        _make_change(
+            self.version,
+            operation_id="op_pdf_val_bad",
+            operation="replace_text",
+            anchor={"type": "text_match", "target_text": "담당자명", "page": 1, "occurrence": 1},
+            original="담당자명",
+            replacement="홍길동",
+        )
+
+        real_apply = patcher._apply_pdf_redact_overlay
+
+        def _selective(page, rect, change):
+            if change.operation_id == "op_pdf_val_bad":
+                _redact_without_insert(page, rect, change)
+                return
+            real_apply(page, rect, change)
+
+        with mock_patch("apps.documents.patcher._apply_pdf_redact_overlay", side_effect=_selective):
+            result, _ = self._render()
+
+        self.assertEqual(result.applied_ids, [])
+        self.assertEqual(result.output_bytes, b"", "부분 검증 실패여도 artifact를 내보내면 안 된다")
+        failed_by_id = {item["operation_id"]: item for item in result.failed_items}
+        self.assertEqual(set(failed_by_id), {"op_pdf_val_good", "op_pdf_val_bad"})
+        self.assertEqual(failed_by_id["op_pdf_val_bad"].get("code"), "render_validation_failed")
+        self.assertEqual(failed_by_id["op_pdf_val_good"].get("code"), "render_validation_failed")
+        self.assertIn("추출되지 않음", failed_by_id["op_pdf_val_bad"]["reason"])
+        self.assertIn("함께 중단", failed_by_id["op_pdf_val_good"]["reason"])
+
+    def test_validation_failure_via_task_sets_version_failed(self):
+        """task 경로: 검증 실패 → version FAILED, change FAILED, artifact 없음."""
+        change = self._make_replace_change(operation_id="op_pdf_val_task")
+        with mock_patch("apps.documents.patcher._apply_pdf_redact_overlay", side_effect=_redact_without_insert):
+            patch_document_version(self.version.pk)
+
+        change.refresh_from_db()
+        self.version.refresh_from_db()
+        self.assertEqual(change.status, DocumentChange.Status.FAILED)
+        self.assertEqual(self.version.status, DocumentVersion.Status.FAILED)
+        self.assertFalse(self.version.artifact_file, "검증 실패 시 artifact가 저장되면 안 된다")
+        self.assertIn("render 검증 실패", self.version.error_message)

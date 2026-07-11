@@ -15,6 +15,8 @@ DOCX / PPTX replace_text 패처 테스트.
   5. PPTX shape_index 범위 초과 → change.status=failed, version.status=failed
   6. PPTX 정상 패치 후 artifact 읽으면 replacement 텍스트가 포함됨
   7. 지원하지 않는 source_type(hwp) → version.status=failed, error_message에 'hwp' 포함
+  8. DOCX text_match 다중 매치 → 자동 반영하지 않고 NEEDS_CONFIRMATION으로 멈춤
+     (design v1 10.1절 — "DOCX 다중 매치 침묵 처리 수정", code=ambiguous_anchor)
 """
 import io
 import os
@@ -98,6 +100,17 @@ def _build_docx_bytes(paragraph_text: str) -> bytes:
     from docx import Document
     doc = Document()
     doc.add_paragraph(paragraph_text)
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def _build_docx_bytes_multi(paragraph_texts: list[str]) -> bytes:
+    """여러 단락으로 구성된 DOCX 바이트를 생성한다 (다중 매치 테스트용)."""
+    from docx import Document
+    doc = Document()
+    for text in paragraph_texts:
+        doc.add_paragraph(text)
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue()
@@ -208,6 +221,182 @@ class DocxPatcherTest(TestCase):
             full_text,
             "반환 bytes에 replacement 텍스트가 포함되어야 한다",
         )
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA)
+class DocxAmbiguousMatchTest(TestCase):
+    """
+    [버그 수정] DOCX replace_text 다중 매치 → NEEDS_CONFIRMATION 테스트 (design v1 10.1절).
+
+    수정 전에는 같은 문구(text_match)가 문서에 두 번 이상 나와도 첫 번째 단락만
+    조용히 수정하고 성공으로 처리했다 — PDF(AnchorResolver AMBIGUOUS)처럼
+    "매치 2개 이상이면 자동 반영하지 않고 멈춤"이어야 한다.
+    """
+
+    def setUp(self):
+        self.user = _make_user("docx_ambiguous_user")
+
+    def _make_docx_version(self, paragraphs, hash_val):
+        docx_bytes = _build_docx_bytes_multi(paragraphs)
+        upload = _make_upload(
+            self.user, "docx", "ambiguous.docx", docx_bytes, hash_val=hash_val
+        )
+        return upload, _make_version(upload, self.user)
+
+    def test_duplicate_across_paragraphs_returns_needs_confirmation_item(self):
+        """서로 다른 단락에 같은 text_match가 2개 → needs_confirmation_items, 변형·artifact 없음."""
+        from apps.documents.patcher import collect_applied_changes, render_docx
+
+        upload, version = self._make_docx_version(
+            ["계약금액 1,000원", "비고: 계약금액은 부가세 포함"],
+            hash_val="docx_ambiguous_render_hash",
+        )
+        _make_change(
+            version,
+            operation_id="op_docx_dup_01",
+            operation="replace_text",
+            anchor={"type": "text_match", "text_match": "계약금액"},
+            original="계약금액",
+            replacement="총계약금액",
+        )
+        changes = collect_applied_changes(version, operations=["replace_text"])
+        with upload.file.open("rb") as f:
+            original_bytes = f.read()
+        result = render_docx(original_bytes, changes)
+
+        self.assertEqual(result.applied_ids, [], "다중 매치는 자동 반영되면 안 된다")
+        self.assertEqual(result.failed_items, [])
+        self.assertEqual(len(result.needs_confirmation_items), 1)
+        item = result.needs_confirmation_items[0]
+        self.assertEqual(item["operation_id"], "op_docx_dup_01")
+        self.assertEqual(
+            item.get("code"),
+            "ambiguous_anchor",
+            "다중 매치 항목에는 안정된 실패 사유 코드 ambiguous_anchor가 있어야 한다 (design v1 8절)",
+        )
+        self.assertEqual(result.output_bytes, b"", "모호한 항목만 있으면 artifact bytes가 생성되면 안 된다")
+
+    def test_duplicate_in_same_paragraph_is_also_ambiguous(self):
+        """[경계] 한 단락 안에 text_match가 2번 나와도 동일하게 NEEDS_CONFIRMATION이다."""
+        from apps.documents.patcher import collect_applied_changes, render_docx
+
+        upload, version = self._make_docx_version(
+            ["금액 100원 그리고 금액 200원"],
+            hash_val="docx_ambiguous_same_para_hash",
+        )
+        _make_change(
+            version,
+            operation_id="op_docx_dup_02",
+            operation="replace_text",
+            anchor={"type": "text_match", "text_match": "금액"},
+            original="금액",
+            replacement="합계금액",
+        )
+        changes = collect_applied_changes(version, operations=["replace_text"])
+        with upload.file.open("rb") as f:
+            original_bytes = f.read()
+        result = render_docx(original_bytes, changes)
+
+        self.assertEqual(result.applied_ids, [])
+        self.assertEqual(len(result.needs_confirmation_items), 1)
+        self.assertEqual(result.needs_confirmation_items[0].get("code"), "ambiguous_anchor")
+
+    def test_duplicate_match_via_task_sets_needs_confirmation_status(self):
+        """task 경로: change/version 모두 NEEDS_CONFIRMATION, artifact 없음, change_ids 채워짐."""
+        upload, version = self._make_docx_version(
+            ["계약금액 1,000원", "비고: 계약금액은 부가세 포함"],
+            hash_val="docx_ambiguous_task_hash",
+        )
+        change = _make_change(
+            version,
+            operation_id="op_docx_dup_task",
+            operation="replace_text",
+            anchor={"type": "text_match", "text_match": "계약금액"},
+            original="계약금액",
+            replacement="총계약금액",
+        )
+        patch_document_version(version.pk)
+
+        change.refresh_from_db()
+        version.refresh_from_db()
+        self.assertEqual(
+            change.status,
+            DocumentChange.Status.NEEDS_CONFIRMATION,
+            "다중 매치 change는 FAILED가 아니라 NEEDS_CONFIRMATION이어야 한다",
+        )
+        self.assertEqual(version.status, DocumentVersion.Status.NEEDS_CONFIRMATION)
+        self.assertFalse(version.artifact_file, "NEEDS_CONFIRMATION이면 artifact가 저장되면 안 된다")
+        self.assertEqual(version.needs_confirmation_change_ids, ["op_docx_dup_task"])
+
+    def test_mixed_resolved_and_ambiguous_keeps_partial_success(self):
+        """유일 매치 + 다중 매치가 섞이면 유일 매치만 반영되고 version은 READY(부분 성공)."""
+        upload, version = self._make_docx_version(
+            ["갑: 주식회사 한빛", "계약금액 1,000원", "비고: 계약금액은 부가세 포함"],
+            hash_val="docx_ambiguous_mixed_hash",
+        )
+        resolved_change = _make_change(
+            version,
+            operation_id="op_docx_mixed_resolved",
+            operation="replace_text",
+            anchor={"type": "text_match", "text_match": "주식회사 한빛"},
+            original="주식회사 한빛",
+            replacement="주식회사 두빛",
+        )
+        ambiguous_change = _make_change(
+            version,
+            operation_id="op_docx_mixed_ambiguous",
+            operation="replace_text",
+            anchor={"type": "text_match", "text_match": "계약금액"},
+            original="계약금액",
+            replacement="총계약금액",
+        )
+        patch_document_version(version.pk)
+
+        resolved_change.refresh_from_db()
+        ambiguous_change.refresh_from_db()
+        version.refresh_from_db()
+
+        self.assertEqual(resolved_change.status, DocumentChange.Status.APPLIED)
+        self.assertEqual(ambiguous_change.status, DocumentChange.Status.NEEDS_CONFIRMATION)
+        self.assertEqual(version.status, DocumentVersion.Status.READY)
+        self.assertIn("op_docx_mixed_resolved", version.applied_change_ids)
+        self.assertNotIn("op_docx_mixed_ambiguous", version.applied_change_ids)
+        self.assertEqual(version.needs_confirmation_change_ids, ["op_docx_mixed_ambiguous"])
+
+        # 부분 성공 artifact에는 유일 매치의 replacement만 반영되고,
+        # 모호한 항목의 원문은 두 곳 모두 그대로 남아 있어야 한다.
+        from docx import Document
+        with version.artifact_file.open("rb") as f:
+            doc = Document(io.BytesIO(f.read()))
+        full_text = "\n".join(p.text for p in doc.paragraphs)
+        self.assertIn("주식회사 두빛", full_text)
+        self.assertEqual(full_text.count("계약금액"), 2, "모호한 항목은 어느 쪽도 변형되면 안 된다")
+
+    def test_empty_text_match_produces_failed_item(self):
+        """[경계] 빈 text_match는 임의 위치 삽입 대신 failed_items로 실패해야 한다."""
+        from apps.documents.patcher import collect_applied_changes, render_docx
+
+        upload, version = self._make_docx_version(
+            ["계약금액 1,000원"],
+            hash_val="docx_ambiguous_empty_hash",
+        )
+        _make_change(
+            version,
+            operation_id="op_docx_empty_match",
+            operation="replace_text",
+            anchor={"type": "text_match", "text_match": ""},
+            original="",
+            replacement="무관",
+        )
+        changes = collect_applied_changes(version, operations=["replace_text"])
+        with upload.file.open("rb") as f:
+            original_bytes = f.read()
+        result = render_docx(original_bytes, changes)
+
+        self.assertEqual(result.applied_ids, [])
+        self.assertEqual(result.needs_confirmation_items, [])
+        self.assertEqual(len(result.failed_items), 1)
+        self.assertEqual(result.failed_items[0]["operation_id"], "op_docx_empty_match")
 
 
 @override_settings(MEDIA_ROOT=TEMP_MEDIA)
@@ -345,3 +534,147 @@ class UnsupportedFormatTest(TestCase):
             version.error_message,
             "error_message에 지원하지 않는 포맷 이름이 포함되어야 한다",
         )
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA)
+class TextAnchorContractKeyTest(TestCase):
+    """
+    [버그 수정] text 계열 anchor 계약 키(target_text) 테스트.
+
+    patch-plan-schema-v0 7.2절과 LLM 프롬프트(prompts/patch_plan.py)는 text_match
+    anchor의 대상 키를 "target_text"로 정의하는데, 기존 DOCX/PPTX patcher는
+    "text_match" 키만 읽었다 — 실제 LLM/규칙 기반 플랜의 anchor로는 대상을 항상
+    빈 문자열로 읽어 동작하지 않았다(계약-구현 불일치). PDF resolver는 이미
+    target_text를 읽으므로 DOCX/PPTX만 맞춘다.
+    """
+
+    def setUp(self):
+        self.user = _make_user("anchor_contract_user")
+
+    def test_docx_target_text_key_unique_match_applies(self):
+        """계약 키 target_text로 유일 매치가 정상 교체된다."""
+        from apps.documents.patcher import collect_applied_changes, render_docx
+        from docx import Document
+
+        docx_bytes = _build_docx_bytes_multi(["계약금액 1,000원"])
+        upload = _make_upload(
+            self.user, "docx", "contract_key.docx", docx_bytes, hash_val="docx_contract_key_hash"
+        )
+        version = _make_version(upload, self.user)
+        _make_change(
+            version,
+            operation_id="op_docx_contract_key",
+            operation="replace_text",
+            anchor={"type": "text_match", "target_text": "계약금액", "occurrence": 1},
+            original="계약금액",
+            replacement="총계약금액",
+        )
+        changes = collect_applied_changes(version, operations=["replace_text"])
+        with upload.file.open("rb") as f:
+            original_bytes = f.read()
+        result = render_docx(original_bytes, changes)
+
+        self.assertEqual(
+            result.applied_ids,
+            ["op_docx_contract_key"],
+            "계약 키 target_text anchor로도 교체가 적용되어야 한다",
+        )
+        self.assertEqual(result.failed_items, [])
+        doc = Document(io.BytesIO(result.output_bytes))
+        full_text = "\n".join(p.text for p in doc.paragraphs)
+        self.assertIn("총계약금액", full_text)
+
+    def test_docx_target_text_key_duplicate_stops_with_needs_confirmation(self):
+        """계약 키 target_text에서도 다중 매치는 NEEDS_CONFIRMATION으로 멈춘다."""
+        from apps.documents.patcher import collect_applied_changes, render_docx
+
+        docx_bytes = _build_docx_bytes_multi(
+            ["계약금액 1,000원", "비고: 계약금액은 부가세 포함"]
+        )
+        upload = _make_upload(
+            self.user, "docx", "contract_key_dup.docx", docx_bytes,
+            hash_val="docx_contract_key_dup_hash",
+        )
+        version = _make_version(upload, self.user)
+        _make_change(
+            version,
+            operation_id="op_docx_contract_dup",
+            operation="replace_text",
+            anchor={"type": "text_match", "target_text": "계약금액"},
+            original="계약금액",
+            replacement="총계약금액",
+        )
+        changes = collect_applied_changes(version, operations=["replace_text"])
+        with upload.file.open("rb") as f:
+            original_bytes = f.read()
+        result = render_docx(original_bytes, changes)
+
+        self.assertEqual(result.applied_ids, [])
+        self.assertEqual(len(result.needs_confirmation_items), 1)
+        self.assertEqual(result.needs_confirmation_items[0].get("code"), "ambiguous_anchor")
+
+    def test_pptx_target_text_key_applies_without_prepend_corruption(self):
+        """
+        [회귀] PPTX도 계약 키 target_text를 읽어야 한다 — 기존에는 빈 문자열로
+        읽혀 첫 단락 맨 앞에 replacement가 침묵 삽입되는 오염이 발생했다.
+        """
+        from apps.documents.patcher import collect_applied_changes, render_pptx
+        from pptx import Presentation
+
+        pptx_bytes = _build_pptx_bytes("발표자료 v1")
+        upload = _make_upload(
+            self.user, "pptx", "contract_key.pptx", pptx_bytes, hash_val="pptx_contract_key_hash"
+        )
+        version = _make_version(upload, self.user)
+        _make_change(
+            version,
+            operation_id="op_pptx_contract_key",
+            operation="replace_text",
+            anchor={"type": "text_match", "target_text": "v1", "slide_index": 0, "shape_index": 0},
+            original="v1",
+            replacement="v2",
+        )
+        changes = collect_applied_changes(version, operations=["replace_text"])
+        with upload.file.open("rb") as f:
+            original_bytes = f.read()
+        result = render_pptx(original_bytes, changes)
+
+        self.assertEqual(result.applied_ids, ["op_pptx_contract_key"])
+        prs = Presentation(io.BytesIO(result.output_bytes))
+        texts = [
+            para.text
+            for slide in prs.slides
+            for shape in slide.shapes
+            if shape.has_text_frame
+            for para in shape.text_frame.paragraphs
+        ]
+        joined = "\n".join(texts)
+        self.assertIn("발표자료 v2", joined, "target_text 위치가 정확히 교체되어야 한다")
+        self.assertNotIn("v2발표자료", joined, "맨 앞 침묵 삽입 오염이 있어서는 안 된다")
+
+    def test_pptx_empty_target_text_fails_explicitly(self):
+        """[경계] 대상 키가 모두 비어 있으면 침묵 삽입 대신 failed_items로 실패한다."""
+        from apps.documents.patcher import collect_applied_changes, render_pptx
+
+        pptx_bytes = _build_pptx_bytes("발표자료 v1")
+        upload = _make_upload(
+            self.user, "pptx", "contract_key_empty.pptx", pptx_bytes,
+            hash_val="pptx_contract_key_empty_hash",
+        )
+        version = _make_version(upload, self.user)
+        _make_change(
+            version,
+            operation_id="op_pptx_empty_key",
+            operation="replace_text",
+            anchor={"type": "text_match", "slide_index": 0, "shape_index": 0},
+            original="",
+            replacement="오염텍스트",
+        )
+        changes = collect_applied_changes(version, operations=["replace_text"])
+        with upload.file.open("rb") as f:
+            original_bytes = f.read()
+        result = render_pptx(original_bytes, changes)
+
+        self.assertEqual(result.applied_ids, [], "빈 대상 키가 applied로 처리되면 안 된다")
+        self.assertEqual(len(result.failed_items), 1)
+        self.assertEqual(result.failed_items[0]["operation_id"], "op_pptx_empty_key")

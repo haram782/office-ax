@@ -98,6 +98,14 @@ def _maybe_build_simple_replace_plan(prompt: str, file_context: dict) -> dict | 
         return None
 
     operation_format = "pdf" if source_type == "pdf_digital" else source_type
+
+    # 유일 출현일 때만 occurrence를 지정한다 — 다중 출현에 occurrence=1을
+    # 하드코딩하면 resolver의 모호성 보호(AMBIGUOUS → NEEDS_CONFIRMATION)를
+    # 우회해 첫 매치를 침묵 교체하게 된다.
+    anchor = {"type": "text_match", "target_text": original}
+    if occurrences == 1:
+        anchor["occurrence"] = 1
+
     return {
         "schema": "patch_plan_v1",
         "plan_id": f"plan_simple_replace_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:6]}",
@@ -112,7 +120,7 @@ def _maybe_build_simple_replace_plan(prompt: str, file_context: dict) -> dict | 
                 "replacement": replacement,
                 "reason": "사용자가 명시적으로 요청한 텍스트 교체입니다.",
                 "confidence": 0.98,
-                "anchor": {"type": "text_match", "target_text": original, "occurrence": 1},
+                "anchor": anchor,
                 "patch": {"method": "replace_text", "original": original, "replacement": replacement},
                 "risk": {"level": "low" if occurrences == 1 else "medium"},
             }

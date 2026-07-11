@@ -216,6 +216,15 @@ XLSX/CSV 우선.
 
 HWP/HWPX/DOCX/PDF 공통 fallback.
 
+대상 텍스트 키는 `target_text`가 기준이다. DOCX/PPTX patcher는 과거에 읽던
+legacy 키 `text_match`도 기존 저장된 `DocumentChange` 하위호환을 위해
+fallback으로 받아들이지만, 새로 생성되는 plan은 `target_text`만 사용한다.
+
+`occurrence`는 대상 텍스트가 문서에 유일하게 출현할 때만 지정한다. 다중 출현
+문서에 occurrence를 지정하면 resolver의 모호성 판정(AMBIGUOUS →
+NEEDS_CONFIRMATION)을 우회해 침묵 오수정으로 이어지므로, 확신 없는 생성기는
+occurrence를 생략해야 한다.
+
 ```json
 {
   "type": "text_match",
