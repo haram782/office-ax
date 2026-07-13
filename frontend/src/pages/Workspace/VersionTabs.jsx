@@ -78,8 +78,7 @@ export function VersionTabs({
           const isActive      = v.id === selectedVersionId
           const isGenerating  = v.status === 'generating'
           const isFailed      = v.status === 'failed'
-          const needsConfirmation = v.status === 'needs_confirmation'
-          const isDisabled    = isGenerating || isFailed || needsConfirmation
+          const isDisabled    = isGenerating
           const label         = versionLabel(v)
           const statusLabel   = STATUS_LABELS[v.status] || v.status
           const meta          = versionMeta(v)

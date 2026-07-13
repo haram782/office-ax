@@ -227,6 +227,149 @@ describe('WorkspaceCenter 버전별 수정 카드', () => {
     expect(screen.getByTestId('viewer-highlights')).toHaveTextContent('1')
   })
 
+  it.each([
+    {
+      status: 'failed',
+      failureCode: 'render_validation_failed',
+      failureMessage: '잘못된 결과물이 저장되지 않도록 생성을 중단했습니다.',
+      guidanceRole: 'alert',
+    },
+    {
+      status: 'needs_confirmation',
+      failureCode: 'ambiguous_anchor',
+      failureMessage: '수정할 위치가 여러 곳입니다. 위치 단서를 더해 다시 요청해 주세요.',
+      guidanceRole: 'status',
+    },
+  ])('원본 선택 후 $status 종결 버전을 다시 선택해 안내에 접근할 수 있다', async ({
+    status,
+    failureCode,
+    failureMessage,
+    guidanceRole,
+  }) => {
+    mockUseDocumentVersions.mockReturnValue({ versions: [
+      VERSIONS[0],
+      {
+        ...VERSIONS[1],
+        status,
+        failure_code: failureCode,
+        failure_message: failureMessage,
+        applied_change_ids: [],
+        needs_confirmation_change_ids: status === 'needs_confirmation' ? ['s1'] : [],
+      },
+    ] })
+    mockUseChangeSuggestions.mockReturnValue({
+      suggestions: [{ id: 's1', title: '종결 안내 카드', status, failureMessage }],
+      statuses: { s1: status },
+      setStatuses: vi.fn(),
+      selectedSuggestionId: null,
+      setSelectedSuggestionId: vi.fn(),
+      highlights: [{ id: 's1', status }],
+      pendingIds: new Set(),
+      isAcceptingAll: false,
+      acceptAllError: null,
+      autoRejectedIds: new Set(),
+      handleSetStatus: vi.fn(),
+      handleAcceptAll: vi.fn(),
+      handleSelectHighlight: vi.fn(),
+    })
+
+    renderCenter()
+
+    expect(await screen.findByRole(guidanceRole)).toHaveTextContent(failureMessage)
+    await userEvent.click(screen.getByRole('button', { name: /원본/ }))
+    expect(screen.queryByText('종결 안내 카드')).not.toBeInTheDocument()
+
+    const terminalTab = screen.getByRole('button', { name: /박하람 교체안/ })
+    expect(terminalTab).toBeEnabled()
+    await userEvent.click(terminalTab)
+
+    expect(await screen.findByText('종결 안내 카드')).toBeInTheDocument()
+    expect(screen.getByRole(guidanceRole)).toHaveTextContent(failureMessage)
+  })
+
+  it('frontend timeout 후 동일 version이 실제 failed로 전환되면 durable 혼합 operation을 다시 조회한다', async () => {
+    let databaseStatus = 'generating'
+    const staleChanges = [
+      { id: 201, operation_id: 'hard', status: 'applied' },
+      { id: 202, operation_id: 'confirm', status: 'applied' },
+    ]
+    const durableChanges = [
+      {
+        id: 201,
+        operation_id: 'hard',
+        status: 'failed',
+        failure_code: 'render_validation_failed',
+        failure_message: '잘못된 결과물이 저장되지 않도록 생성을 중단했습니다.',
+      },
+      {
+        id: 202,
+        operation_id: 'confirm',
+        status: 'needs_confirmation',
+        failure_code: 'ambiguous_anchor',
+        failure_message: '수정할 위치가 여러 곳입니다. 위치 단서를 더해 다시 요청해 주세요.',
+      },
+    ]
+    mockUsePatchTrigger.mockReturnValue({ patchStatus: 'failed', trigger: vi.fn() })
+    mockUseDocumentVersions.mockImplementation(() => ({
+      versions: [
+        VERSIONS[0],
+        {
+          ...VERSIONS[1],
+          status: databaseStatus,
+          updated_at: databaseStatus === 'generating' ? '2026-07-08T05:20:00' : '2026-07-08T05:22:00',
+          failure_code: databaseStatus === 'failed' ? 'render_validation_failed' : '',
+          failure_message: databaseStatus === 'failed' ? '수정본을 만들지 못했습니다.' : '',
+          applied_change_ids: [],
+          needs_confirmation_change_ids: databaseStatus === 'failed' ? ['confirm'] : [],
+        },
+      ],
+    }))
+    mockFetchDocumentChanges
+      .mockResolvedValueOnce(staleChanges)
+      .mockResolvedValueOnce(durableChanges)
+    mockUseChangeSuggestions.mockImplementation((snippetData) => {
+      const suggestions = (snippetData?.patch_changes ?? []).map(change => ({
+        id: change.operation_id,
+        title: change.operation_id === 'hard' ? '하드 실패 작업' : '위치 확인 작업',
+        status: change.status,
+        failureMessage: change.failure_message ?? '',
+      }))
+      return {
+        suggestions,
+        statuses: Object.fromEntries(suggestions.map(s => [s.id, s.status])),
+        setStatuses: vi.fn(),
+        selectedSuggestionId: null,
+        setSelectedSuggestionId: vi.fn(),
+        highlights: suggestions,
+        pendingIds: new Set(),
+        isAcceptingAll: false,
+        acceptAllError: null,
+        autoRejectedIds: new Set(),
+        handleSetStatus: vi.fn(),
+        handleAcceptAll: vi.fn(),
+        handleSelectHighlight: vi.fn(),
+      }
+    })
+
+    const view = renderCenter({
+      localPatchData: { version_id: 2, patch_changes: staleChanges },
+    })
+    await waitFor(() => expect(mockFetchDocumentChanges).toHaveBeenCalledTimes(1))
+
+    databaseStatus = 'failed'
+    view.rerender(centerElement({
+      localPatchData: { version_id: 2, patch_changes: staleChanges },
+    }))
+
+    await waitFor(() => expect(mockFetchDocumentChanges).toHaveBeenCalledTimes(2))
+    expect(await screen.findByText('하드 실패 작업')).toBeInTheDocument()
+    expect(screen.getByText('위치 확인 작업')).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('잘못된 결과물이 저장되지 않도록')
+    expect(screen.getByRole('status')).toHaveTextContent('위치 단서를 더해 다시 요청해 주세요')
+    expect(screen.getByText('생성 실패')).toBeInTheDocument()
+    expect(screen.getByText('위치 확인 필요')).toBeInTheDocument()
+  })
+
   it('전체 반영 후 현재 버전이 draft이면 수정본 생성을 자동 트리거한다', async () => {
     const trigger = vi.fn().mockResolvedValue(undefined)
     const handleAcceptAll = vi.fn().mockResolvedValue(undefined)

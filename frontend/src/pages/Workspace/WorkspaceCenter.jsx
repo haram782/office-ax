@@ -130,6 +130,8 @@ export function WorkspaceCenter({
   }, [rawPatchStatus, versions.length, versionId, editingVersion])
 
   // patcher 종결 후 서버의 durable failure_code/message를 다시 읽는다.
+  // frontend timeout으로 patchStatus가 먼저 failed가 되어도 동일 DB 버전의 실제 상태나
+  // 갱신 시각이 바뀌면 다시 조회해 operation별 종결 결과를 놓치지 않는다.
   // cleanup 플래그와 ID 묶음으로 이전 파일·버전의 늦은 응답이 현재 화면을 덮지 못하게 한다.
   useEffect(() => {
     if (!uploadId || !versionId) return
@@ -148,7 +150,13 @@ export function WorkspaceCenter({
     return () => {
       cancelled = true
     }
-  }, [uploadId, versionId, patchStatus])
+  }, [
+    uploadId,
+    versionId,
+    patchStatus,
+    editingVersion?.status,
+    editingVersion?.updated_at,
+  ])
 
   // 선택된 버전 ID (기본값: 원본 버전 ID 또는 null)
   const [selectedVersionId, setSelectedVersionId] = useState(null)
