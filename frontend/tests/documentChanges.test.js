@@ -7,11 +7,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // vi.mock 팩토리는 파일 상단으로 호이스팅되므로 vi.hoisted()로 먼저 선언
 const mockPatch = vi.hoisted(() => vi.fn())
+const mockGet = vi.hoisted(() => vi.fn())
 vi.mock('../src/api/client', () => ({
-  api: { patch: mockPatch },
+  api: { get: mockGet, patch: mockPatch },
 }))
 
-import { patchDocumentChange } from '../src/api/documentChanges'
+import { fetchDocumentChanges, patchDocumentChange } from '../src/api/documentChanges'
 
 describe('patchDocumentChange', () => {
   beforeEach(() => { vi.clearAllMocks() })
@@ -51,5 +52,22 @@ describe('patchDocumentChange', () => {
     mockPatch.mockRejectedValue(new Error('네트워크 오류'))
 
     await expect(patchDocumentChange(42, 'applied')).rejects.toThrow('네트워크 오류')
+  })
+})
+
+describe('fetchDocumentChanges', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  it('version_id 필터로 최신 변경 목록을 조회한다', async () => {
+    const changes = [{ id: 7, failure_code: 'patch_failed' }]
+    mockGet.mockResolvedValue({ data: changes })
+
+    const result = await fetchDocumentChanges(10, 22)
+
+    expect(mockGet).toHaveBeenCalledWith(
+      '/uploads/10/changes/',
+      { params: { version_id: 22 } },
+    )
+    expect(result).toEqual(changes)
   })
 })

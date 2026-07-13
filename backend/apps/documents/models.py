@@ -261,6 +261,8 @@ class DocumentVersion(models.Model):
     needs_confirmation_change_ids = models.JSONField(default=list, blank=True)
     # patcher 실패 시 사유 기록 (정상 완료 시 빈 문자열)
     error_message = models.TextField(blank=True, default="")
+    # API에는 이 안정 코드와 allowlist 사용자 문구만 노출하고 raw error_message는 숨긴다.
+    failure_code = models.CharField(max_length=50, blank=True, default="")
     # patch 완료 결과물 — GET 다운로드는 이 파일을 그대로 반환한다(재생성하지 않음)
     artifact_file = models.FileField(blank=True, null=True, upload_to="artifacts/")
     artifact_format = models.CharField(blank=True, default="", max_length=20)
@@ -344,6 +346,8 @@ class DocumentChange(models.Model):
         choices=Status.choices,
         default=Status.PENDING,
     )
+    # patch 결과 item의 안정 코드. 사용자 문구는 serializer allowlist에서 생성한다.
+    failure_code = models.CharField(max_length=50, blank=True, default="")
     # low | medium | high (스키마 risk.level에 대응)
     risk_level = models.CharField(max_length=20, blank=True, default="")
     # null=True는 스텁(0005) 기존 row에 값을 채울 수 없는 제약을 우회하기 위함.

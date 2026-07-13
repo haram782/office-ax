@@ -155,6 +155,26 @@ describe('ChangeSuggestionCard — needs_confirmation 상태 뱃지', () => {
     expect(screen.getByText('위치 확인 필요')).toBeTruthy()
     expect(screen.queryByText('생성 실패')).toBeNull()
   })
+
+  it('서버가 제공한 위치 확인 안내를 접근 가능한 상태 문구로 표시한다', () => {
+    renderCard(makeSuggestion({
+      id: 'op_needs_confirm_message',
+      failureMessage: '수정할 위치가 여러 곳입니다. 위치 단서를 더해 다시 요청해 주세요.',
+    }), { status: 'needs_confirmation' })
+
+    expect(screen.getByRole('status')).toHaveTextContent('위치 단서를 더해 다시 요청해 주세요')
+  })
+})
+
+describe('ChangeSuggestionCard — failed 안내', () => {
+  it('서버가 제공한 안전한 실패 문구를 그대로 표시한다', () => {
+    renderCard(makeSuggestion({
+      id: 'op_failed_message',
+      failureMessage: '잘못된 결과물이 저장되지 않도록 생성을 중단했습니다.',
+    }), { status: 'failed' })
+
+    expect(screen.getByRole('alert')).toHaveTextContent('잘못된 결과물이 저장되지 않도록 생성을 중단했습니다.')
+  })
 })
 
 describe('ChangeSuggestionCard — 기존 replace_cell UI 회귀 확인', () => {

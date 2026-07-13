@@ -101,8 +101,62 @@ class DocumentChangeListTest(TestCase):
             "id", "operation_id", "plan_id", "format", "operation", "title",
             "original", "replacement", "reason", "confidence",
             "anchor", "patch", "risk_level", "status", "created_at", "updated_at",
+            "failure_code", "failure_message",
         ]:
             self.assertIn(field, record, f"응답에 {field} 필드가 없습니다.")
+
+    def test_failed_change_returns_only_allowlisted_safe_message(self):
+        """내부 원문 대신 안정 코드에 대응하는 안전한 사용자 문구만 반환한다."""
+        self.change.status = DocumentChange.Status.FAILED
+        self.change.failure_code = "render_validation_failed"
+        self.change.save(update_fields=["status", "failure_code"])
+        self.version.error_message = "subprocess stderr: /private/tmp/customer-secret.pdf"
+        self.version.save(update_fields=["error_message"])
+
+        resp = self.client.get(f"/api/v1/uploads/{self.upload.pk}/changes/")
+
+        record = resp.data[0]
+        self.assertEqual(record["failure_code"], "render_validation_failed")
+        self.assertIn("잘못된 결과물이 저장되지 않도록", record["failure_message"])
+        self.assertNotIn("error_message", record)
+        self.assertNotIn("/private/tmp", str(record))
+        self.assertNotIn("stderr", str(record))
+
+    def test_unknown_and_legacy_failed_changes_use_safe_generic_message(self):
+        """알 수 없거나 비어 있는 코드는 failed 상태에서 일반 안내로 fallback한다."""
+        expected = "수정본을 만들지 못했습니다. 잠시 후 다시 시도하고, 계속되면 운영자에게 문의해 주세요."
+        for index, code in enumerate(("", "future_internal_code"), start=1):
+            change = self.change if index == 1 else _make_change(self.version, f"op_unknown_{index}")
+            change.status = DocumentChange.Status.FAILED
+            change.failure_code = code
+            change.save(update_fields=["status", "failure_code"])
+
+        resp = self.client.get(f"/api/v1/uploads/{self.upload.pk}/changes/")
+
+        self.assertEqual({item["failure_message"] for item in resp.data}, {expected})
+        self.assertEqual({item["failure_code"] for item in resp.data}, {"patch_failed"})
+
+    def test_successful_change_has_no_failure_message(self):
+        """성공 change에는 과거 코드가 남아 있어도 실패 안내를 붙이지 않는다."""
+        self.change.status = DocumentChange.Status.APPLIED
+        self.change.failure_code = "render_validation_failed"
+        self.change.save(update_fields=["status", "failure_code"])
+
+        resp = self.client.get(f"/api/v1/uploads/{self.upload.pk}/changes/")
+
+        self.assertEqual(resp.data[0]["failure_code"], "")
+        self.assertEqual(resp.data[0]["failure_message"], "")
+
+    def test_legacy_needs_confirmation_uses_ambiguous_guidance(self):
+        """기존 needs_confirmation row의 빈 코드도 위치 확인 안내로 복구한다."""
+        self.change.status = DocumentChange.Status.NEEDS_CONFIRMATION
+        self.change.failure_code = ""
+        self.change.save(update_fields=["status", "failure_code"])
+
+        resp = self.client.get(f"/api/v1/uploads/{self.upload.pk}/changes/")
+
+        self.assertEqual(resp.data[0]["failure_code"], "ambiguous_anchor")
+        self.assertIn("위치 단서를 더해", resp.data[0]["failure_message"])
 
     def test_version_id_filter(self):
         """?version_id= 쿼리로 특정 버전의 change만 반환한다."""

@@ -318,7 +318,11 @@ def patch_document_version(version_id: int) -> None:
 
     # ── 원본 파일 존재 확인 ────────────────────────────────────────────────
     if not upload_log.file or not upload_log.file.storage.exists(upload_log.file.name):
-        _set_failed(version, "원본 파일(upload_log.file)이 존재하지 않습니다.")
+        _set_failed(
+            version,
+            "원본 파일(upload_log.file)이 존재하지 않습니다.",
+            "source_file_missing",
+        )
         logger.error("patch_document_version: 원본 파일 없음 | version_id=%s", version_id)
         _record_patch_artifact_event(
             version, upload_log, UsageEvent.Status.FAILED,
@@ -330,7 +334,7 @@ def patch_document_version(version_id: int) -> None:
     render_fn = _RENDER_BY_FORMAT.get(source_type)
     if render_fn is None:
         # 지원하지 않는 포맷 — 예측 가능한 업무 실패이므로 Result 패턴(_set_failed)으로 처리
-        _set_failed(version, f"지원하지 않는 포맷: {source_type}")
+        _set_failed(version, f"지원하지 않는 포맷: {source_type}", "unsupported_format")
         _record_patch_artifact_event(
             version, upload_log, UsageEvent.Status.FAILED,
             reason="unsupported_format", source_type=source_type,
@@ -347,7 +351,7 @@ def patch_document_version(version_id: int) -> None:
             original_bytes = f.read()
     except Exception as exc:
         logger.error("patch_document_version: 원본 파일 읽기 실패 | version_id=%s | %s", version_id, exc)
-        _set_failed(version, f"원본 파일 읽기 실패: {exc}")
+        _set_failed(version, f"원본 파일 읽기 실패: {exc}", "source_file_read_error")
         _record_patch_artifact_event(
             version, upload_log, UsageEvent.Status.FAILED,
             reason="source_file_read_error", source_type=source_type,
@@ -364,7 +368,7 @@ def patch_document_version(version_id: int) -> None:
             "patch_document_version: render 단계 예외 | version_id=%s | format=%s",
             version_id, source_type,
         )
-        _set_failed(version, f"render 실패: {exc}")
+        _set_failed(version, f"render 실패: {exc}", "render_exception")
         _record_patch_artifact_event(
             version, upload_log, UsageEvent.Status.FAILED,
             reason="render_exception", source_type=source_type,
@@ -389,7 +393,7 @@ def patch_document_version(version_id: int) -> None:
         error_message=version.error_message if final_status == UsageEvent.Status.FAILED else None,
         # 조기 실패 경로(source_file_missing 등)와 동일하게, render/persist 실패도
         # 안정된 실패 사유 코드를 metadata.reason으로 남긴다 (design v1 8절)
-        reason=_primary_failure_code(result) if final_status == UsageEvent.Status.FAILED else None,
+        reason=version.failure_code if final_status == UsageEvent.Status.FAILED else None,
     )
 
 
@@ -404,23 +408,6 @@ def _record_patch_artifact_event(version, upload_log, status: str, **metadata) -
         metadata={"version_id": version.pk, **{k: v for k, v in metadata.items() if v is not None}},
     )
 
-
-def _primary_failure_code(result) -> str | None:
-    """
-    PatchResult에서 대표 실패 사유 코드를 고른다 (usage event metadata용).
-
-    hard failure(failed_items)의 코드가 위치 확인 대기(needs_confirmation_items)의
-    코드보다 우선한다 — 버전이 FAILED로 끝났다면 그쪽이 대표 원인이다.
-    코드가 없는 기존 실패(대상 텍스트 없음 등)는 None을 반환해 reason 키를
-    기록하지 않는다.
-    """
-    for item in result.failed_items:
-        if item.get("code"):
-            return item["code"]
-    for item in result.needs_confirmation_items:
-        if item.get("code"):
-            return item["code"]
-    return None
 
 # ── 핵심 알고리즘 ─────────────────────────────────────────────────────────────
 

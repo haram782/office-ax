@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const mockUseDocumentVersions = vi.hoisted(() => vi.fn())
 const mockUsePatchTrigger = vi.hoisted(() => vi.fn())
 const mockUseChangeSuggestions = vi.hoisted(() => vi.fn())
+const mockFetchDocumentChanges = vi.hoisted(() => vi.fn())
 
 vi.mock('../src/hooks/useDocumentVersions', () => ({
   useDocumentVersions: (...args) => mockUseDocumentVersions(...args),
@@ -22,6 +23,11 @@ vi.mock('../src/components/DocumentPanel', () => ({
   resolveViewer: (_previewData, options) => (
     <div data-testid="viewer-highlights">{options.highlights.length}</div>
   ),
+}))
+
+vi.mock('../src/api/documentChanges', () => ({
+  fetchDocumentChanges: (...args) => mockFetchDocumentChanges(...args),
+  fetchVersionFileBlob: vi.fn(),
 }))
 
 import { WorkspaceCenter } from '../src/pages/Workspace/WorkspaceCenter'
@@ -72,8 +78,8 @@ const NEEDS_CONFIRMATION_ONLY_VERSIONS = [
   },
 ]
 
-function renderCenter(props = {}) {
-  return render(
+function centerElement(props = {}) {
+  return (
     <WorkspaceCenter
       previewData={{
         id: 10,
@@ -88,13 +94,18 @@ function renderCenter(props = {}) {
       suggestedWorkflow={null}
       localPatchData={props.localPatchData ?? { version_id: 2, patch_changes: [] }}
       onAcceptAllReady={props.onAcceptAllReady ?? vi.fn()}
-    />,
+    />
   )
+}
+
+function renderCenter(props = {}) {
+  return render(centerElement(props))
 }
 
 describe('WorkspaceCenter 버전별 수정 카드', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockFetchDocumentChanges.mockResolvedValue([])
     mockUseDocumentVersions.mockReturnValue({ versions: VERSIONS })
     mockUsePatchTrigger.mockReturnValue({ patchStatus: null, trigger: vi.fn() })
     mockUseChangeSuggestions.mockReturnValue({
@@ -111,6 +122,89 @@ describe('WorkspaceCenter 버전별 수정 카드', () => {
       handleSetStatus: vi.fn(),
       handleAcceptAll: vi.fn(),
       handleSelectHighlight: vi.fn(),
+    })
+  })
+
+  it('terminal 상태에 도달하면 version 필터로 최신 change를 다시 조회한다', async () => {
+    mockUseDocumentVersions.mockReturnValue({ versions: [{
+      ...VERSIONS[1],
+      status: 'failed',
+      failure_code: 'patch_failed',
+      failure_message: '수정본을 만들지 못했습니다.',
+    }] })
+    mockFetchDocumentChanges.mockResolvedValue([{
+      id: 99,
+      operation_id: 's1',
+      status: 'failed',
+      failure_code: 'render_validation_failed',
+      failure_message: '잘못된 결과물이 저장되지 않도록 생성을 중단했습니다.',
+    }])
+
+    renderCenter()
+
+    await waitFor(() => {
+      expect(mockFetchDocumentChanges).toHaveBeenCalledWith(10, 2)
+    })
+    await waitFor(() => {
+      expect(mockUseChangeSuggestions.mock.calls.at(-1)[0].patch_changes[0]).toMatchObject({
+        id: 99,
+        failure_code: 'render_validation_failed',
+      })
+    })
+  })
+
+  it('change-level 안내가 없으면 version-level 안내를 표시한다', async () => {
+    mockUseDocumentVersions.mockReturnValue({ versions: [{
+      ...VERSIONS[1],
+      status: 'failed',
+      failure_code: 'source_file_missing',
+      failure_message: '원본 파일을 찾지 못했습니다. 파일을 다시 업로드해 주세요.',
+    }] })
+
+    renderCenter()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('원본 파일을 찾지 못했습니다')
+  })
+
+  it('이전 version의 늦은 refresh 응답을 현재 suggestion에 적용하지 않는다', async () => {
+    let resolveOldRequest
+    const oldRequest = new Promise(resolve => { resolveOldRequest = resolve })
+    mockFetchDocumentChanges.mockImplementation((_uploadId, requestedVersionId) => {
+      if (String(requestedVersionId) === '2') return oldRequest
+      return Promise.resolve([{
+        id: 103,
+        operation_id: 'new-version-change',
+        status: 'failed',
+        failure_message: '새 버전 안내',
+      }])
+    })
+    mockUseDocumentVersions.mockImplementation((_uploadId, _status, refreshKey) => ({
+      versions: [{
+        id: Number(refreshKey),
+        version_number: Number(refreshKey),
+        status: 'failed',
+        label: `버전 ${refreshKey}`,
+        failure_message: '버전 안내',
+      }],
+    }))
+
+    const view = renderCenter({ localPatchData: { version_id: 2, patch_changes: [] } })
+    await waitFor(() => expect(mockFetchDocumentChanges).toHaveBeenCalledWith(10, 2))
+
+    view.rerender(centerElement({ localPatchData: { version_id: 3, patch_changes: [] } }))
+    await waitFor(() => expect(mockFetchDocumentChanges).toHaveBeenCalledWith(10, 3))
+    resolveOldRequest([{
+      id: 102,
+      operation_id: 'stale-version-change',
+      status: 'failed',
+      failure_message: '이전 버전 안내',
+    }])
+
+    await waitFor(() => {
+      expect(mockUseChangeSuggestions.mock.calls.at(-1)[0]).toMatchObject({
+        version_id: 3,
+        patch_changes: [expect.objectContaining({ operation_id: 'new-version-change' })],
+      })
     })
   })
 
@@ -292,7 +386,7 @@ describe('WorkspaceCenter 버전별 수정 카드', () => {
 
     // editingVersion.status === 'ready'만 검사하던 옛 코드라면 이 카드는 이 분기를
     // 타지 않고 아래 'applied' 분기로 빠져 '생성 대기'처럼 보였을 것이다.
-    expect(await screen.findByText('위치 확인 필요')).toBeInTheDocument()
+    expect((await screen.findAllByText('위치 확인 필요')).length).toBeGreaterThanOrEqual(2)
     expect(screen.queryByText('생성 대기')).not.toBeInTheDocument()
     expect(screen.queryByText('반영됨')).not.toBeInTheDocument()
 

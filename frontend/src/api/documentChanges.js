@@ -18,6 +18,21 @@ export async function patchDocumentChange(changeDbId, status) {
 }
 
 /**
+ * 특정 버전의 최신 DocumentChange 목록을 조회한다.
+ *
+ * @param {number|string} uploadId
+ * @param {number|string} versionId
+ * @returns {Promise<Array<object>>}
+ */
+export async function fetchDocumentChanges(uploadId, versionId) {
+  const { data } = await api.get(
+    `/uploads/${uploadId}/changes/`,
+    { params: { version_id: versionId } },
+  )
+  return data
+}
+
+/**
  * XLSX patcher를 트리거한다.
  * applied 상태의 변경을 반영한 수정본 생성을 BE에 요청한다.
  *

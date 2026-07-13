@@ -441,3 +441,116 @@ class PersistPatchResultTest(TestCase):
 
         self.change.refresh_from_db()
         self.assertEqual(self.change.status, DocumentChange.Status.FAILED)
+
+    def test_failure_codes_are_persisted_by_operation_id(self):
+        """결과 순서와 무관하게 operation_id 기준으로 change 실패 코드를 저장한다."""
+        second = _make_change(
+            self.version,
+            "op_confirm",
+            DocumentChange.Status.APPLIED,
+        )
+        result = PatchResult(
+            output_bytes=b"",
+            applied_ids=[],
+            failed_items=[{
+                "operation_id": "op_persist",
+                "reason": "렌더 검증 실패",
+                "code": "render_validation_failed",
+            }],
+            needs_confirmation_items=[{
+                "operation_id": "op_confirm",
+                "reason": "후보가 여러 개입니다.",
+                "code": "ambiguous_anchor",
+            }],
+        )
+
+        persist_patch_result(self.version, result, "xlsx", [second, self.change])
+
+        self.change.refresh_from_db()
+        second.refresh_from_db()
+        self.version.refresh_from_db()
+        self.assertEqual(self.change.failure_code, "render_validation_failed")
+        self.assertEqual(second.failure_code, "ambiguous_anchor")
+        self.assertEqual(self.version.failure_code, "render_validation_failed")
+
+    def test_code_less_failure_uses_canonical_generic_code(self):
+        """기존 patcher의 code 없는 실패도 durable patch_failed로 수렴한다."""
+        result = PatchResult(
+            output_bytes=b"",
+            applied_ids=[],
+            failed_items=[{"operation_id": "op_persist", "reason": "원본 불일치"}],
+        )
+
+        persist_patch_result(self.version, result, "xlsx", [self.change])
+
+        self.change.refresh_from_db()
+        self.version.refresh_from_db()
+        self.assertEqual(self.change.failure_code, "patch_failed")
+        self.assertEqual(self.version.failure_code, "patch_failed")
+
+    def test_no_applicable_changes_uses_canonical_generic_code(self):
+        """결과 item도 없는 전체 실패는 version에 patch_failed를 남긴다."""
+        result = PatchResult(output_bytes=b"", applied_ids=[], failed_items=[])
+
+        persist_patch_result(self.version, result, "xlsx", [self.change])
+
+        self.version.refresh_from_db()
+        self.assertEqual(self.version.status, DocumentVersion.Status.FAILED)
+        self.assertEqual(self.version.failure_code, "patch_failed")
+
+    def test_applied_change_clears_stale_failure_code(self):
+        """재실행에 성공한 change에는 과거 실패 코드를 남기지 않는다."""
+        self.change.failure_code = "patch_failed"
+        self.change.save(update_fields=["failure_code"])
+        result = PatchResult(
+            output_bytes=b"fake xlsx bytes",
+            applied_ids=["op_persist"],
+            failed_items=[],
+        )
+
+        persist_patch_result(self.version, result, "xlsx", [self.change])
+
+        self.change.refresh_from_db()
+        self.assertEqual(self.change.failure_code, "")
+
+    def test_partial_success_preserves_representative_failure_code(self):
+        """부분 성공 ready 버전에도 hard failure 대표 코드를 보존한다."""
+        failed = _make_change(
+            self.version,
+            "op_failed",
+            DocumentChange.Status.APPLIED,
+        )
+        result = PatchResult(
+            output_bytes=b"fake xlsx bytes",
+            applied_ids=["op_persist"],
+            failed_items=[{
+                "operation_id": "op_failed",
+                "reason": "렌더 검증 실패",
+                "code": "render_validation_failed",
+            }],
+        )
+
+        persist_patch_result(self.version, result, "xlsx", [self.change, failed])
+
+        self.version.refresh_from_db()
+        self.assertEqual(self.version.status, DocumentVersion.Status.READY)
+        self.assertEqual(self.version.failure_code, "render_validation_failed")
+
+    def test_artifact_save_error_has_dedicated_failure_code(self):
+        """storage 저장 실패는 raw 예외와 분리된 artifact_save_error로 저장한다."""
+        result = PatchResult(
+            output_bytes=b"fake xlsx bytes",
+            applied_ids=["op_persist"],
+            failed_items=[],
+        )
+
+        with mock_patch.object(
+            self.version.artifact_file,
+            "save",
+            side_effect=OSError("/private/tmp/secret.xlsx permission denied"),
+        ):
+            persist_patch_result(self.version, result, "xlsx", [self.change])
+
+        self.version.refresh_from_db()
+        self.assertEqual(self.version.status, DocumentVersion.Status.FAILED)
+        self.assertEqual(self.version.failure_code, "artifact_save_error")
