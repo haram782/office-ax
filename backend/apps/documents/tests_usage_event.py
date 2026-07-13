@@ -497,7 +497,13 @@ class PatchArtifactFailureCodeTest(TestCase):
         )
         patch_document_version(version.pk)
 
+        version.refresh_from_db()
         event = self._artifact_event()
+        self.assertEqual(
+            version.failure_code,
+            "patch_failed",
+            "사용자 안내용 durable generic 코드는 버전에 보존되어야 한다",
+        )
         self.assertEqual(event.status, UsageEvent.Status.FAILED)
         self.assertNotIn(
             "reason", event.metadata,
