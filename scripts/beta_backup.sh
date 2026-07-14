@@ -11,7 +11,9 @@ configured_backup_dir="$(env_value BETA_BACKUP_DIR)"
 BACKUP_DIR="${BETA_BACKUP_DIR:-${configured_backup_dir:-$HOME/officeax-beta-backups}}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 PARTIAL="$BACKUP_DIR/.partial-$STAMP-$$"
-FINAL="$BACKUP_DIR/backup-$STAMP"
+# PID을 포함해 같은 초에 연속 실행(예: restore의 safety backup)해도 기존 backup set을
+# 디렉터리 안으로 병합해버리지 않고 항상 새 complete set으로 남긴다.
+FINAL="$BACKUP_DIR/backup-$STAMP-$$"
 WRITERS=(backend-web backend-worker backend-beat ax-worker)
 RUNNING=()
 SUCCESS=0

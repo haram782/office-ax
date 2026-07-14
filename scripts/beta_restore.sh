@@ -22,6 +22,11 @@ for file in manifest.txt SHA256SUMS database.sql.gz media.tar.gz; do require_fil
 grep -qx 'format=officeax-beta-backup-v1' "$BACKUP_SET/manifest.txt"
 gzip -t "$BACKUP_SET/database.sql.gz"
 tar -tzf "$BACKUP_SET/media.tar.gz" | awk '/^\// || $0 ~ /(^|\/)\.\.($|\/)/ {bad=1} END {exit bad}'
+# symlink entry는 extraction 시점에 media root 밖을 가리킬 수 있어 destructive 단계 전에 거부한다.
+tar -tvzf "$BACKUP_SET/media.tar.gz" | awk '$1 ~ /^l/ {bad=1} END {exit bad}' || {
+    echo "[restore] media archive에 symlink entry가 포함되어 있어 거부합니다." >&2
+    exit 1
+}
 
 required_kb="$(du -sk "$BACKUP_SET" | awk '{print $1 * 3}')"
 available_kb="$(df -Pk "$REPO_ROOT" | awk 'NR==2 {print $4}')"

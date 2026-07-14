@@ -2,6 +2,7 @@ from pathlib import PurePosixPath
 from urllib.parse import quote, unquote
 
 from django.http import Http404, HttpResponse
+from django.views.decorators.http import require_http_methods
 
 from apps.chat.models import ChatMessage
 from apps.documents.models import DocumentVersion, UploadLog
@@ -60,6 +61,7 @@ _RESOLVERS = {
 }
 
 
+@require_http_methods(["GET", "HEAD"])
 def protected_media(request, path: str):
     name = _safe_storage_name(path)
     namespace = name.split("/", 1)[0] if name else ""

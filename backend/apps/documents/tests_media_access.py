@@ -5,6 +5,7 @@ from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
 from django.test import TestCase, override_settings
 
+from apps.chat.models import ChatMessage, ChatSession
 from apps.documents.models import DocumentVersion, FileStructure, UploadLog
 from apps.rag.models import RagAsset
 
@@ -39,6 +40,23 @@ class MediaGatewayTest(TestCase):
             file_size=3,
             owner=self.owner,
         )
+        self.session = ChatSession.objects.create(user=self.owner)
+        self.chat_message = ChatMessage.objects.create(
+            session=self.session,
+            role="assistant",
+            artifact_url="/media/artifacts/chat-only-result.pdf",
+        )
+        from django.core.files.storage import default_storage
+
+        default_storage.save("artifacts/chat-only-result.pdf", ContentFile(b"chat-artifact"))
+        self.legacy_result_upload = UploadLog.objects.create(
+            user=self.owner,
+            file_structure=structure,
+            original_filename="legacy.pdf",
+            status=UploadLog.Status.DONE,
+            result={"artifact_url": "/media/artifacts/legacy-result.pdf"},
+        )
+        default_storage.save("artifacts/legacy-result.pdf", ContentFile(b"legacy-artifact"))
         self.client.force_login(self.owner)
 
     def assert_allowed(self, path):
@@ -73,3 +91,40 @@ class MediaGatewayTest(TestCase):
     def test_rag_owner_id_in_path_is_not_trusted(self):
         forged = self.rag.file.name.replace(f"/{self.owner.pk}/", f"/{self.other.pk}/")
         self.assertEqual(self.client.get(f"/media/{forged}").status_code, 404)
+
+    def test_write_methods_are_rejected_regardless_of_ownership(self):
+        path = self.upload.file.name
+        for verb in ("post", "put", "patch", "delete", "options"):
+            response = getattr(self.client, verb)(f"/media/{path}")
+            self.assertEqual(response.status_code, 405, verb)
+            self.assertNotIn("X-Accel-Redirect", response)
+
+    def test_other_owner_cannot_reach_document_version_artifact(self):
+        self.client.force_login(self.other)
+        self.assertEqual(self.client.get(f"/media/{self.version.artifact_file.name}").status_code, 404)
+
+    def test_other_owner_cannot_reach_chat_message_artifact(self):
+        self.assert_allowed("artifacts/chat-only-result.pdf")
+        self.client.force_login(self.other)
+        self.assertEqual(self.client.get("/media/artifacts/chat-only-result.pdf").status_code, 404)
+
+    def test_other_owner_cannot_reach_legacy_upload_result_artifact(self):
+        self.assert_allowed("artifacts/legacy-result.pdf")
+        self.client.force_login(self.other)
+        self.assertEqual(self.client.get("/media/artifacts/legacy-result.pdf").status_code, 404)
+
+    def test_other_owner_cannot_reach_slides_render(self):
+        self.client.force_login(self.other)
+        self.assertEqual(
+            self.client.get(f"/media/slides/{self.upload.pk}/slide_1.png").status_code, 404
+        )
+
+    def test_other_owner_cannot_reach_docx_pdf_render(self):
+        self.client.force_login(self.other)
+        self.assertEqual(
+            self.client.get(f"/media/docx_pdf/{self.upload.pk}/page_1.png").status_code, 404
+        )
+
+    def test_other_owner_cannot_reach_exact_rag_file(self):
+        self.client.force_login(self.other)
+        self.assertEqual(self.client.get(f"/media/{self.rag.file.name}").status_code, 404)
