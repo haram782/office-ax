@@ -1,25 +1,60 @@
 #!/usr/bin/env bash
-# Office-AX 베타 Postgres 일일 백업 스크립트
-#
-# 사용법:  ./scripts/beta_backup.sh
-# 크론 등록 예 (매일 04시 — beat 정리 작업 03시 이후):
-#   0 4 * * * /path/to/office-ax/scripts/beta_backup.sh >> ~/officeax-beta-backups/backup.log 2>&1
-#
-# 보관 정책: 최근 14개 유지, 초과분 삭제
+# beta 입력은 docker-compose.beta.yml, .env.beta, --project-directory로 고정한다.
 
 set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=beta_common.sh
+source "$SCRIPT_DIR/beta_common.sh"
 
-BACKUP_DIR="${BETA_BACKUP_DIR:-$HOME/officeax-beta-backups}"
-STAMP="$(date +%Y%m%d_%H%M%S)"
-OUT="$BACKUP_DIR/officeax_beta_$STAMP.sql.gz"
+require_file "$ENV_FILE"
+configured_backup_dir="$(env_value BETA_BACKUP_DIR)"
+BACKUP_DIR="${BETA_BACKUP_DIR:-${configured_backup_dir:-$HOME/officeax-beta-backups}}"
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+PARTIAL="$BACKUP_DIR/.partial-$STAMP-$$"
+FINAL="$BACKUP_DIR/backup-$STAMP"
+WRITERS=(backend-web backend-worker backend-beat ax-worker)
+RUNNING=()
+SUCCESS=0
 
-mkdir -p "$BACKUP_DIR"
+restore_writers() {
+    if ((${#RUNNING[@]})); then
+        compose start "${RUNNING[@]}" >/dev/null || true
+    fi
+    if [[ "$SUCCESS" -ne 1 ]]; then
+        rm -rf "$PARTIAL"
+    fi
+}
+trap restore_writers EXIT
 
-# 컨테이너 안에서 pg_dump 실행 — 호스트에 psql 설치 불필요
-docker compose -p officeax-beta exec -T postgres \
-    pg_dump -U postgres officeax_beta | gzip > "$OUT"
+mkdir -p "$BACKUP_DIR" "$PARTIAL"
+while IFS= read -r service; do
+    for writer in "${WRITERS[@]}"; do
+        [[ "$service" == "$writer" ]] && RUNNING+=("$writer")
+    done
+done < <(compose ps --status running --services)
 
-echo "[beta_backup] 완료: $OUT ($(du -h "$OUT" | cut -f1))"
+if ((${#RUNNING[@]})); then
+    compose stop -t 60 "${RUNNING[@]}" >/dev/null
+fi
 
-# 오래된 백업 정리 (최근 14개 유지)
-ls -1t "$BACKUP_DIR"/officeax_beta_*.sql.gz 2>/dev/null | tail -n +15 | xargs -r rm --
+db_name="$(env_value DB_NAME)"
+db_user="$(env_value DB_USER)"
+compose exec -T postgres pg_dump -U "${db_user:-postgres}" "${db_name:-officeax_beta}" | gzip >"$PARTIAL/database.sql.gz"
+compose run --rm --no-deps -T backend-web tar -C /app/backend/media -czf - . >"$PARTIAL/media.tar.gz"
+gzip -t "$PARTIAL/database.sql.gz"
+tar -tzf "$PARTIAL/media.tar.gz" >/dev/null
+
+cat >"$PARTIAL/manifest.txt" <<EOF
+format=officeax-beta-backup-v1
+created_at=$STAMP
+release_tag=$(env_value BETA_RELEASE_TAG)
+database_file=database.sql.gz
+media_file=media.tar.gz
+EOF
+(cd "$PARTIAL" && shasum -a 256 database.sql.gz media.tar.gz manifest.txt >SHA256SUMS)
+mv "$PARTIAL" "$FINAL"
+SUCCESS=1
+
+# 완료된 backup set 단위로만 보관 정책을 적용한다.
+while IFS= read -r old; do rm -rf "$old"; done < <(find "$BACKUP_DIR" -maxdepth 1 -type d -name 'backup-*' -print | sort -r | tail -n +15)
+echo "$FINAL"

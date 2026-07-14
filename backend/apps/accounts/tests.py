@@ -63,6 +63,10 @@ class GoogleAuthViewTest(TestCase):
         self.assertEqual(response.data["user"]["name"], "홍길동")
         self.assertIn("picture", response.data["user"])
         self.assertIn("id", response.data["user"])
+        self.assertIn("sessionid", response.cookies)
+        self.assertTrue(response.cookies["sessionid"]["secure"])
+        self.assertTrue(response.cookies["sessionid"]["httponly"])
+        self.assertEqual(response.cookies["sessionid"]["samesite"], "Lax")
 
     def test_missing_access_token_returns_400(self):
         """access_token 필드 없이 요청하면 400 반환."""
@@ -202,6 +206,19 @@ class MeViewTest(TestCase):
         """인증 헤더 없이 접근 시 401 반환."""
         response = APIClient().get("/api/v1/auth/me/")
         self.assertEqual(response.status_code, 401)
+
+
+class LogoutViewTest(TestCase):
+    def test_logout_revokes_token_and_session(self):
+        user = User.objects.create_user(username="logout", password="pw")
+        token = Token.objects.create(user=user)
+        client = APIClient()
+        client.force_login(user)
+        client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        response = client.post("/api/v1/auth/logout/")
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Token.objects.filter(pk=token.pk).exists())
+        self.assertNotIn("_auth_user_id", client.session)
 
 
 class GoogleAuthUserMappingRegressionTest(TestCase):

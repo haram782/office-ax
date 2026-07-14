@@ -3,7 +3,7 @@ import uuid
 
 import requests
 
-from django.contrib.auth import get_user_model
+from django.contrib.auth import get_user_model, login, logout
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -104,6 +104,7 @@ class GoogleAuthView(APIView):
 
         # DRF 토큰 조회 또는 생성 — 재로그인 시 동일 토큰 유지
         token, _ = Token.objects.get_or_create(user=user)
+        login(request, user, backend="django.contrib.auth.backends.ModelBackend")
 
         return Response({
             "token": token.key,
@@ -130,3 +131,14 @@ class MeView(APIView):
             "email": user.email,
             "name":  name,
         })
+
+
+class LogoutView(APIView):
+    """POST /api/v1/auth/logout/ — API token과 media session을 함께 종료한다."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        Token.objects.filter(user=request.user).delete()
+        logout(request)
+        return Response(status=status.HTTP_204_NO_CONTENT)

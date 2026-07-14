@@ -38,6 +38,14 @@ export async function getMe() {
   return data
 }
 
+/** 서버 token과 media session을 함께 종료한다. */
+export async function logout(tokenOverride = null) {
+  const config = tokenOverride
+    ? { headers: { Authorization: `Token ${tokenOverride}` } }
+    : undefined
+  await api.post('/auth/logout/', null, config)
+}
+
 // ── 기존 문서 업로드 API (레거시 단방향 플로우) ────────────────────────────────
 
 export async function uploadFile(file) {

@@ -1,14 +1,4 @@
-# Office-AX 클로즈드 베타 스택 — dev 환경과 완전 분리
-#
-# 실행:   docker compose -f docker-compose.beta.yml --env-file .env.beta up -d --build
-# 원칙:   dev compose(docker-compose.yml)와 프로젝트명·포트·볼륨을 공유하지 않는다.
-#         베타 반영은 야간 배포 창에만 수행한다 (closed-beta-launch-plan-v1-ko.md 결정 14).
-#
-# 컨테이너 간 파일 공유 구조:
-#   beta_shared_tmp : backend가 저장한 업로드 임시 파일(TMPDIR)을 ax-engine이 file_path로 읽는다
-#   beta_media      : ax-engine 렌더링 산출물(ARTIFACT_DIR)과 Django MEDIA_ROOT가 같은 볼륨,
-#                     nginx가 /media/로 직접 서빙한다
-
+# Office-AX 클로즈드 베타 스택. 실제 실행은 scripts/beta_deploy.sh만 사용한다.
 name: officeax-beta
 
 services:
@@ -16,16 +6,23 @@ services:
     image: postgres:14-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: officeax_beta
-      POSTGRES_USER: postgres
+      POSTGRES_DB: ${DB_NAME:-officeax_beta}
+      POSTGRES_USER: ${DB_USER:-postgres}
       POSTGRES_PASSWORD: ${BETA_DB_PASSWORD:?}
     volumes:
       - beta_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d officeax_beta"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 5
+    mem_limit: ${BETA_POSTGRES_MEMORY:-768m}
+    cpus: ${BETA_POSTGRES_CPUS:-1.0}
+    logging: &bounded-logs
+      driver: json-file
+      options:
+        max-size: "${BETA_LOG_MAX_SIZE:-10m}"
+        max-file: "${BETA_LOG_MAX_FILES:-5}"
 
   redis:
     image: redis:7-alpine
@@ -37,15 +34,17 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    mem_limit: ${BETA_REDIS_MEMORY:-256m}
+    cpus: ${BETA_REDIS_CPUS:-0.5}
+    logging: *bounded-logs
 
   backend-web:
+    image: officeax-beta-backend:${BETA_RELEASE_TAG:?}
     build:
       context: .
       dockerfile: backend/Dockerfile
     restart: unless-stopped
-    # 시작 시 마이그레이션 + collectstatic — 베타 단일 인스턴스라 경합 없음
-    # (YAML folded scalar는 개행을 남겨 sh -c를 깨뜨리므로 한 줄로 유지한다)
-    command: sh -c "python manage.py migrate --noinput && python manage.py collectstatic --noinput && exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 180"
+    command: sh -c "python manage.py collectstatic --noinput && exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 180"
     env_file: .env.beta
     environment:
       TMPDIR: /shared-tmp
@@ -59,14 +58,17 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/admin/login/ > /dev/null"]
-      interval: 30s
+      test: ["CMD-SHELL", "curl -fsS -H 'X-Forwarded-Proto: https' http://localhost:8000/readyz >/dev/null"]
+      interval: 15s
       timeout: 5s
-      retries: 5
+      retries: 8
       start_period: 30s
+    mem_limit: ${BETA_BACKEND_WEB_MEMORY:-1536m}
+    cpus: ${BETA_BACKEND_WEB_CPUS:-1.5}
+    logging: *bounded-logs
 
-  # Django 쪽 'celery' 큐 워커 — patch 실행·콜백·알림톡 처리
   backend-worker:
+    image: officeax-beta-backend:${BETA_RELEASE_TAG:?}
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -83,28 +85,43 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A config inspect ping -d celery@$${HOSTNAME} --timeout 5 | grep -q pong"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    mem_limit: ${BETA_BACKEND_WORKER_MEMORY:-3g}
+    cpus: ${BETA_BACKEND_WORKER_CPUS:-2.0}
+    logging: *bounded-logs
 
-  # 야간 크론 (주간 패턴 감지 02시, 만료 파일 정리 03시)
   backend-beat:
+    image: officeax-beta-backend:${BETA_RELEASE_TAG:?}
     build:
       context: .
       dockerfile: backend/Dockerfile
     restart: unless-stopped
-    command: celery -A config beat --loglevel=info
+    command: celery -A config beat --loglevel=info --pidfile=/tmp/celerybeat.pid
     env_file: .env.beta
     depends_on:
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -r /tmp/celerybeat.pid && kill -0 $$(cat /tmp/celerybeat.pid)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    mem_limit: ${BETA_BACKEND_BEAT_MEMORY:-384m}
+    cpus: ${BETA_BACKEND_BEAT_CPUS:-0.5}
+    logging: *bounded-logs
 
-  # AX Engine — 'ax' 큐 전용 (문서 분석·채팅·PatchPlan 생성)
   ax-worker:
+    image: officeax-beta-ax:${BETA_RELEASE_TAG:?}
     build:
       context: ./ax-engine
     restart: unless-stopped
     env_file: .env.beta
     environment:
-      # backend와 동일 경로로 마운트 — RagAsset.file.path 등 절대 경로가
-      # 컨테이너 간 그대로 유효하도록 유지한다 (경로 번역 계층 불필요)
       ARTIFACT_DIR: /app/backend/media
     volumes:
       - beta_shared_tmp:/shared-tmp
@@ -112,8 +129,18 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A celery_app inspect ping -d celery@$${HOSTNAME} --timeout 5 | grep -q pong"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    mem_limit: ${BETA_AX_WORKER_MEMORY:-4g}
+    cpus: ${BETA_AX_WORKER_CPUS:-2.0}
+    logging: *bounded-logs
 
   nginx:
+    image: officeax-beta-nginx:${BETA_RELEASE_TAG:?}
     build:
       context: ./frontend
       args:
@@ -126,7 +153,16 @@ services:
       - beta_media:/srv/media:ro
       - beta_static:/srv/static:ro
     depends_on:
-      - backend-web
+      backend-web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --header='X-Forwarded-Proto: https' -O /dev/null http://localhost/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    mem_limit: ${BETA_NGINX_MEMORY:-256m}
+    cpus: ${BETA_NGINX_CPUS:-0.5}
+    logging: *bounded-logs
 
 volumes:
   beta_postgres_data:
