@@ -639,13 +639,18 @@ DocumentChange
   confidence
   anchor JSON
   patch JSON
-  status: pending | applied | rejected
+  status: pending | applied | rejected | failed | needs_confirmation
+  failure_code
   risk_level
   created_at
   updated_at
 ```
 
-초기에는 `DocumentChange.status`를 프론트의 적용/거절 상태 원천으로 삼는다.
+`DocumentChange.status`를 프론트의 적용/거절 및 patch 종결 상태 원천으로 삼는다.
+`failure_code`는 patch 결과의 `operation_id`와 정확히 연결해 저장하며, code가 없는
+기존 patch 실패는 `patch_failed`로 수렴한다. 변경 목록 API는 읽기 전용
+`failure_code`와 backend allowlist가 만든 `failure_message`를 반환한다. 내부
+`error_message`, exception, 파일 경로, subprocess stderr는 이 응답에 포함하지 않는다.
 
 ## 11. DocumentVersion 매핑
 
@@ -662,13 +667,41 @@ DocumentVersion
   summary
   artifact_file
   artifact_format
-  status: original | draft | generating | ready | failed
+  status: original | draft | generating | ready | failed | needs_confirmation
   applied_change_ids JSON
+  needs_confirmation_change_ids JSON
+  failure_code
   created_at
   updated_at
 ```
 
-뷰어 상단의 수정 내역/버전 탭은 `DocumentVersion` 목록을 사용한다.
+뷰어 상단의 수정 내역/버전 탭은 `DocumentVersion` 목록을 사용한다. version 목록 API도
+읽기 전용 `failure_code`와 안전한 `failure_message`만 반환하고 raw `error_message`는
+반환하지 않는다. 부분 성공 `ready` 버전은 대표 코드를 보존할 수 있지만 UI는
+change-level 안내를 우선하며, 조기/전체 실패처럼 change 안내가 없을 때만 version 문구를
+fallback으로 표시한다.
+
+### 11.1 실패 안내 응답 계약
+
+canonical code는 다음과 같다.
+
+| 코드 | 적용 경계 |
+|---|---|
+| `ambiguous_anchor` | 후보가 여러 개여서 `needs_confirmation`으로 중단 |
+| `render_validation_failed` | 결과물 invariant 검증 실패 |
+| `patch_failed` | 세부 안정 코드가 없는 patch 실패 및 legacy fallback |
+| `source_file_missing` | 원본 파일 없음 |
+| `unsupported_format` | 수정본 생성을 지원하지 않는 포맷 |
+| `source_file_read_error` | 원본 파일 읽기 실패 |
+| `render_exception` | 예측하지 못한 renderer 경계 실패 |
+| `artifact_save_error` | 결과물 storage 저장 실패 |
+| `unsupported_scan` | 스캔 PDF/이미지 문서 미지원 |
+
+알 수 없는 코드와 과거 failed row의 빈 코드는 안전한 일반 안내 문구로 수렴한다.
+과거 `needs_confirmation` row의 빈 코드는 상태 의미에 맞춰 `ambiguous_anchor` 안내로
+복구한다.
+프론트는 code를 해석하거나 문구를 재구성하지 않고 서버의 `failure_message`를 그대로
+표시한다.
 
 ## 12. Patcher 책임
 

@@ -96,6 +96,8 @@ function _fromPatchChange(c, index, inferredFormat) {
     changeType:  c.changeType   ?? c.kind       ?? 'patch',
     severity:    c.severity                     ?? 'info',
     status:      c.status                       ?? 'pending',
+    failureCode: c.failure_code                 ?? '',
+    failureMessage: c.failure_message           ?? '',
     title:       c.title        ?? c.summary    ?? '',
     original:    c.original                     ?? '',
     replacement: c.replacement  ?? c.corrected  ?? '',

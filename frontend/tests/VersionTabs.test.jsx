@@ -87,4 +87,32 @@ describe('VersionTabs', () => {
     // animate-spin 클래스를 가진 요소가 있어야 한다
     expect(container.querySelector('.animate-spin')).toBeInTheDocument()
   })
+
+  it('change 안내가 없을 때 version-level 안전 문구를 fallback으로 표시한다', () => {
+    render(
+      <VersionTabs
+        versions={VERSIONS}
+        selectedVersionId={1}
+        onSelectVersion={vi.fn()}
+        fallbackFailureMessage="원본 파일을 읽지 못했습니다. 파일을 다시 업로드해 주세요."
+      />,
+    )
+
+    expect(screen.getByRole('alert')).toHaveTextContent('원본 파일을 읽지 못했습니다')
+  })
+
+  it('ambiguous_anchor version fallback은 실패 alert가 아닌 확인 필요 status로 표시한다', () => {
+    render(
+      <VersionTabs
+        versions={VERSIONS}
+        selectedVersionId={1}
+        onSelectVersion={vi.fn()}
+        fallbackFailureCode="ambiguous_anchor"
+        fallbackFailureMessage="수정할 위치가 여러 곳입니다. 위치 단서를 더해 다시 요청해 주세요."
+      />,
+    )
+
+    expect(screen.getByRole('status')).toHaveTextContent('위치 단서를 더해 다시 요청해 주세요')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
 })

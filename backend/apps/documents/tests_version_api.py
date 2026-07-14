@@ -172,8 +172,40 @@ class DocumentVersionListTest(TestCase):
         resp = self.client.get(f"/api/v1/uploads/{self.upload.pk}/versions/")
         self.assertEqual(resp.status_code, 200)
         item = resp.data[0]
-        for field in ("id", "version_number", "status", "label", "applied_change_ids", "created_at", "updated_at"):
+        for field in (
+            "id", "version_number", "status", "label", "applied_change_ids",
+            "failure_code", "failure_message", "created_at", "updated_at",
+        ):
             self.assertIn(field, item, f"응답에 {field} 필드가 있어야 한다")
+
+    def test_failed_version_returns_safe_message_without_raw_error(self):
+        """버전 목록은 raw error_message를 노출하지 않고 안전 문구만 반환한다."""
+        version = DocumentVersion.objects.get(version_number=2, upload_log=self.upload)
+        version.status = DocumentVersion.Status.FAILED
+        version.failure_code = "source_file_read_error"
+        version.error_message = "PermissionError: /private/tmp/secret.xlsx"
+        version.save(update_fields=["status", "failure_code", "error_message"])
+
+        resp = self.client.get(f"/api/v1/uploads/{self.upload.pk}/versions/")
+
+        item = next(row for row in resp.data if row["id"] == version.pk)
+        self.assertEqual(item["failure_code"], "source_file_read_error")
+        self.assertIn("원본 파일을 읽지 못했습니다", item["failure_message"])
+        self.assertNotIn("error_message", item)
+        self.assertNotIn("/private/tmp", str(item))
+
+    def test_legacy_failed_version_uses_generic_message(self):
+        """failure_code가 없는 기존 failed row도 빈 안내를 반환하지 않는다."""
+        version = DocumentVersion.objects.get(version_number=2, upload_log=self.upload)
+        version.status = DocumentVersion.Status.FAILED
+        version.failure_code = ""
+        version.save(update_fields=["status", "failure_code"])
+
+        resp = self.client.get(f"/api/v1/uploads/{self.upload.pk}/versions/")
+
+        item = next(row for row in resp.data if row["id"] == version.pk)
+        self.assertEqual(item["failure_code"], "patch_failed")
+        self.assertTrue(item["failure_message"])
 
     def test_other_user_gets_403(self):
         """타인 소유 upload_id → 403."""
@@ -383,6 +415,94 @@ class PatchDocumentVersionSavesArtifactTest(TestCase):
             content = f.read()
         self.assertGreater(len(content), 0, "저장된 artifact_file 내용이 비어 있으면 안 된다")
         self.assertEqual(version.artifact_format, "xlsx")
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA)
+class PatchDocumentVersionEarlyFailureCodeTest(TestCase):
+    """patch task 조기 실패 경로가 canonical failure_code를 영속화하는지 검증한다."""
+
+    def setUp(self):
+        self.user = _make_user("patch_early_failure_user")
+
+    def test_source_file_missing_code(self):
+        from apps.documents.tasks import patch_document_version
+
+        fs = FileStructure.objects.create(
+            hash="patch_missing_source_hash",
+            source_type=FileStructure.SourceType.PDF,
+            column_schema=[],
+        )
+        upload = UploadLog.objects.create(
+            user=self.user,
+            file_structure=fs,
+            original_filename="missing.pdf",
+        )
+        version = _make_version(upload, self.user, status=DocumentVersion.Status.DRAFT)
+
+        patch_document_version(version.pk)
+
+        version.refresh_from_db()
+        self.assertEqual(version.failure_code, "source_file_missing")
+
+    def test_unsupported_format_code(self):
+        from apps.documents.tasks import patch_document_version
+
+        upload = _make_upload(
+            self.user,
+            FileStructure.SourceType.IMAGE,
+            "image.png",
+            b"not-an-editable-document",
+            "patch_unsupported_format_hash",
+        )
+        version = _make_version(upload, self.user, status=DocumentVersion.Status.DRAFT)
+
+        patch_document_version(version.pk)
+
+        version.refresh_from_db()
+        self.assertEqual(version.failure_code, "unsupported_format")
+
+    def test_source_file_read_error_code(self):
+        from apps.documents.tasks import patch_document_version
+
+        upload = _make_upload(
+            self.user,
+            FileStructure.SourceType.EXCEL,
+            "unreadable.xlsx",
+            b"xlsx",
+            "patch_source_read_error_hash",
+        )
+        version = _make_version(upload, self.user, status=DocumentVersion.Status.DRAFT)
+
+        with mock_patch(
+            "django.db.models.fields.files.FieldFile.open",
+            side_effect=OSError("/private/tmp/secret.xlsx permission denied"),
+        ):
+            patch_document_version(version.pk)
+
+        version.refresh_from_db()
+        self.assertEqual(version.failure_code, "source_file_read_error")
+
+    def test_render_exception_code(self):
+        from apps.documents.tasks import patch_document_version
+
+        upload = _make_upload(
+            self.user,
+            FileStructure.SourceType.EXCEL,
+            "render.xlsx",
+            b"xlsx",
+            "patch_render_exception_hash",
+        )
+        version = _make_version(upload, self.user, status=DocumentVersion.Status.DRAFT)
+
+        with mock_patch.dict(
+            "apps.documents.tasks._RENDER_BY_FORMAT",
+            {"excel": lambda _source, _changes: (_ for _ in ()).throw(RuntimeError("boom"))},
+            clear=False,
+        ):
+            patch_document_version(version.pk)
+
+        version.refresh_from_db()
+        self.assertEqual(version.failure_code, "render_exception")
 
 
 # ── render_* 순수 함수 bytes 반환 테스트 ─────────────────────────────────────

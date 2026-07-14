@@ -225,11 +225,24 @@ DOCX/HWP 래스터 검증은 LibreOffice headless 같은 무거운 인프라가 
 
 | 코드 | 의미 |
 |---|---|
-| `unsupported_scan_pdf` | 스캔 PDF/이미지 문서 — OCR 기반 수정은 베타 후 |
+| `unsupported_scan` | 스캔 PDF/이미지 문서 — OCR 기반 수정은 베타 후 |
 | `ambiguous_anchor` | 후보 다수 또는 resolution_confidence 부족 → `NEEDS_CONFIRMATION` |
 | `render_validation_failed` | patch는 적용됐으나 7절 invariant 검증 실패 |
+| `patch_failed` | 세부 안정 코드가 없는 patch 실패 |
+| `source_file_missing` | 원본 파일 없음 |
+| `unsupported_format` | 수정본 생성을 지원하지 않는 포맷 |
+| `source_file_read_error` | 원본 파일 읽기 실패 |
+| `render_exception` | renderer 경계의 예측하지 못한 실패 |
+| `artifact_save_error` | 결과물 storage 저장 실패 |
 | `unsupported_layout_edit` | 레이아웃/서식 구조 변경 요청 — T2 범위 |
 | `unsupported_table_edit` | 표 구조 변경 요청 — T2 범위 |
+
+patch 실행 결과의 코드는 `DocumentChange.failure_code`와
+`DocumentVersion.failure_code`에 영속화한다. API는 이 코드와 backend allowlist에서
+생성한 안전한 한국어 `failure_message`만 반환한다. raw `error_message`, exception,
+파일 경로, subprocess stderr는 로그와 내부 관측 경계에만 남기고 사용자 API/UI에는
+노출하지 않는다. unknown/legacy failed code는 일반 안내로 fallback하고, legacy
+`NEEDS_CONFIRMATION`의 빈 code는 상태 의미에 따라 `ambiguous_anchor`로 복구한다.
 
 ## 9. 이미지/PII 정책 (미결 — 보류)
 

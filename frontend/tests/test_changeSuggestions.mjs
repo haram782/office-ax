@@ -37,6 +37,21 @@ test('빈 객체 snippetData는 빈 배열을 반환한다', () => {
   assert.deepEqual(deriveChangeSuggestions({}), [])
 })
 
+test('patch change의 안전한 실패 코드와 문구를 그대로 보존한다', () => {
+  const [suggestion] = deriveChangeSuggestions({
+    patch_changes: [{
+      id: 1,
+      operation_id: 'op_failed',
+      status: 'failed',
+      failure_code: 'render_validation_failed',
+      failure_message: '안전한 서버 안내 문구',
+    }],
+  })
+
+  assert.equal(suggestion.failureCode, 'render_validation_failed')
+  assert.equal(suggestion.failureMessage, '안전한 서버 안내 문구')
+})
+
 test('세 소스 모두 빈 배열이면 빈 배열을 반환한다', () => {
   const snippetData = { corrections: [], change_highlights: [], edit_suggestions: [] }
   assert.deepEqual(deriveChangeSuggestions(snippetData), [])

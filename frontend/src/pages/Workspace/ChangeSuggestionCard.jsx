@@ -131,7 +131,18 @@ export function ChangeSuggestionCard({
   onReject,
   onReset,
 }) {
-  const { title, original, replacement, reason, anchor, changeType, severity, operation, patch } = suggestion
+  const {
+    title,
+    original,
+    replacement,
+    reason,
+    anchor,
+    changeType,
+    severity,
+    operation,
+    patch,
+    failureMessage,
+  } = suggestion
 
   const effectiveStatus = status ?? 'pending'
   const badge           = STATUS_BADGE[effectiveStatus] ?? STATUS_BADGE.pending
@@ -216,6 +227,19 @@ export function ChangeSuggestionCard({
       {reason && (
         <p className="text-[10px] text-zinc-400 dark:text-zinc-500 mb-1.5 line-clamp-2 leading-relaxed">
           {reason}
+        </p>
+      )}
+
+      {failureMessage && ['failed', 'needs_confirmation'].includes(effectiveStatus) && (
+        <p
+          role={effectiveStatus === 'failed' ? 'alert' : 'status'}
+          className={`mb-1.5 rounded px-2 py-1.5 text-[11px] leading-relaxed ${
+            effectiveStatus === 'failed'
+              ? 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300'
+              : 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
+          }`}
+        >
+          {failureMessage}
         </p>
       )}
 

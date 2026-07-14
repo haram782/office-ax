@@ -15,6 +15,7 @@ const STATUS_LABELS = {
   generating: '생성 중',
   ready:      '완료',
   failed:     '실패',
+  needs_confirmation: '위치 확인 필요',
 }
 
 /**
@@ -47,9 +48,17 @@ function versionMeta(v) {
  *   versions:          Array<{ id, version_number, status, label, created_at, updated_at }>,
  *   selectedVersionId: number | null,
  *   onSelectVersion:   (version: object) => void,
+ *   fallbackFailureMessage?: string,
+ *   fallbackFailureCode?: string,
  * }} props
  */
-export function VersionTabs({ versions = [], selectedVersionId = null, onSelectVersion }) {
+export function VersionTabs({
+  versions = [],
+  selectedVersionId = null,
+  onSelectVersion,
+  fallbackFailureMessage = '',
+  fallbackFailureCode = '',
+}) {
   // 버전 배열이 없으면 원본 탭 플레이스홀더만 표시
   if (versions.length === 0) {
     return (
@@ -69,7 +78,7 @@ export function VersionTabs({ versions = [], selectedVersionId = null, onSelectV
           const isActive      = v.id === selectedVersionId
           const isGenerating  = v.status === 'generating'
           const isFailed      = v.status === 'failed'
-          const isDisabled    = isGenerating || isFailed
+          const isDisabled    = isGenerating
           const label         = versionLabel(v)
           const statusLabel   = STATUS_LABELS[v.status] || v.status
           const meta          = versionMeta(v)
@@ -101,6 +110,18 @@ export function VersionTabs({ versions = [], selectedVersionId = null, onSelectV
           )
         })}
       </div>
+      {fallbackFailureMessage && (
+        <p
+          role={fallbackFailureCode === 'ambiguous_anchor' ? 'status' : 'alert'}
+          className={`mx-3 mb-2 rounded px-2.5 py-2 text-[11px] leading-relaxed ${
+            fallbackFailureCode === 'ambiguous_anchor'
+              ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
+              : 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300'
+          }`}
+        >
+          {fallbackFailureMessage}
+        </p>
+      )}
     </div>
   )
 }

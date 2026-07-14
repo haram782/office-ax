@@ -41,6 +41,8 @@ logger = logging.getLogger(__name__)
 # patcher가 직접 발급하는 코드만 둔다.
 FAILURE_CODE_AMBIGUOUS_ANCHOR = "ambiguous_anchor"
 FAILURE_CODE_RENDER_VALIDATION_FAILED = "render_validation_failed"
+FAILURE_CODE_PATCH_FAILED = "patch_failed"
+FAILURE_CODE_ARTIFACT_SAVE_ERROR = "artifact_save_error"
 
 
 # ── set_cell_style 상수 (document-format-editing-ax-v1-ko.md 7절 기준) ───────────
@@ -1160,27 +1162,42 @@ def persist_patch_result(version, result: PatchResult, ext: str, changes: list) 
     from django.core.files.base import ContentFile
     from .models import DocumentChange, DocumentVersion
 
-    failed_op_ids = {item["operation_id"] for item in result.failed_items}
-    needs_confirmation_op_ids = {item["operation_id"] for item in result.needs_confirmation_items}
+    failure_code_by_op_id = {
+        item["operation_id"]: item.get("code") or FAILURE_CODE_PATCH_FAILED
+        for item in result.failed_items
+    }
+    needs_confirmation_code_by_op_id = {
+        item["operation_id"]: item.get("code") or FAILURE_CODE_AMBIGUOUS_ANCHOR
+        for item in result.needs_confirmation_items
+    }
+    failed_op_ids = set(failure_code_by_op_id)
+    needs_confirmation_op_ids = set(needs_confirmation_code_by_op_id)
+    applied_op_ids = set(result.applied_ids)
     for change in changes:
         if change.operation_id in failed_op_ids:
             change.status = DocumentChange.Status.FAILED
-            change.save(update_fields=["status", "updated_at"])
+            change.failure_code = failure_code_by_op_id[change.operation_id]
+            change.save(update_fields=["status", "failure_code", "updated_at"])
         elif change.operation_id in needs_confirmation_op_ids:
             change.status = DocumentChange.Status.NEEDS_CONFIRMATION
-            change.save(update_fields=["status", "updated_at"])
+            change.failure_code = needs_confirmation_code_by_op_id[change.operation_id]
+            change.save(update_fields=["status", "failure_code", "updated_at"])
+        elif change.operation_id in applied_op_ids and change.failure_code:
+            change.failure_code = ""
+            change.save(update_fields=["failure_code", "updated_at"])
 
     # needs_confirmation_change_ids는 version.status(READY/FAILED/NEEDS_CONFIRMATION 중
     # 어느 것으로 끝나든)와 무관하게 항상 최신으로 반영한다 — 프론트가 "실패"와 "위치 확인
     # 필요"를 구분하려면 이 값이 필요하다(READY로 끝나는 부분 성공 케이스뿐 아니라
     # 버전 전체가 NEEDS_CONFIRMATION/FAILED로 끝나는 아래 이른 반환 경로에서도 마찬가지다).
     version.needs_confirmation_change_ids = sorted(needs_confirmation_op_ids)
+    version.failure_code = _primary_failure_code(result)
 
     if not result.applied_ids:
         # needs_confirmation만 있고 hard failure가 없으면 "위치 확인 필요"로 구분한다.
         if result.needs_confirmation_items and not result.failed_items:
             reason = "; ".join(item["reason"] for item in result.needs_confirmation_items)
-            _set_needs_confirmation(version, reason)
+            _set_needs_confirmation(version, reason, version.failure_code)
             return
         # failed_items에 구체적 실패 사유가 있으면 그것을 error_message로 사용한다.
         # 없으면 generic 메시지를 쓴다(예: changes 자체가 없는 경우).
@@ -1188,7 +1205,7 @@ def persist_patch_result(version, result: PatchResult, ext: str, changes: list) 
             reason = "; ".join(item["reason"] for item in result.failed_items)
         else:
             reason = "적용 가능한 변경 항목이 없습니다."
-        _set_failed(version, reason)
+        _set_failed(version, reason, version.failure_code or FAILURE_CODE_PATCH_FAILED)
         return
 
     # artifact_file 저장 — storage I/O 실패는 인프라 경계이므로 try/except로 격리
@@ -1201,20 +1218,24 @@ def persist_patch_result(version, result: PatchResult, ext: str, changes: list) 
         version.artifact_format = ext
     except Exception as exc:
         logger.exception("persist_patch_result: artifact_file 저장 실패 | version_id=%s", version.pk)
-        _set_failed(version, f"결과 파일 저장 실패: {exc}")
+        _set_failed(version, f"결과 파일 저장 실패: {exc}", FAILURE_CODE_ARTIFACT_SAVE_ERROR)
         return
 
     version.applied_change_ids = result.applied_ids
     version.status = DocumentVersion.Status.READY
     version.save(update_fields=[
         "artifact_file", "artifact_format", "applied_change_ids",
-        "needs_confirmation_change_ids", "status", "updated_at",
+        "needs_confirmation_change_ids", "failure_code", "status", "updated_at",
     ])
 
 
 # ── 내부 헬퍼 (render_pdf 전용) ──────────────────────────────────────────────
 
-def _set_failed(version, error_message: str) -> None:
+def _set_failed(
+    version,
+    error_message: str,
+    failure_code: str = FAILURE_CODE_PATCH_FAILED,
+) -> None:
     """
     version 상태를 FAILED로 설정하고 에러 메시지를 저장한다.
 
@@ -1227,15 +1248,37 @@ def _set_failed(version, error_message: str) -> None:
     from .models import DocumentVersion
     version.status = DocumentVersion.Status.FAILED
     version.error_message = error_message
-    version.save(update_fields=["status", "error_message", "needs_confirmation_change_ids", "updated_at"])
+    version.failure_code = failure_code
+    version.save(update_fields=[
+        "status", "error_message", "failure_code", "needs_confirmation_change_ids", "updated_at",
+    ])
 
 
-def _set_needs_confirmation(version, error_message: str) -> None:
+def _set_needs_confirmation(
+    version,
+    error_message: str,
+    failure_code: str = FAILURE_CODE_AMBIGUOUS_ANCHOR,
+) -> None:
     """version 상태를 NEEDS_CONFIRMATION으로 설정한다 — FAILED와 달리 재시도가 아니라 사용자 확인이 필요함을 의미한다."""
     from .models import DocumentVersion
     version.status = DocumentVersion.Status.NEEDS_CONFIRMATION
     version.error_message = error_message
-    version.save(update_fields=["status", "error_message", "needs_confirmation_change_ids", "updated_at"])
+    version.failure_code = failure_code
+    version.save(update_fields=[
+        "status", "error_message", "failure_code", "needs_confirmation_change_ids", "updated_at",
+    ])
+
+
+def _primary_failure_code(result: PatchResult) -> str:
+    """hard failure를 우선해 version 대표 실패 코드를 고른다."""
+    if result.failed_items:
+        return result.failed_items[0].get("code") or FAILURE_CODE_PATCH_FAILED
+    if result.needs_confirmation_items:
+        return (
+            result.needs_confirmation_items[0].get("code")
+            or FAILURE_CODE_AMBIGUOUS_ANCHOR
+        )
+    return ""
 
 
 def _resolve_pdf_rect(doc, anchor: dict):

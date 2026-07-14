@@ -5,7 +5,7 @@ import { ViewerShell }              from '../../components/ViewerShell'
 import { useChangeSuggestions }     from '../../hooks/useChangeSuggestions'
 import { usePatchTrigger }          from '../../hooks/usePatchTrigger'
 import { useDocumentVersions }      from '../../hooks/useDocumentVersions'
-import { fetchVersionFileBlob }     from '../../api/documentChanges'
+import { fetchDocumentChanges, fetchVersionFileBlob } from '../../api/documentChanges'
 import { AutomationBanner }         from './AutomationBanner'
 import { ChangeSuggestionPanel }    from './ChangeSuggestionPanel'
 import { VersionTabs }              from './VersionTabs'
@@ -46,18 +46,25 @@ export function WorkspaceCenter({
   // 채팅 [전체 반영] 버튼이 handleAcceptAll을 호출할 수 있도록 부모에 함수를 등록
   onAcceptAllReady,
 }) {
+  // uploadId: previewData.id (upload_log.id)
+  // versionId: localPatchData.version_id 우선, 없으면 snippetData.version_id — BE 제공 시 활성화
+  const uploadId  = previewData?.id                                                     ?? null
+  const versionId = localPatchData?.version_id ?? previewData?.snippetData?.version_id ?? null
+  const [refreshedPatchData, setRefreshedPatchData] = useState(null)
+
   // 로컬 patch_changes가 있으면 snippetData에 합성, 없으면 원본 그대로
   // base가 null(HWP 등 corrections 없는 파일)이어도 localPatchData는 반영해야 한다
   const effectiveSnippetData = useMemo(() => {
     const base = previewData?.snippetData ?? null
+    const hasCurrentRefresh = refreshedPatchData
+      && sameId(refreshedPatchData.uploadId, uploadId)
+      && sameId(refreshedPatchData.versionId, versionId)
+    if (hasCurrentRefresh) {
+      return { ...(base ?? {}), patch_changes: refreshedPatchData.changes, version_id: versionId }
+    }
     if (!localPatchData) return base
     return { ...(base ?? {}), patch_changes: localPatchData.patch_changes, version_id: localPatchData.version_id }
-  }, [previewData?.snippetData, localPatchData])
-
-  // uploadId: previewData.id (upload_log.id)
-  // versionId: localPatchData.version_id 우선, 없으면 snippetData.version_id — BE 제공 시 활성화
-  const uploadId  = previewData?.id                                                         ?? null
-  const versionId = localPatchData?.version_id ?? previewData?.snippetData?.version_id     ?? null
+  }, [previewData?.snippetData, localPatchData, refreshedPatchData, uploadId, versionId])
 
   const {
     suggestions,
@@ -121,6 +128,35 @@ export function WorkspaceCenter({
     }
     return rawPatchStatus
   }, [rawPatchStatus, versions.length, versionId, editingVersion])
+
+  // patcher 종결 후 서버의 durable failure_code/message를 다시 읽는다.
+  // frontend timeout으로 patchStatus가 먼저 failed가 되어도 동일 DB 버전의 실제 상태나
+  // 갱신 시각이 바뀌면 다시 조회해 operation별 종결 결과를 놓치지 않는다.
+  // cleanup 플래그와 ID 묶음으로 이전 파일·버전의 늦은 응답이 현재 화면을 덮지 못하게 한다.
+  useEffect(() => {
+    if (!uploadId || !versionId) return
+    if (!['ready', 'failed', 'needs_confirmation'].includes(patchStatus)) return
+
+    let cancelled = false
+    fetchDocumentChanges(uploadId, versionId)
+      .then(changes => {
+        if (cancelled) return
+        setRefreshedPatchData({ uploadId, versionId, changes })
+      })
+      .catch(() => {
+        // 네트워크 실패 시 기존 제안을 유지하고 다음 상태 갱신/재진입에서 재조회한다.
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    uploadId,
+    versionId,
+    patchStatus,
+    editingVersion?.status,
+    editingVersion?.updated_at,
+  ])
 
   // 선택된 버전 ID (기본값: 원본 버전 ID 또는 null)
   const [selectedVersionId, setSelectedVersionId] = useState(null)
@@ -305,6 +341,13 @@ export function WorkspaceCenter({
 
   const visibleSuggestions = selectedShowsCurrentChanges ? suggestions : []
   const visibleHighlights = selectedShowsCurrentChanges ? displayHighlights : []
+  const hasChangeFailureGuidance = visibleSuggestions.some(s => {
+    const status = displayStatuses[s.id] ?? s.status
+    return Boolean(s.failureMessage) && ['failed', 'needs_confirmation'].includes(status)
+  })
+  const versionFailureFallback = hasChangeFailureGuidance
+    ? ''
+    : (selectedVersion ?? editingVersion)?.failure_message ?? ''
 
   // 최종본 다운로드 (Fix A) — 선택된 버전 기준으로 실제 파일을 내려받는다.
   // 수정본: 버전 파일 API의 Blob을 a[download]로 저장. 원본: 원본 fileUrl 저장.
@@ -376,6 +419,8 @@ export function WorkspaceCenter({
           versions={versions}
           selectedVersionId={selectedVersionId}
           onSelectVersion={handleSelectVersion}
+          fallbackFailureMessage={versionFailureFallback}
+          fallbackFailureCode={(selectedVersion ?? editingVersion)?.failure_code ?? ''}
         />
       }
       sidePanel={
