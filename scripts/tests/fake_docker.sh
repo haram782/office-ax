@@ -44,7 +44,7 @@ ax-worker}"
     *"showmigrations --plan"*)
         printf '[X] 0001_initial\n'
         ;;
-    *psql*|*"tar -C /app/backend/media -xzf -"*)
+    *psql*|*"tar -C /app/backend/media -xf -"*)
         drain_stdin
         ;;
     *)

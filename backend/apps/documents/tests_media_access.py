@@ -77,6 +77,22 @@ class MediaGatewayTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["X-Accel-Redirect"], f"/_protected_media/{quote(self.upload.file.name, safe='/')}")
 
+    def test_pdf_response_content_type_is_pdf_not_default_html(self):
+        response = self.client.get(f"/media/{self.upload.file.name}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+
+    def test_image_render_content_type_is_png(self):
+        response = self.client.get(f"/media/slides/{self.upload.pk}/slide_1.png")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/png")
+
+    def test_unknown_extension_falls_back_to_octet_stream(self):
+        self.upload.file.save("data.bin", ContentFile(b"bin"), save=True)
+        response = self.client.get(f"/media/{self.upload.file.name}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/octet-stream")
+
     def test_unauthenticated_and_other_owner_are_non_enumerating_404(self):
         path = self.upload.file.name
         self.client.logout()

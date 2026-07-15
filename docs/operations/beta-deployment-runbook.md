@@ -40,7 +40,7 @@
 BETA_BACKUP_DIR=/approved/absolute/path ./scripts/beta_backup.sh
 ```
 
-성공한 `backup-<UTC timestamp>` 디렉터리에는 `database.sql.gz`, `media.tar.gz`, `manifest.txt`, `SHA256SUMS`가 모두 있어야 한다. `.partial-*`는 성공 세트가 아니다. writer를 잠시 quiesce하고 원래 실행 중이던 서비스만 trap에서 재시작한다.
+성공한 `backup-<UTC timestamp>-<PID>` 디렉터리에는 `database.sql.gz`, `media.tar.gz`, `manifest.txt`, `SHA256SUMS`가 모두 있어야 한다. `.partial-*`는 성공 세트가 아니다. writer를 잠시 quiesce하고 원래 실행 중이던 서비스만 trap에서 재시작한다.
 
 ## 5. Guarded restore rehearsal
 

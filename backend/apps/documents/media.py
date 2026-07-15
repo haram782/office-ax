@@ -8,6 +8,34 @@ from apps.chat.models import ChatMessage
 from apps.documents.models import DocumentVersion, UploadLog
 from apps.rag.models import RagAsset
 
+# X-Accel-Redirect internal redirect는 Django 응답의 Content-Type을 그대로 보존하므로
+# 여기서 명시하지 않으면 HttpResponse 기본값인 text/html이 그대로 브라우저에 전달된다.
+# 확장자 기반 allowlist만 사용해 요청 경로 문자열을 그대로 헤더에 반영하지 않는다.
+_SAFE_CONTENT_TYPES = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+    ".txt": "text/plain; charset=utf-8",
+    ".json": "application/json",
+    ".hwp": "application/x-hwp",
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+_DEFAULT_CONTENT_TYPE = "application/octet-stream"
+
+
+def _safe_content_type(name: str) -> str:
+    suffix = PurePosixPath(name).suffix.lower()
+    return _SAFE_CONTENT_TYPES.get(suffix, _DEFAULT_CONTENT_TYPE)
+
 
 def _safe_storage_name(raw_path: str) -> str | None:
     name = unquote(raw_path or "")
@@ -69,7 +97,7 @@ def protected_media(request, path: str):
     if not request.user.is_authenticated or resolver is None or not resolver(request.user, name):
         raise Http404
 
-    response = HttpResponse()
+    response = HttpResponse(content_type=_safe_content_type(name))
     response["X-Accel-Redirect"] = f"/_protected_media/{quote(name, safe='/')}"
     response["X-Content-Type-Options"] = "nosniff"
     response["Cache-Control"] = "private, no-store"
