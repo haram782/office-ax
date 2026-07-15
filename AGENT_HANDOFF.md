@@ -68,3 +68,23 @@
 - Backend focused(`apps.documents.tests_media_access --settings=config.settings_test`): **16/16 PASS**(기존 15 + SVG 신규 1).
 - Backend full(`manage.py test --settings=config.settings_test`): **463/463 PASS**(기존 462 + 1).
 - 이번 후속 작업은 media.py의 allowlist 미커밋 diff를 커밋에 포함하고 테스트만 추가했다 — merge는 하지 않았다.
+
+## Round 3: 실제 Docker rehearsal restore stop/start 재발 재현 (HEAD 0d3fedb 이후)
+
+실제 Docker rehearsal에서 전체 7서비스 최초 healthy, backup→mutate→restore까지는 성공했으나, restore의 `compose stop` 이후 같은 `backend-beat` 컨테이너를 `start`/`up` 하는 단계에서 재발이 관찰됐다. 실제 Docker 리소스는 건드리지 않았고 merge는 하지 않았다.
+
+- **재현 증상**: `compose stop`은 컨테이너를 제거하지 않으므로 celery beat가 이전에 남긴 `/tmp/celerybeat.pid`가 컨테이너의 writable layer에 그대로 남는다. 이후 같은 컨테이너를 `start`/`up` 하면 celery beat가 시작 시 `--pidfile=/tmp/celerybeat.pid`가 이미 존재한다고 보고 `ERROR: Pidfile (/tmp/celerybeat.pid) already exists` → `exit 73` → `restart: unless-stopped` 정책에 의한 재시작 루프(113회 관찰)에 빠진다.
+- **조치**: `docker-compose.beta.yml`의 `backend-beat` `command`를 `celery -A config beat --pidfile=...` 단일 명령에서 `sh -c "rm -f /tmp/celerybeat.pid && exec celery -A config beat --loglevel=info --pidfile=/tmp/celerybeat.pid"`로 감쌌다. `exec`를 사용해 celery가 PID 1을 그대로 이어받게 해 `docker stop`의 SIGTERM 전달 경로(shell wrapper가 신호를 가로채지 않음)를 보존했다. healthcheck(`test -r /tmp/celerybeat.pid && kill -0 ...`)는 변경하지 않았다 — pidfile은 celery beat 자신이 기동 시 재생성하므로 healthcheck 계약과 충돌하지 않는다.
+- **테스트**: `scripts/tests/test_beta_ops.py`에 정적 계약 테스트(`test_backend_beat_command_clears_stale_pidfile_before_exec`, command가 `sh -c`로 시작하고 `rm -f`가 `exec celery`보다 먼저 오는지, `healthcheck`/`mem_limit`/`cpus`/`logging`이 모두 존재하는지 확인)와, 실제 `sh -c`로 command 문자열 자체를 실행해 stale pidfile이 celery 실행 전에 제거되는지 검증하는 실행형 테스트(`test_backend_beat_pidfile_cleanup_runs_against_real_shell`, 가짜 `celery` 바이너리로 pidfile 부재 시점을 마커 파일로 확인)를 추가했다(21 → 23).
+
+### Tests and evidence (round 3)
+
+- Ops: `python3 -m unittest scripts.tests.test_beta_ops -v` → **23/23 PASS**(기존 21 + backend-beat pidfile 정적·실행형 2).
+- Shell: `scripts/*.sh` 전부 `bash -n` PASS(무변경, 회귀 확인).
+- YAML: `docker-compose.beta.yml`을 `.venv`의 PyYAML `safe_load`로 파싱해 `backend-beat.command`/`healthcheck` 값이 의도대로 반영됐는지 확인 → PASS.
+- 이번 라운드는 `docker-compose.beta.yml`과 ops 테스트만 수정했다 — backend/frontend 소스는 변경하지 않아 별도 회귀 실행은 생략했다(직전 라운드 backend 463/463, frontend 217/217은 무변경 상태로 유효).
+- 실제 Docker 컨테이너로 이 수정(stop→start 반복 후 `backend-beat`가 healthy로 안정화되는지)을 재확인하는 것은 이번 세션 범위 밖이다 — 다음 실제 Docker rehearsal에서 최우선으로 재확인해야 한다.
+
+### Review handoff (round 3)
+
+- 독립 reviewer는: (1) `sh -c` wrapper가 `exec`를 사용해 SIGTERM이 shell이 아닌 celery beat 프로세스로 직접 전달되는지(그렇지 않으면 `compose stop`의 graceful shutdown이 깨질 수 있음), (2) healthcheck가 `rm -f` 직후 짧은 창(celery가 아직 pidfile을 재생성하기 전)에 거짓 unhealthy로 오판하지 않는지(`start_period` 미설정 상태이므로 `retries: 5`, `interval: 30s`로 흡수 가능한지), (3) `command:` 값의 YAML 큰따옴표 이스케이프가 실제 Docker Compose 파서에서도 `docker-compose.beta.yml`을 PyYAML로 파싱한 것과 동일하게 해석되는지를 우선 확인해야 한다.

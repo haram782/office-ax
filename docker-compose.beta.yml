@@ -101,7 +101,10 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     restart: unless-stopped
-    command: celery -A config beat --loglevel=info --pidfile=/tmp/celerybeat.pid
+    # stop 이후 같은 컨테이너를 다시 start/up 하면 writable layer에 남은
+    # /tmp/celerybeat.pid 때문에 celery beat가 "Pidfile already exists"로
+    # exit 73 재시작 루프에 빠진다. 시작 전에 stale pidfile을 제거한다.
+    command: sh -c "rm -f /tmp/celerybeat.pid && exec celery -A config beat --loglevel=info --pidfile=/tmp/celerybeat.pid"
     env_file: .env.beta
     depends_on:
       redis:

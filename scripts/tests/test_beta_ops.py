@@ -37,6 +37,59 @@ class BetaOpsStaticContractTest(unittest.TestCase):
             self.assertIn("cpus:", block, service)
             self.assertIn("logging:", block, service)
 
+    def test_backend_beat_command_clears_stale_pidfile_before_exec(self):
+        # compose stop 이후 같은 컨테이너를 start/up 하면 writable layer에 남은
+        # /tmp/celerybeat.pid 때문에 celery beat가 exit 73 재시작 루프에 빠진다.
+        # sh -c로 감싸 시작 전에 stale pidfile을 rm -f 하고 exec 해야 한다.
+        text = (ROOT / "docker-compose.beta.yml").read_text()
+        block = re.search(r"^  backend-beat:.*?(?=^  [a-z][a-z0-9-]*:|^volumes:)", text, re.M | re.S).group(0)
+        self.assertIn("healthcheck:", block)
+        self.assertIn("mem_limit:", block)
+        self.assertIn("cpus:", block)
+        self.assertIn("logging:", block)
+        command_match = re.search(r'command:\s*(.*)', block)
+        self.assertIsNotNone(command_match)
+        command_line = command_match.group(1)
+        self.assertTrue(command_line.startswith("sh -c "), command_line)
+        self.assertIn("rm -f /tmp/celerybeat.pid", command_line)
+        self.assertIn("exec celery -A config beat", command_line)
+        self.assertLess(command_line.index("rm -f /tmp/celerybeat.pid"), command_line.index("exec celery"))
+        self.assertIn("--pidfile=/tmp/celerybeat.pid", command_line)
+
+    def test_backend_beat_pidfile_cleanup_runs_against_real_shell(self):
+        # fake docker가 아니라 실제 sh -c로 command 문자열 자체를 실행해,
+        # stop/start 이후 남아있는 stale pidfile이 celery 실행 전에 제거되는지 검증한다.
+        text = (ROOT / "docker-compose.beta.yml").read_text()
+        block = re.search(r"^  backend-beat:.*?(?=^  [a-z][a-z0-9-]*:|^volumes:)", text, re.M | re.S).group(0)
+        command_line = re.search(r'command:\s*(.*)', block).group(1)
+        # YAML 큰따옴표 문자열을 셸 문자열로 벗겨낸다: sh -c "<inner>"
+        inner_match = re.match(r'sh -c "(.*)"$', command_line)
+        self.assertIsNotNone(inner_match, command_line)
+        inner = inner_match.group(1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_pidfile = Path(tmp) / "celerybeat.pid"
+            fake_pidfile.write_text("99999")
+
+            bindir = Path(tmp) / "bin"
+            bindir.mkdir()
+            fake_celery = bindir / "celery"
+            marker = Path(tmp) / "pidfile-absent-at-exec"
+            fake_celery.write_text(
+                "#!/usr/bin/env bash\n"
+                f'if [ ! -e "{fake_pidfile}" ]; then touch "{marker}"; fi\n'
+                "exit 0\n"
+            )
+            fake_celery.chmod(fake_celery.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+            sandboxed = inner.replace("/tmp/celerybeat.pid", str(fake_pidfile))
+            env = dict(os.environ)
+            env["PATH"] = f"{bindir}:{env['PATH']}"
+            result = subprocess.run(["sh", "-c", sandboxed], text=True, capture_output=True, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(fake_pidfile.exists())
+            self.assertTrue(marker.exists(), "celery가 실행되기 전에 stale pidfile이 제거되지 않았다")
+
     def test_nginx_media_is_internal_only(self):
         text = (ROOT / "infra/nginx/beta.conf").read_text()
         self.assertRegex(text, r"location /media/\s*\{[^}]*proxy_pass")
