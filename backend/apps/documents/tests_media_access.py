@@ -93,6 +93,18 @@ class MediaGatewayTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "application/octet-stream")
 
+    def test_svg_falls_back_to_octet_stream_not_active_content(self):
+        # same-origin에서 image/svg+xml을 부여하면 인라인 <script>가 실행되는 저장형 XSS가
+        # 가능해지므로, allowlist에서 제외되어 강제 다운로드로 취급되는지 검증한다.
+        self.upload.file.save(
+            "poc.svg",
+            ContentFile(b"<svg onload=\"alert(1)\"></svg>"),
+            save=True,
+        )
+        response = self.client.get(f"/media/{self.upload.file.name}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/octet-stream")
+
     def test_unauthenticated_and_other_owner_are_non_enumerating_404(self):
         path = self.upload.file.name
         self.client.logout()

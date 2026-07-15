@@ -60,3 +60,11 @@
 ### Review handoff (round 2)
 
 - 독립 reviewer는: (1) `_SAFE_CONTENT_TYPES`가 실제 서비스되는 모든 확장자를 포함하는지(누락 시 안전하게 `application/octet-stream`로 fallback), (2) `on_exit` trap이 `set -euo pipefail`과 상호작용해 원래 실패 exit code를 보존하는지, (3) fake-docker 로그 기반 테스트가 restore 자체의 `stop -t 60`과 safety-backup 내부의 `stop`/`start`를 정확히 구분하는지(safety backup은 자신의 snapshot을 위해 독립적으로 writer를 잠깐 멈췄다 되돌린다)를 우선 확인해야 한다.
+
+## Follow-up: SVG active-content 보정 (HEAD b844540 이후)
+
+- `backend/apps/documents/media.py`의 `_SAFE_CONTENT_TYPES`에서 `.svg`를 제거하는 미커밋 diff가 이전 세션에서 남아 있었다(same-origin `image/svg+xml`은 인라인 `<script>`/이벤트 핸들러로 저장형 XSS가 가능해짐). SVG는 이제 unknown 확장자와 동일하게 `application/octet-stream` fallback으로 강제 다운로드된다.
+- `backend/apps/documents/tests_media_access.py`에 `test_svg_falls_back_to_octet_stream_not_active_content` 1개를 추가해, `<svg onload="alert(1)">` 페이로드를 업로드해도 응답 Content-Type이 `application/octet-stream`임을 검증했다. 기존 `test_unknown_extension_falls_back_to_octet_stream`, PDF/PNG Content-Type 테스트는 그대로 유지했다.
+- Backend focused(`apps.documents.tests_media_access --settings=config.settings_test`): **16/16 PASS**(기존 15 + SVG 신규 1).
+- Backend full(`manage.py test --settings=config.settings_test`): **463/463 PASS**(기존 462 + 1).
+- 이번 후속 작업은 media.py의 allowlist 미커밋 diff를 커밋에 포함하고 테스트만 추가했다 — merge는 하지 않았다.

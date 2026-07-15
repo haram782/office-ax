@@ -11,6 +11,9 @@ from apps.rag.models import RagAsset
 # X-Accel-Redirect internal redirect는 Django 응답의 Content-Type을 그대로 보존하므로
 # 여기서 명시하지 않으면 HttpResponse 기본값인 text/html이 그대로 브라우저에 전달된다.
 # 확장자 기반 allowlist만 사용해 요청 경로 문자열을 그대로 헤더에 반영하지 않는다.
+# SVG는 인라인 <script>/이벤트 핸들러를 담을 수 있는 active content라 same-origin으로
+# image/svg+xml을 부여하면 저장된 XSS가 가능해진다. allowlist에서 제외해
+# application/octet-stream fallback으로 강제 다운로드/비활성 콘텐츠로 취급한다.
 _SAFE_CONTENT_TYPES = {
     ".pdf": "application/pdf",
     ".png": "image/png",
@@ -18,7 +21,6 @@ _SAFE_CONTENT_TYPES = {
     ".jpeg": "image/jpeg",
     ".gif": "image/gif",
     ".webp": "image/webp",
-    ".svg": "image/svg+xml",
     ".txt": "text/plain; charset=utf-8",
     ".json": "application/json",
     ".hwp": "application/x-hwp",
