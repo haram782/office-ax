@@ -16,6 +16,11 @@ os.environ.pop("BETA_MONTHLY_CREDITS", None)
 
 from config.settings import *  # noqa: F401, F403, E402
 
+DEBUG = True
+SECURE_SSL_REDIRECT = False
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True
+
 # SQLite in-memory로 교체 — DB 서버 없이 단위 테스트 실행 가능
 DATABASES = {
     "default": {
@@ -27,3 +32,6 @@ DATABASES = {
 # 테스트 중 Celery task 즉시 실행 (브로커 불필요)
 CELERY_TASK_ALWAYS_EAGER = True
 CELERY_TASK_EAGER_PROPAGATES = True
+# send_task는 eager 설정을 무시하므로 테스트 broker/result도 메모리로 격리한다.
+CELERY_BROKER_URL = "memory://"
+CELERY_RESULT_BACKEND = "cache+memory://"

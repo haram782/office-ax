@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useGoogleLogin } from '@react-oauth/google'
 import { Ic } from '../../components/Ic'
 import { useTheme } from '../../theme'
-import { googleLogin } from '../../api/client'
+import { googleLogin, logout } from '../../api/client'
 
 /** Google 공식 4색 로고 */
 function GoogleLogo() {
@@ -77,9 +77,18 @@ export default function Login() {
     enterApp(pendingAuth)
   }
 
-  const handleConsentDecline = () => {
+  const handleConsentDecline = async () => {
+    let logoutFailed = false
+    if (pendingAuth?.token) {
+      try {
+        await logout(pendingAuth.token)
+      } catch (error) {
+        console.error('동의 거부 후 서버 로그아웃에 실패했습니다.', error)
+        logoutFailed = true
+      }
+    }
     setPendingAuth(null)
-    setMode('default')
+    setMode(logoutFailed ? 'error' : 'default')
   }
 
   // 동의 화면 — 로그인 카드 대신 고지 문구와 동의/거부 버튼을 표시

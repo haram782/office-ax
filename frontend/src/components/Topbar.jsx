@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { Ic } from './Ic'
 import { useTheme } from '../theme'
+import { logout } from '../api/client'
 
 /** localStorage에서 유저 정보 파싱 */
 function getStoredUser() {
@@ -28,14 +29,23 @@ export function Topbar({ onNewConversation }) {
   // 인증 상태 — state로 관리해야 워크스페이스 로그아웃 시 리렌더가 발생한다
   const [token, setToken] = useState(() => localStorage.getItem('auth_token'))
   const [user,  setUser]  = useState(() => getStoredUser())
+  const [logoutError, setLogoutError] = useState('')
 
   /** 로그아웃 — 대시보드면 워크스페이스로 이동, 워크스페이스면 그 자리에서 리렌더 */
-  const handleLogout = () => {
-    localStorage.removeItem('auth_token')
-    localStorage.removeItem('ax_user')
-    setToken(null)
-    setUser(null)
-    if (isDashboard) navigate('/workspace', { replace: true })
+  const handleLogout = async () => {
+    setLogoutError('')
+    try {
+      await logout()
+    } catch (error) {
+      console.error('서버 로그아웃에 실패했습니다.', error)
+      setLogoutError('서버 세션 종료를 확인하지 못했습니다. 브라우저를 닫고 다시 로그인해 주세요.')
+    } finally {
+      localStorage.removeItem('auth_token')
+      localStorage.removeItem('ax_user')
+      setToken(null)
+      setUser(null)
+      if (isDashboard) navigate('/workspace', { replace: true })
+    }
   }
 
   /** 네비게이션 탭 버튼 */
@@ -120,12 +130,15 @@ export function Topbar({ onNewConversation }) {
           </button>
         </div>
       ) : (
-        <button
-          onClick={() => navigate('/login')}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 px-3 py-1.5 text-sm text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-        >
-          로그인
-        </button>
+        <>
+          {logoutError && <span role="status" className="text-xs text-rose-600">{logoutError}</span>}
+          <button
+            onClick={() => navigate('/login')}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 px-3 py-1.5 text-sm text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+          >
+            로그인
+          </button>
+        </>
       )}
     </header>
   )

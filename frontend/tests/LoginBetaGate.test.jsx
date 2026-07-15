@@ -33,11 +33,13 @@ vi.mock('@react-oauth/google', () => ({
 }))
 
 // 백엔드 로그인 API 대체
+const logoutMock = vi.fn().mockResolvedValue(undefined)
 vi.mock('../src/api/client', () => ({
   googleLogin: vi.fn().mockResolvedValue({
     token: 'drf-token-abc',
     user: { id: 1, email: 'invited@example.com', name: '초대유저', picture: '' },
   }),
+  logout: (...args) => logoutMock(...args),
 }))
 
 import Login from '../src/pages/Login'
@@ -59,6 +61,7 @@ async function simulateGoogleSuccess() {
 beforeEach(() => {
   localStorage.clear()
   capturedLoginConfig = null
+  logoutMock.mockClear()
 })
 
 describe('게스트 토큰 제거', () => {
@@ -109,6 +112,7 @@ describe('베타 동의 화면', () => {
 
     fireEvent.click(screen.getByText(/동의하지 않음/))
 
+    await waitFor(() => expect(logoutMock).toHaveBeenCalledWith('drf-token-abc'))
     expect(localStorage.getItem('auth_token')).toBeNull()
     expect(localStorage.getItem('ax_beta_consent')).toBeNull()
     // 초기 로그인 버튼으로 복귀
