@@ -54,12 +54,33 @@ require_cmd() {
 
 # pidfile에 적힌 PID가 실제로 우리가 띄운 프로세스인지 커맨드라인 서명으로
 # 확인한다. PID 재사용으로 무관한 프로세스를 오인해 종료하는 사고를 막는다.
+#
+# fork() 직후 execve()가 아직 끝나지 않은 아주 짧은 구간에 ps가 그 PID를
+# 스냅샷하면, 자식 프로세스가 아직 부모의 이전 커맨드라인(예: python3)으로
+# 보여 서명이 일치하지 않는 것처럼 보일 수 있다. 이 구간은 보통 무시할 수
+# 있을 만큼 짧지만, 샌드박스처럼 시스템콜 오버헤드가 큰 환경에서는 길어져
+# "process signature matching is environment-dependent" 오탐(false negative)
+# 으로 이어질 수 있다. 짧게 재시도해 이 창을 흡수하되, PID가 살아있는 동안만
+# 재시도하고 최종적으로 서명이 일치하지 않으면 그대로 실패시켜 PID 재사용
+# 방지 효과는 그대로 유지한다.
 pid_matches_signature() {
-    local pid="$1" signature="$2" cmdline
+    local pid="$1" signature="$2" cmdline attempt
     [[ -n "$pid" ]] || return 1
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
     kill -0 "$pid" 2>/dev/null || return 1
-    cmdline="$(ps -p "$pid" -o command= 2>/dev/null || true)"
-    [[ -n "$cmdline" && "$cmdline" == *"$signature"* ]]
+    for attempt in $(seq 1 20); do
+        # -ww: 비 tty(예: 사이드카/캡처 파이프)에서 커맨드라인이 폭 제한으로
+        # 잘리는 것을 막는다. command= 키워드를 지원하지 않는 ps 구현을 위해
+        # args=로 한 번 더 시도한다.
+        cmdline="$(ps -ww -p "$pid" -o command= 2>/dev/null || true)"
+        [[ -n "$cmdline" ]] || cmdline="$(ps -ww -p "$pid" -o args= 2>/dev/null || true)"
+        if [[ -n "$cmdline" && "$cmdline" == *"$signature"* ]]; then
+            return 0
+        fi
+        kill -0 "$pid" 2>/dev/null || return 1
+        sleep 0.05
+    done
+    return 1
 }
 
 # pidfile 기준으로 안전 종료한다. 이미 없거나 서명이 다르면 조용히 건너뛰어
