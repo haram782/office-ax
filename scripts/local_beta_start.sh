@@ -37,7 +37,6 @@ cleanup_on_failure() {
 trap cleanup_on_failure EXIT
 
 compose config --quiet
-compose up -d postgres redis backend-web backend-worker backend-beat nginx
 
 wait_healthy() {
     local service="$1" timeout="${2:-120}" waited=0 cid status
@@ -56,6 +55,24 @@ wait_healthy() {
     echo "[start] $service 가 ${timeout}s 안에 healthy가 되지 않았습니다." >&2
     return 1
 }
+
+# postgres/redis를 먼저 올리고 healthy를 기다린 뒤에만 마이그레이션을 적용한다.
+# 완전히 빈 DB에서 backend-web(gunicorn)/backend-worker/backend-beat를 먼저
+# 띄우면 테이블이 없는 채로 요청을 받아 애플리케이션 레벨에서 깨진다.
+compose up -d postgres redis
+
+for service in postgres redis; do
+    echo "[start] $service healthcheck 대기 중..."
+    wait_healthy "$service"
+done
+
+# backend 이미지는 여기서 처음 필요해지므로(최초 실행 시 아직 빌드되지 않았을 수
+# 있음), `compose run`이 필요하면 자동으로 빌드한 뒤 마이그레이션을 정확히 한 번만
+# 실행한다. 이후 `up -d`가 같은 이미지를 재사용해 backend-web/worker/beat를 띄운다.
+echo "[start] DB 마이그레이션 적용 중..."
+compose run --rm --no-deps backend-web python manage.py migrate --noinput
+
+compose up -d backend-web backend-worker backend-beat nginx
 
 for service in backend-web backend-worker backend-beat nginx; do
     echo "[start] $service healthcheck 대기 중..."
@@ -89,6 +106,7 @@ else
 fi
 
 if pidfile_is_running "$CLOUDFLARED_PID_FILE" "$CLOUDFLARED_SIGNATURE"; then
+    tunnel_url="$(cat "$CLOUDFLARED_URL_FILE" 2>/dev/null || true)"
     echo "[start] cloudflared 가 이미 실행 중입니다 (PID $(cat "$CLOUDFLARED_PID_FILE"))"
 else
     http_port="$(env_value BETA_HTTP_PORT)"
@@ -114,6 +132,11 @@ else
     }
     echo "$tunnel_url" >"$CLOUDFLARED_URL_FILE"
     echo "[start] cloudflared 시작됨 (PID $(cat "$CLOUDFLARED_PID_FILE")): $tunnel_url"
+fi
+
+if [[ -n "${tunnel_url:-}" ]]; then
+    echo "[start] 중요: Google Cloud Console → OAuth 2.0 클라이언트 → '승인된 자바스크립트 원본'에 다음 URL을 반드시 추가하세요: $tunnel_url"
+    echo "[start] Quick Tunnel URL은 재시작할 때마다 바뀝니다 — 이전에 등록해 둔 origin은 재시작 후 더 이상 유효하지 않으니 매번 새 URL로 갱신하세요."
 fi
 
 trap - EXIT

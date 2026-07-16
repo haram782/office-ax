@@ -2,8 +2,10 @@
 
 이 문서는 단일 Mac에서 Docker(postgres/redis/backend-web/backend-worker/backend-beat/nginx)와
 호스트 AX Celery 워커(`claude_cli`)를 함께 띄워, `cloudflared` Quick Tunnel로 Google 로그인이
-가능한 임시 HTTPS URL을 통해 QA하는 절차다. 운영 `docker-compose.beta.yml` / `.env.beta` /
-`scripts/beta_*.sh`는 이 절차에서 전혀 사용하지 않는다.
+가능한 임시 HTTPS URL을 통해 QA하는 절차다. 운영 `docker-compose.beta.yml`은
+`docker-compose.local-beta.yml`과 `-f`로 병합되는 base로 재사용되지만, 단독으로 실행되거나
+내용이 직접 수정(mutate)되지는 않는다 — 재정의는 전부 `docker-compose.local-beta.yml`
+쪽에서 override로 이루어진다. `.env.beta`/`scripts/beta_*.sh`는 이 절차에서 전혀 사용하지 않는다.
 
 ## 0. 구성 개요
 
@@ -43,16 +45,26 @@
 순서:
 
 1. `docker compose config --quiet`로 병합 설정을 검증한다.
-2. `postgres redis backend-web backend-worker backend-beat nginx`만 `up -d` 한다(`ax-worker` 제외).
-3. 네 서비스(`backend-web`/`backend-worker`/`backend-beat`/`nginx`) healthcheck를 순서대로 대기한다.
-4. 호스트 AX 워커가 이미 실행 중이 아니면(`pidfile` 서명 확인) `.local-beta/ax-venv`의 celery로
+2. `postgres redis`만 먼저 `up -d` 하고 healthcheck를 대기한다.
+3. `postgres`/`redis`가 healthy가 된 뒤에만 `compose run --rm --no-deps backend-web
+   python manage.py migrate --noinput`로 마이그레이션을 정확히 한 번 적용한다. backend
+   이미지가 아직 빌드되지 않은 최초 실행이라면 `compose run`이 필요 시 자동으로 빌드한다
+   (완전히 빈 DB에서 backend-web/worker/beat를 먼저 띄우면 테이블 없이 요청을 받게 되므로
+   순서를 이렇게 고정한다).
+4. `backend-web backend-worker backend-beat nginx`를 `up -d` 하고(`ax-worker`는 여전히 제외)
+   네 서비스 healthcheck를 순서대로 대기한다.
+5. 호스트 AX 워커가 이미 실행 중이 아니면(`pidfile` 서명 확인) `.local-beta/ax-venv`의 celery로
    `-A celery_app worker -Q ax`를 백그라운드로 띄우고 PID를 `.local-beta/ax-worker.pid`에 기록한다.
    `REDIS_URL`은 `127.0.0.1:${LOCAL_BETA_REDIS_PORT:-6380}`, `ARTIFACT_DIR`/`SLIDE_DIR`/`TMPDIR`은
    경로 계약과 동일한 절대경로를 쓴다.
-5. `cloudflared`가 이미 실행 중이 아니면 Quick Tunnel을 새로 띄우고, 로그에서
+6. `cloudflared`가 이미 실행 중이 아니면 Quick Tunnel을 새로 띄우고, 로그에서
    `https://*.trycloudflare.com` URL을 최대 30초 대기해 `.local-beta/cloudflared.url`에 기록한다.
+   URL을 확인하는 즉시 Google Cloud Console의 OAuth 2.0 클라이언트 → **승인된 자바스크립트
+   원본**에 이 URL을 추가해야 Google 로그인이 동작한다. Quick Tunnel URL은 재시작할 때마다
+   바뀌므로, 이전에 등록해 둔 origin은 재시작 후 더 이상 유효하지 않다 — 매번 새 URL로 갱신해야 한다.
 
-이미 떠 있는 구성요소는 건드리지 않으므로 재실행해도 안전하다(idempotent). 이번 실행에서
+이미 떠 있는 구성요소는 건드리지 않으므로 재실행해도 안전하다(idempotent). 마이그레이션은
+Django 자체가 멱등적으로 처리하므로 재실행 시 다시 적용해도 안전하다. 이번 실행에서
 새로 시작한 호스트 워커/터널이 도중에 실패하면, **이번에 새로 띄운 것만** 정리하고
 (이미 정상이던 Docker 서비스는 그대로 둔 채) 실패 원인을 stderr에 남긴다.
 

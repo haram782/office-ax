@@ -115,6 +115,46 @@ class LocalBetaOpsStaticContractTest(unittest.TestCase):
         self.assertIn("STARTED_WORKER", text)
         self.assertIn("STARTED_TUNNEL", text)
 
+    def test_start_runs_migration_exactly_once_between_db_and_app_services(self):
+        # 빈 DB로 최초 기동 시 postgres/redis가 healthy해진 뒤에만 마이그레이션을
+        # 적용하고, 그 다음에만 backend-web/worker/beat/nginx를 올려야 한다.
+        # 순서가 뒤바뀌면 테이블 없는 상태로 앱 컨테이너가 요청을 받게 된다.
+        text = (SCRIPTS / "local_beta_start.sh").read_text()
+        migrate_calls = re.findall(r"manage\.py migrate", text)
+        self.assertEqual(len(migrate_calls), 1, "마이그레이션은 정확히 한 번만 실행되어야 한다")
+
+        idx_db_up = text.index("compose up -d postgres redis")
+        idx_migrate = text.index("manage.py migrate")
+        idx_app_up = text.index("compose up -d backend-web backend-worker backend-beat nginx")
+
+        self.assertLess(idx_db_up, idx_migrate, "postgres/redis를 먼저 올려야 한다")
+        self.assertLess(idx_migrate, idx_app_up, "마이그레이션은 앱 서비스 기동 전에 끝나야 한다")
+
+        # postgres/redis healthcheck 대기가 up과 migrate 사이에 있어야 한다.
+        db_wait_block = text[idx_db_up:idx_migrate]
+        self.assertIn('for service in postgres redis', db_wait_block)
+        self.assertIn("wait_healthy", db_wait_block)
+
+    def test_start_migration_uses_backend_image_without_starting_deps_twice(self):
+        text = (SCRIPTS / "local_beta_start.sh").read_text()
+        self.assertIn("compose run --rm --no-deps backend-web python manage.py migrate --noinput", text)
+
+    def test_start_prints_oauth_origin_instruction_for_tunnel_url(self):
+        text = (SCRIPTS / "local_beta_start.sh").read_text()
+        self.assertIn("승인된 자바스크립트 원본", text)
+        self.assertIn("tunnel_url", text)
+        self.assertIn("재시작", text)
+
+    def test_runbook_describes_beta_compose_as_reused_base_not_unused(self):
+        # docker-compose.beta.yml은 local-beta 스택에서 -f로 병합되는 base로
+        # 실제로 쓰인다 — "전혀 사용하지 않는다"는 서술은 잘못된 정보였다.
+        text = (ROOT / "docs/operations/local-beta-cli-qa-runbook.md").read_text()
+        self.assertIn("base로 재사용", text)
+        self.assertNotIn(
+            "운영 `docker-compose.beta.yml` / `.env.beta` /\n`scripts/beta_*.sh`는 이 절차에서 전혀 사용하지 않는다.",
+            text,
+        )
+
 
 @unittest.skipUnless(_docker_available(), "docker not installed")
 class LocalBetaComposeConfigTest(unittest.TestCase):
