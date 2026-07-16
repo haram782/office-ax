@@ -45,7 +45,7 @@ services:
       dockerfile: backend/Dockerfile
     restart: unless-stopped
     command: sh -c "python manage.py collectstatic --noinput && exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 180"
-    env_file: .env.beta
+    env_file: ${BETA_ENV_FILE:-.env.beta}
     environment:
       TMPDIR: /shared-tmp
     volumes:
@@ -74,7 +74,7 @@ services:
       dockerfile: backend/Dockerfile
     restart: unless-stopped
     command: celery -A config worker -Q celery --loglevel=info --concurrency=2
-    env_file: .env.beta
+    env_file: ${BETA_ENV_FILE:-.env.beta}
     environment:
       TMPDIR: /shared-tmp
     volumes:
@@ -105,7 +105,7 @@ services:
     # /tmp/celerybeat.pid 때문에 celery beat가 "Pidfile already exists"로
     # exit 73 재시작 루프에 빠진다. 시작 전에 stale pidfile을 제거한다.
     command: sh -c "rm -f /tmp/celerybeat.pid && exec celery -A config beat --loglevel=info --pidfile=/tmp/celerybeat.pid"
-    env_file: .env.beta
+    env_file: ${BETA_ENV_FILE:-.env.beta}
     depends_on:
       redis:
         condition: service_healthy
@@ -123,7 +123,7 @@ services:
     build:
       context: ./ax-engine
     restart: unless-stopped
-    env_file: .env.beta
+    env_file: ${BETA_ENV_FILE:-.env.beta}
     environment:
       ARTIFACT_DIR: /app/backend/media
     volumes:

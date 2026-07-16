@@ -20,12 +20,20 @@ def _is_beta_allowed(email: str) -> bool:
     """
     클로즈드 베타 이메일 allowlist 검사.
 
-    BETA_ALLOWED_EMAILS 환경변수(콤마 구분)가 설정된 경우에만 제한하고,
-    미설정·빈 값이면 전체 허용(개발 환경 기존 동작 유지).
+    BETA_ACCESS_MODE=open이면 인증된 Google 계정을 모두 허용하고,
+    allowlist이면 BETA_ALLOWED_EMAILS에 있는 계정만 허용한다.
+    BETA_ACCESS_MODE가 없으면 기존의 빈 목록 전체 허용 동작을 유지한다.
     요청 시점마다 읽으므로 재배포 없이 프로세스 재시작만으로 명단 갱신 가능.
     상세: docs/product/strategy/closed-beta-launch-plan-v1-ko.md 2.2절 결정 17
     """
+    mode = os.environ.get("BETA_ACCESS_MODE", "").strip().lower()
     raw = os.environ.get("BETA_ALLOWED_EMAILS", "").strip()
+    if mode == "open":
+        return True
+    if mode not in {"", "allowlist"}:
+        return False
+    if mode == "allowlist" and not raw:
+        return False
     if not raw:
         return True
     allowed = {item.strip().lower() for item in raw.split(",") if item.strip()}

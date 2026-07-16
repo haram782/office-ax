@@ -19,7 +19,7 @@ errors=0
 fail_var() { echo "[preflight] unsafe: $1" >&2; errors=$((errors + 1)); }
 require_file "$ENV_FILE"
 
-required=(DJANGO_SECRET_KEY DEBUG ALLOWED_HOSTS CSRF_TRUSTED_ORIGINS DB_PASSWORD BETA_DB_PASSWORD REDIS_URL BETA_ALLOWED_EMAILS VITE_GOOGLE_CLIENT_ID BETA_RELEASE_TAG)
+required=(DJANGO_SECRET_KEY DEBUG ALLOWED_HOSTS CSRF_TRUSTED_ORIGINS DB_PASSWORD BETA_DB_PASSWORD REDIS_URL BETA_ACCESS_MODE VITE_GOOGLE_CLIENT_ID BETA_RELEASE_TAG)
 for key in "${required[@]}"; do
     value="$(env_value "$key")"
     [[ -n "$value" ]] || fail_var "$key"
@@ -30,6 +30,14 @@ done
 [[ "$(env_value CSRF_TRUSTED_ORIGINS)" == https://* ]] || fail_var CSRF_TRUSTED_ORIGINS
 [[ "$(env_value DB_PASSWORD)" == "$(env_value BETA_DB_PASSWORD)" ]] || fail_var DB_PASSWORD/BETA_DB_PASSWORD
 validate_release_tag "$(env_value BETA_RELEASE_TAG)" || errors=$((errors + 1))
+
+case "$(env_value BETA_ACCESS_MODE)" in
+    allowlist)
+        [[ -n "$(env_value BETA_ALLOWED_EMAILS)" ]] || fail_var BETA_ALLOWED_EMAILS
+        ;;
+    open) ;;
+    *) fail_var BETA_ACCESS_MODE ;;
+esac
 
 case "$(env_value LLM_PROVIDER)" in
     openai)

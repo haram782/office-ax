@@ -150,7 +150,9 @@ CELERY_TASK_ROUTES = {
 }
 
 # ── 업로드 파일 임시 저장 경로 ───────────────────────────────────────────────
-MEDIA_ROOT = BASE_DIR / "media"
+# 로컬 QA에서는 Docker backend와 호스트 AX worker가 같은 절대경로를 봐야 한다.
+# 운영 기본값은 기존 경로를 유지하고, 명시된 환경에서만 공유 경로로 바꾼다.
+MEDIA_ROOT = Path(os.environ.get("MEDIA_ROOT", BASE_DIR / "media"))
 FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10 MB
 
 # ── 대시보드 월 사용량 한도 ────────────────────────────────────────────────────

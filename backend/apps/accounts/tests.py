@@ -179,6 +179,33 @@ class BetaAllowlistTest(TestCase):
             response = self._login(email="anyone@example.com")
         self.assertEqual(response.status_code, 200)
 
+    def test_open_access_mode_allows_all_even_with_stale_allowlist(self):
+        """open 모드는 이전 allowlist 값이 남아 있어도 인증 계정을 모두 허용한다."""
+        with patch.dict(
+            os.environ,
+            {"BETA_ACCESS_MODE": "open", "BETA_ALLOWED_EMAILS": "invited@example.com"},
+        ):
+            response = self._login(email="anyone@example.com")
+        self.assertEqual(response.status_code, 200)
+
+    def test_explicit_allowlist_mode_fails_closed_when_list_is_empty(self):
+        """allowlist 모드에서 목록 누락은 전체 공개가 아니라 접근 거부로 처리한다."""
+        with patch.dict(
+            os.environ,
+            {"BETA_ACCESS_MODE": "allowlist", "BETA_ALLOWED_EMAILS": ""},
+        ):
+            response = self._login(email="anyone@example.com")
+        self.assertEqual(response.status_code, 403)
+
+    def test_unknown_access_mode_fails_closed(self):
+        """오타 난 접근 모드는 preflight 우회 시에도 전체 공개되지 않는다."""
+        with patch.dict(
+            os.environ,
+            {"BETA_ACCESS_MODE": "typo", "BETA_ALLOWED_EMAILS": ""},
+        ):
+            response = self._login(email="anyone@example.com")
+        self.assertEqual(response.status_code, 403)
+
 
 class MeViewTest(TestCase):
     """GET /api/v1/auth/me/ 테스트."""
