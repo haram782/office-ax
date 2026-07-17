@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 !.env.beta.example
+!.env.local-beta.example
 
 # Python
 __pycache__/
@@ -45,7 +46,9 @@ pnpm-debug.log*
 
 # 베타 환경 시크릿
 .env.beta
+.env.local-beta
 .releases/
+.local-beta/
 
 # collectstatic 산출물
 backend/staticfiles/
