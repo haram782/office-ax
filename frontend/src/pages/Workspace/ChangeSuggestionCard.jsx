@@ -1,4 +1,5 @@
 import { Ic } from '../../components/Ic'
+import { DiffText } from '../../components/DiffText'
 
 // severity → 왼쪽 테두리 색상
 const SEVERITY_BORDER = {
@@ -203,22 +204,8 @@ export function ChangeSuggestionCard({
         )
       ) : (
         (original || replacement) && (
-          <div className="flex items-start gap-1.5 mb-1.5 text-[11px]">
-            {original && (
-              <span className="line-through text-red-400 truncate max-w-[80px]" title={original}>
-                {original}
-              </span>
-            )}
-            {original && replacement && (
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="flex-shrink-0 mt-0.5 text-zinc-400">
-                <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
-              </svg>
-            )}
-            {replacement && (
-              <span className="text-emerald-600 dark:text-emerald-400 font-medium truncate max-w-[80px]" title={replacement}>
-                {replacement}
-              </span>
-            )}
+          <div className="mb-1.5 text-[11px]">
+            <DiffText original={original} replacement={replacement} />
           </div>
         )
       )}

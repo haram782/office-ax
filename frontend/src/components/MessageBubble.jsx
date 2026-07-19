@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { DiffText } from './DiffText'
 
 // 파일 분석 로딩 스텝
 const FILE_LOADING_STEPS = [
@@ -86,9 +87,7 @@ function SnippetCard({ snippetData, onFileView }) {
             {snippetData.corrections.slice(0, 4).map((c, i) => (
               <div key={i} className="flex items-center gap-2 text-[11px]">
                 <span className="font-mono text-zinc-500 dark:text-zinc-400 w-8 flex-shrink-0">{c.cell}</span>
-                <span className="text-red-400 line-through truncate max-w-[80px]">{c.original}</span>
-                <span className="text-zinc-400">→</span>
-                <span className="text-emerald-600 font-medium truncate max-w-[80px]">{c.corrected}</span>
+                <DiffText original={c.original} replacement={c.corrected} />
               </div>
             ))}
           </div>
@@ -192,8 +191,8 @@ function PatchPlanBubble({ message, onAcceptPatch, onRejectPatch }) {
                   <span className="min-w-0">
                     <span className="font-medium">{changeItemLabel(c)}</span>
                     {c.original && c.replacement && c.title && (
-                      <span className="block text-zinc-400 dark:text-zinc-500 truncate">
-                        {c.original} → {c.replacement}
+                      <span className="block text-zinc-400 dark:text-zinc-500">
+                        <DiffText original={c.original} replacement={c.replacement} />
                       </span>
                     )}
                   </span>

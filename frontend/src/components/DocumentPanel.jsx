@@ -1,5 +1,7 @@
 import { useMemo, useRef, useCallback, useState, useEffect } from 'react'
 import { resolveAssistantMsg } from '../utils/fileItemsUtils'
+import { computeHighlightRects } from '../utils/hwpHighlight'
+import { DiffText } from './DiffText'
 import initRhwp, { HwpDocument } from '@rhwp/core'
 // ?url — Vite가 해당 파일을 asset으로 복사하고 실제 경로(해시 포함)를 반환
 // node_modules 번들링 시 import.meta.url 기반 경로가 깨지는 문제를 우회
@@ -287,11 +289,7 @@ function ExcelViewer({ previewData, highlights = [], selectedHighlightId = null,
                     {c.cell}
                   </span>
                   <div className="flex-1 flex items-center gap-2 min-w-0 text-xs">
-                    <span className="text-red-400 line-through truncate">{c.original}</span>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="flex-shrink-0 text-zinc-400">
-                      <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
-                    </svg>
-                    <span className="text-emerald-600 font-semibold truncate">{c.corrected}</span>
+                    <DiffText original={c.original} replacement={c.corrected} />
                   </div>
                   {/* 제안 상태 인디케이터 */}
                   {matchH && !['pending', 'accepted', 'generating'].includes(matchH.status) && (
@@ -774,12 +772,8 @@ function TextMatchNotice({ notice }) {
 
       {/* 교정 내용 */}
       {replacement && (
-        <div className="flex items-center gap-1.5">
-          <span className="opacity-50 line-through text-[11px]">{target_text}</span>
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" className="opacity-50 flex-shrink-0">
-            <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
-          </svg>
-          <span className="font-medium text-[11px]">{replacement}</span>
+        <div className="flex items-center gap-1.5 text-[11px]">
+          <DiffText original={target_text} replacement={replacement} />
         </div>
       )}
 
@@ -929,33 +923,8 @@ function HwpViewer({ previewData, highlights = [], selectedHighlightId = null, o
 
     for (const h of highlights) {
       if (h.anchor?.type !== 'text_match') continue
-
-      const targetText = h.anchor?.target_text || h.anchor?.text_match || h.original || ''
-      if (!targetText) continue
-
-      const occurrence = Number.isInteger(h.anchor?.occurrence) && h.anchor.occurrence > 0
-        ? h.anchor.occurrence
-        : 1
-
       try {
-        const matches = JSON.parse(doc.searchAllText(targetText, false, true))
-        if (!Array.isArray(matches) || matches.length < occurrence) continue
-
-        const match = matches[occurrence - 1]
-        const length = match.length ?? targetText.length
-        const rects = JSON.parse(
-          doc.getSelectionRects(
-            match.sec,
-            match.para,
-            match.charOffset,
-            match.para,
-            match.charOffset + length,
-          ),
-        )
-
-        if (!Array.isArray(rects)) continue
-        for (const rect of rects) {
-          if (rect.pageIndex == null || rect.x == null || rect.y == null) continue
+        for (const rect of computeHighlightRects(doc, h)) {
           nextRects.push({ ...rect, highlight: h })
         }
       } catch (err) {
