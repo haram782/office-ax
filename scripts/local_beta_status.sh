@@ -22,10 +22,10 @@ else
 fi
 
 echo
-echo "=== cloudflared Quick Tunnel ==="
-if pidfile_is_running "$CLOUDFLARED_PID_FILE" "$CLOUDFLARED_SIGNATURE"; then
-    echo "실행 중 (PID $(cat "$CLOUDFLARED_PID_FILE"))"
-    [[ -f "$CLOUDFLARED_URL_FILE" ]] && echo "URL: $(cat "$CLOUDFLARED_URL_FILE")"
+echo "=== ngrok static domain 터널 ==="
+if pidfile_is_running "$NGROK_PID_FILE" "$NGROK_SIGNATURE"; then
+    echo "실행 중 (PID $(cat "$NGROK_PID_FILE"))"
+    [[ -f "$NGROK_URL_FILE" ]] && echo "URL: $(cat "$NGROK_URL_FILE")"
 else
     echo "중지됨"
 fi

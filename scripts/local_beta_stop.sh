@@ -15,8 +15,8 @@ while (($#)); do
     esac
 done
 
-stop_pidfile "$CLOUDFLARED_PID_FILE" "$CLOUDFLARED_SIGNATURE" "cloudflared"
-rm -f "$CLOUDFLARED_URL_FILE"
+stop_pidfile "$NGROK_PID_FILE" "$NGROK_SIGNATURE" "ngrok"
+rm -f "$NGROK_URL_FILE"
 stop_pidfile "$AX_WORKER_PID_FILE" "$AX_WORKER_SIGNATURE" "AX 워커"
 
 if [[ -f "$ENV_FILE" ]]; then

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 로컬 CLI QA 스택 기동: Docker(postgres/redis/backend-web/backend-worker/
-# backend-beat/nginx) + 호스트 AX 워커(claude_cli) + cloudflared Quick Tunnel.
+# backend-beat/nginx) + 호스트 AX 워커(claude_cli) + ngrok static domain 터널.
 # 여러 번 실행해도 안전하다 — 이미 떠 있는 구성요소는 건드리지 않는다.
 
 set -euo pipefail
@@ -13,7 +13,7 @@ require_file "$ENV_FILE" || {
     exit 1
 }
 require_cmd docker
-require_cmd cloudflared
+require_cmd ngrok
 require_cmd claude
 [[ -x "$AX_VENV_DIR/bin/celery" ]] || {
     echo "[start] ax-engine venv가 없습니다. ./scripts/local_beta_setup.sh 를 먼저 실행하세요." >&2
@@ -30,7 +30,7 @@ cleanup_on_failure() {
     if [[ "$code" -ne 0 ]]; then
         echo "[start] 실패(exit $code) — 이번 실행에서 새로 띄운 구성요소만 정리합니다." >&2
         [[ "$STARTED_WORKER" -eq 1 ]] && stop_pidfile "$AX_WORKER_PID_FILE" "$AX_WORKER_SIGNATURE" "AX 워커"
-        [[ "$STARTED_TUNNEL" -eq 1 ]] && stop_pidfile "$CLOUDFLARED_PID_FILE" "$CLOUDFLARED_SIGNATURE" "cloudflared"
+        [[ "$STARTED_TUNNEL" -eq 1 ]] && stop_pidfile "$NGROK_PID_FILE" "$NGROK_SIGNATURE" "ngrok"
         echo "[start] Docker 서비스는 유지했습니다. 상태 확인: ./scripts/local_beta_status.sh" >&2
     fi
 }
@@ -105,39 +105,47 @@ else
     echo "[start] AX 워커 시작됨 (PID $(cat "$AX_WORKER_PID_FILE")), 로그: $AX_WORKER_LOG_FILE"
 fi
 
-if pidfile_is_running "$CLOUDFLARED_PID_FILE" "$CLOUDFLARED_SIGNATURE"; then
-    tunnel_url="$(cat "$CLOUDFLARED_URL_FILE" 2>/dev/null || true)"
-    echo "[start] cloudflared 가 이미 실행 중입니다 (PID $(cat "$CLOUDFLARED_PID_FILE"))"
+ngrok_domain="$(env_value NGROK_DOMAIN)"
+[[ -n "$ngrok_domain" ]] || {
+    echo "[start] .env.local-beta 에 NGROK_DOMAIN이 비어 있습니다 (ngrok 대시보드의 static domain)." >&2
+    exit 1
+}
+tunnel_url="https://${ngrok_domain}"
+
+if pidfile_is_running "$NGROK_PID_FILE" "$NGROK_SIGNATURE"; then
+    echo "[start] ngrok 이 이미 실행 중입니다 (PID $(cat "$NGROK_PID_FILE")): $tunnel_url"
 else
     http_port="$(env_value BETA_HTTP_PORT)"
-    : >"$CLOUDFLARED_LOG_FILE"
-    nohup cloudflared tunnel --no-autoupdate --url "http://127.0.0.1:${http_port:-8080}" \
-        >>"$CLOUDFLARED_LOG_FILE" 2>&1 &
-    echo $! >"$CLOUDFLARED_PID_FILE"
+    : >"$NGROK_LOG_FILE"
+    nohup ngrok http --domain="$ngrok_domain" "${http_port:-8080}" \
+        >>"$NGROK_LOG_FILE" 2>&1 &
+    echo $! >"$NGROK_PID_FILE"
     STARTED_TUNNEL=1
 
-    tunnel_url=""
+    # static domain이라 URL 자체는 고정이지만, 에이전트가 실제로 연결됐는지는
+    # 로컬 inspector API(4040)로 터널 목록에 뜨는지 확인해야 안다.
+    connected=0
     for _ in $(seq 1 30); do
-        tunnel_url="$(grep -Eo 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' "$CLOUDFLARED_LOG_FILE" | head -n1 || true)"
-        [[ -n "$tunnel_url" ]] && break
-        pidfile_is_running "$CLOUDFLARED_PID_FILE" "$CLOUDFLARED_SIGNATURE" || {
-            echo "[start] cloudflared 가 예기치 않게 종료됐습니다. 로그: $CLOUDFLARED_LOG_FILE" >&2
+        if curl -s "http://127.0.0.1:4040/api/tunnels" 2>/dev/null | grep -qF "$ngrok_domain"; then
+            connected=1
+            break
+        fi
+        pidfile_is_running "$NGROK_PID_FILE" "$NGROK_SIGNATURE" || {
+            echo "[start] ngrok 이 예기치 않게 종료됐습니다. 로그: $NGROK_LOG_FILE" >&2
             exit 1
         }
         sleep 1
     done
-    [[ -n "$tunnel_url" ]] || {
-        echo "[start] cloudflared Quick Tunnel URL을 ${30}s 안에 찾지 못했습니다. 로그: $CLOUDFLARED_LOG_FILE" >&2
+    [[ "$connected" -eq 1 ]] || {
+        echo "[start] ngrok 터널이 ${30}s 안에 연결되지 않았습니다. 로그: $NGROK_LOG_FILE" >&2
         exit 1
     }
-    echo "$tunnel_url" >"$CLOUDFLARED_URL_FILE"
-    echo "[start] cloudflared 시작됨 (PID $(cat "$CLOUDFLARED_PID_FILE")): $tunnel_url"
+    echo "$tunnel_url" >"$NGROK_URL_FILE"
+    echo "[start] ngrok 시작됨 (PID $(cat "$NGROK_PID_FILE")): $tunnel_url"
 fi
 
-if [[ -n "${tunnel_url:-}" ]]; then
-    echo "[start] 중요: Google Cloud Console → OAuth 2.0 클라이언트 → '승인된 자바스크립트 원본'에 다음 URL을 반드시 추가하세요: $tunnel_url"
-    echo "[start] Quick Tunnel URL은 재시작할 때마다 바뀝니다 — 이전에 등록해 둔 origin은 재시작 후 더 이상 유효하지 않으니 매번 새 URL로 갱신하세요."
-fi
+echo "[start] 접속 URL(고정): $tunnel_url"
+echo "[start] Google Cloud Console → OAuth 2.0 클라이언트 → '승인된 자바스크립트 원본'에 이 URL이 한 번만 등록되어 있으면 됩니다(재시작해도 바뀌지 않음)."
 
 trap - EXIT
 echo "[start] 완료. 상태 확인: ./scripts/local_beta_status.sh"

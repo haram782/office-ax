@@ -24,10 +24,13 @@ AX_WORKER_LOG_FILE="$STATE_DIR/ax-worker.log"
 # stop/status가 pidfile의 PID를 우리가 띄운 celery 프로세스로 확인할 때 쓰는
 # 커맨드라인 서명. start에서 실제로 실행하는 커맨드와 반드시 일치해야 한다.
 AX_WORKER_SIGNATURE="$AX_VENV_DIR/bin/celery -A celery_app worker -Q ax"
-CLOUDFLARED_PID_FILE="$STATE_DIR/cloudflared.pid"
-CLOUDFLARED_LOG_FILE="$STATE_DIR/cloudflared.log"
-CLOUDFLARED_URL_FILE="$STATE_DIR/cloudflared.url"
-CLOUDFLARED_SIGNATURE="cloudflared tunnel"
+# ngrok 무료 계정에 고정 배정되는 static domain(dev domain)을 사용한다 —
+# cloudflared Quick Tunnel과 달리 재시작해도 URL이 바뀌지 않아 Google OAuth
+# origin을 매번 재등록할 필요가 없다.
+NGROK_PID_FILE="$STATE_DIR/ngrok.pid"
+NGROK_LOG_FILE="$STATE_DIR/ngrok.log"
+NGROK_URL_FILE="$STATE_DIR/ngrok.url"
+NGROK_SIGNATURE="ngrok http"
 
 compose() {
     docker compose -p "$PROJECT_NAME" "${COMPOSE_FILES[@]}" --env-file "$ENV_FILE" --project-directory "$REPO_ROOT" "$@"

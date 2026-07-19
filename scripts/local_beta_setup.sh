@@ -9,16 +9,16 @@ source "$SCRIPT_DIR/local_beta_common.sh"
 
 AX_PYTHON_BIN="${AX_PYTHON_BIN:-python3}"
 missing_cmd=0
-for cmd in docker cloudflared claude "$AX_PYTHON_BIN"; do
+for cmd in docker ngrok claude "$AX_PYTHON_BIN"; do
     require_cmd "$cmd" || missing_cmd=1
 done
 if [[ "$missing_cmd" -ne 0 ]]; then
     cat >&2 <<'EOF'
 [local-beta] 위 실행 파일을 먼저 설치하세요.
-  docker      : Docker Desktop
-  cloudflared : brew install cloudflared
-  claude      : Claude Code CLI (https://claude.ai/code)
-  python3     : ax-engine 호스트 워커 venv 구성에 필요
+  docker : Docker Desktop
+  ngrok  : brew install ngrok (가입 후 authtoken 등록: ngrok config add-authtoken <token>)
+  claude : Claude Code CLI (https://claude.ai/code)
+  python3: ax-engine 호스트 워커 venv 구성에 필요
 EOF
     exit 1
 fi
