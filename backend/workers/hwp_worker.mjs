@@ -36,6 +36,72 @@ async function readStdin() {
   return Buffer.concat(chunks).toString('utf-8');
 }
 
+// ── 공백-둔감 검색 헬퍼 ────────────────────────────────────────────────────────
+
+/**
+ * hwp_text_extract.mjs의 normalizeText()가 연속 공백을 1칸으로 뭉개서 LLM에게
+ * 보여주므로, PatchPlan의 original은 실제 문서보다 공백이 적은 형태로 생성될
+ * 수 있다(예: 문서엔 "주  소"(2칸)인데 original은 "주 소"(1칸)). 정확 일치
+ * 검색이 실패하면, original의 공백런(run)마다 폭을 1~6칸으로 바꿔가며 재시도한다.
+ * @param {string} original
+ * @returns {string[]} original 자신을 제외한 공백-폭 변형 목록(중복 제거)
+ */
+function buildWhitespaceWidthVariants(original, maxWidth = 6) {
+  const parts = original.split(/(\s+)/);
+  const gapIndices = [];
+  parts.forEach((p, i) => { if (/^\s+$/.test(p)) gapIndices.push(i); });
+  if (gapIndices.length === 0) return [];
+
+  // 조합 폭발 방지 — 공백런이 많아도 시도 횟수를 상한선 안으로 제한한다.
+  const maxCombos = 200;
+  let combos = [[]];
+  outer:
+  for (let g = 0; g < gapIndices.length; g += 1) {
+    const next = [];
+    for (const combo of combos) {
+      for (let w = 1; w <= maxWidth; w += 1) {
+        next.push([...combo, w]);
+        if (next.length >= maxCombos) break outer;
+      }
+    }
+    combos = next;
+  }
+
+  const variants = new Set();
+  for (const combo of combos) {
+    const p = [...parts];
+    gapIndices.forEach((idx, k) => { p[idx] = ' '.repeat(combo[k]); });
+    const variant = p.join('');
+    if (variant !== original) variants.add(variant);
+  }
+  return [...variants];
+}
+
+/**
+ * doc.searchAllText를 원본 그대로 먼저 시도하고, 매치가 없으면 공백 폭
+ * 변형으로 재시도한다. 실제 치환에 쓸 query 문자열도 함께 반환한다.
+ * @returns {{ matches: any[], usedQuery: string }}
+ */
+function searchAllTextWhitespaceTolerant(doc, original) {
+  const tryQuery = (query) => {
+    try {
+      const parsed = JSON.parse(doc.searchAllText(query, false, true));
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const exact = tryQuery(original);
+  if (exact.length > 0) return { matches: exact, usedQuery: original };
+
+  for (const variant of buildWhitespaceWidthVariants(original)) {
+    const matches = tryQuery(variant);
+    if (matches.length > 0) return { matches, usedQuery: variant };
+  }
+  return { matches: [], usedQuery: original };
+}
+
 // ── 메인 ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -89,11 +155,11 @@ async function main() {
       ? anchor.occurrence
       : 1;
 
-    // 매치 목록 조회
+    // 매치 목록 조회 — 정확 일치 실패 시 공백 폭을 바꿔가며 재시도한다.
     let matches;
+    let usedQuery;
     try {
-      const resultJson = doc.searchAllText(original, false, true);
-      matches = JSON.parse(resultJson);
+      ({ matches, usedQuery } = searchAllTextWhitespaceTolerant(doc, original));
     } catch (err) {
       process.stderr.write(`[hwp_worker] searchAllText 실패 op=${operation_id}: ${err.message}\n`);
       failed.push({ operation_id, reason: `searchAllText 오류: ${err.message}` });
@@ -104,6 +170,11 @@ async function main() {
       process.stderr.write(`[hwp_worker] 텍스트 없음 op=${operation_id}: "${original}"\n`);
       failed.push({ operation_id, reason: '텍스트를 찾을 수 없습니다.' });
       continue;
+    }
+    if (usedQuery !== original) {
+      process.stderr.write(
+        `[hwp_worker] 공백 폭 보정으로 매칭 op=${operation_id}: "${original}" → "${usedQuery}"\n`
+      );
     }
 
     // occurrence가 매치 수를 초과하면 실패로 마킹
