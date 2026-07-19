@@ -199,5 +199,29 @@ console.log('\n[케이스 7] 표 셀 내부 매치 → 셀 안에서 치환되�
   assert(cellMatches[0]?.cellContext != null, '치환 결과가 표 셀 내부에 있음 (cellContext 존재)');
 }
 
+// ── 케이스 8: 라벨 셀 + 빈 값 셀 구조 → 값은 옆의 빈 셀에, 라벨은 그대로 ────────
+// 공문서 표는 [주  소][빈 값 셀][TEL]... 라벨/값 셀 쌍 구조다. replacement가
+// "라벨 + 값" 형태일 때 라벨 셀 안에 통째로 넣으면 좁은 라벨 셀에서 여러 줄로
+// 감겨 정렬이 깨진다 — 라벨 셀은 그대로 두고 값만 옆의 빈 셀에 넣어야 한다.
+console.log('\n[케이스 8] 라벨 셀 옆에 빈 값 셀이 있으면 값만 그 셀에 넣고 라벨은 유지해야 함');
+{
+  const input = readFileSync(new URL('../../sample-docs/공문서-양식-한글.hwp', import.meta.url));
+
+  const out = runWorker(input, [
+    { operation_id: 'op8', original: '주 소', replacement: '주 소 분당동 102-1', anchor: { occurrence: 1 } },
+  ]);
+
+  assert(out.applied.includes('op8'), 'op8이 applied에 포함됨');
+
+  const outputBytes = Buffer.from(out.output_b64, 'base64');
+  const afterDoc = new HwpDocument(new Uint8Array(outputBytes));
+
+  const labelCellText = afterDoc.getTextInCell(0, 2, 0, 0, 0, 0, 100);
+  assert(labelCellText === '주  소', `라벨 셀(cell 0)은 원본 그대로 유지됨 (실제: ${JSON.stringify(labelCellText)})`);
+
+  const valueCellText = afterDoc.getTextInCell(0, 2, 0, 1, 0, 0, 100);
+  assert(valueCellText === '분당동 102-1', `값이 옆의 빈 값 셀(cell 1)에 들어감 (실제: ${JSON.stringify(valueCellText)})`);
+}
+
 console.log(`\n총 ${passed + failedCount}건 중 PASS=${passed}, FAIL=${failedCount}`);
 process.exit(failedCount > 0 ? 1 : 0);

@@ -76,7 +76,22 @@ export function computeHighlightRects(doc, highlight) {
     }
   }
 
-  // 2차: 기존 동작 — target_text의 occurrence번째 매치를 하이라이트
+  // 2차: 값이 라벨 옆 빈 셀에 단독으로 들어간 경우(라벨/값 셀 쌍 구조) —
+  // replacement 전체는 문서에 연속으로 존재하지 않으므로 추가된 값 부분만 직접 찾는다.
+  if (!match && replacement) {
+    const range = addedRangeInReplacement(targetText, replacement)
+    if (range) {
+      const addedText = replacement.slice(range.start, range.end)
+      const [m] = searchMatches(doc, addedText)
+      if (m) {
+        match = m
+        charOffset = m.charOffset
+        length = m.length ?? addedText.length
+      }
+    }
+  }
+
+  // 3차: 기존 동작 — target_text의 occurrence번째 매치를 하이라이트
   if (!match) {
     if (!targetText) return []
     const occurrence = Number.isInteger(anchor.occurrence) && anchor.occurrence > 0

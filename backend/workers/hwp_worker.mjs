@@ -102,6 +102,26 @@ function searchAllTextWhitespaceTolerant(doc, original) {
   return { matches: [], usedQuery: original };
 }
 
+// ── 표 셀 헬퍼 ────────────────────────────────────────────────────────────────
+
+/**
+ * 표 셀이 비어 있는지(공백뿐인지) 확인한다. 셀이 없거나 조회에 실패하면
+ * 비어 있지 않은 것으로 간주해 원래 셀 치환 경로로 폴백한다.
+ */
+function cellIsEmpty(doc, sec, parentPara, ctrlIdx, cellIdx) {
+  try {
+    const paraCount = doc.getCellParagraphCount(sec, parentPara, ctrlIdx, cellIdx);
+    if (paraCount < 0) return false;
+    for (let p = 0; p < paraCount; p += 1) {
+      const text = doc.getTextInCell(sec, parentPara, ctrlIdx, cellIdx, p, 0, 1000) || '';
+      if (text.trim()) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ── 메인 ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -196,13 +216,26 @@ async function main() {
       let ok;
       if (m.cellContext) {
         const { parentPara, ctrlIdx, cellIdx, cellPara } = m.cellContext;
-        const delResult = JSON.parse(
-          doc.deleteTextInCell(m.sec, parentPara, ctrlIdx, cellIdx, cellPara, m.charOffset, m.length)
-        );
-        const insResult = JSON.parse(
-          doc.insertTextInCell(m.sec, parentPara, ctrlIdx, cellIdx, cellPara, m.charOffset, replacement)
-        );
-        ok = delResult?.ok === true && insResult?.ok === true;
+        // 라벨/값 셀 쌍 구조 대응: replacement가 "라벨 + 값" 형태(원본으로 시작)이고
+        // 라벨 셀 바로 옆 셀이 비어 있으면, 좁은 라벨 셀 안에서 여러 줄로 감기지
+        // 않도록 라벨 셀은 그대로 두고 값만 옆의 빈 값 셀에 넣는다.
+        const appendedValue = replacement.startsWith(original)
+          ? replacement.slice(original.length).trim()
+          : '';
+        if (appendedValue && cellIsEmpty(doc, m.sec, parentPara, ctrlIdx, cellIdx + 1)) {
+          const insResult = JSON.parse(
+            doc.insertTextInCell(m.sec, parentPara, ctrlIdx, cellIdx + 1, 0, 0, appendedValue)
+          );
+          ok = insResult?.ok === true;
+        } else {
+          const delResult = JSON.parse(
+            doc.deleteTextInCell(m.sec, parentPara, ctrlIdx, cellIdx, cellPara, m.charOffset, m.length)
+          );
+          const insResult = JSON.parse(
+            doc.insertTextInCell(m.sec, parentPara, ctrlIdx, cellIdx, cellPara, m.charOffset, replacement)
+          );
+          ok = delResult?.ok === true && insResult?.ok === true;
+        }
       } else {
         const replaceResult = JSON.parse(
           doc.replaceText(m.sec, m.para, m.charOffset, m.length, replacement)

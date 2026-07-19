@@ -132,6 +132,26 @@ describe('computeHighlightRects', () => {
     expect('주 소 분당동 102-1'.slice(call.startOffset, call.endOffset)).toBe('분당동 102-1')
   })
 
+  it('[버그 수정] 값이 라벨 옆 빈 셀에 단독으로 들어간 경우, 추가된 값 문자열을 직접 찾아 하이라이트한다', () => {
+    // 라벨/값 셀 쌍 구조: 라벨("주  소")은 본문 검색에 잡히지만 replacement 전체
+    // 문자열은 문서에 연속으로 존재하지 않는다 — 추가된 값("분당동 102-1")이
+    // 옆 셀에 단독으로 있으므로 그걸 직접 찾아 하이라이트해야 한다.
+    const doc = makeFakeDoc('주  소 TEL FAX', '분당동 102-1')
+    const highlight = {
+      id: 'h6',
+      original: '주 소',
+      replacement: '주 소 분당동 102-1',
+      anchor: { type: 'text_match', target_text: '주 소' },
+    }
+
+    const rects = computeHighlightRects(doc, highlight)
+
+    expect(rects.length).toBe(1)
+    expect(doc.cellCalls.length).toBe(1)
+    const call = doc.cellCalls[0]
+    expect('분당동 102-1'.slice(call.startOffset, call.endOffset)).toBe('분당동 102-1')
+  })
+
   it('target_text도 replacement도 못 찾으면 빈 배열을 반환한다', () => {
     const doc = makeFakeDoc('아무 관련 없는 본문')
     const highlight = {
