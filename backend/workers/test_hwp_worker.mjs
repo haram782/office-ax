@@ -143,5 +143,36 @@ console.log('\n[케이스 5] anchor.occurrence 없음 → 기본값 1로 첫 매
   assert(afterOriginal === before - 1, 'anchor 없을 때도 1건만 교체됨 (전체치환 아님)');
 }
 
+// ── 케이스 6: 원본 공백 2칸 vs 검색어 공백 1칸 → 공백-둔감 매칭으로 성공 ─────────
+// hwp_text_extract.mjs의 normalizeText()가 연속 공백을 1칸으로 뭉개서 LLM에게
+// 보여주므로, PatchPlan의 original은 "주 소"(1칸)처럼 뭉개진 형태로 생성된다.
+// 실제 문서에는 "주  소"(2칸)로 저장돼 있어 정확 일치 검색이 실패하던 버그.
+console.log('\n[케이스 6] 원본 공백 2칸, 검색어 공백 1칸 → 공백-둔감 매칭으로 성공해야 함');
+{
+  const baseBytes = new Uint8Array(readFileSync(new URL('../apps/documents/fixtures/sample.hwp', import.meta.url)));
+  const doc = new HwpDocument(baseBytes);
+  doc.insertText(0, 0, doc.getParagraphLength(0, 0), '주  소 테스트');
+  const input = Buffer.from(doc.exportHwp());
+
+  const before = countMatches(input, '주  소');
+  console.log(`  원본 "주  소"(공백 2칸) 매치 수: ${before}`);
+  assert(before > 0, '원본에는 공백 2칸 텍스트가 실제로 존재함 (테스트 전제 확인)');
+
+  const out = runWorker(input, [
+    { operation_id: 'op6', original: '주 소', replacement: '주소 분당동 102-1', anchor: { occurrence: 1 } },
+  ]);
+
+  assert(out.applied.includes('op6'), 'op6이 applied에 포함됨 (공백 개수가 달라도 매칭 성공)');
+  if (out.failed.length > 0) {
+    console.log(`  failed 사유: ${JSON.stringify(out.failed)}`);
+  }
+
+  const outputBytes = Buffer.from(out.output_b64, 'base64');
+  const len = new HwpDocument(new Uint8Array(outputBytes)).getParagraphLength(0, 0);
+  const fullText = new HwpDocument(new Uint8Array(outputBytes)).getTextRange(0, 0, 0, len);
+  console.log(`  치환 후 전체 텍스트: "${fullText}"`);
+  assert(fullText.includes('분당동 102-1'), '치환 결과가 실제 반영됨');
+}
+
 console.log(`\n총 ${passed + failedCount}건 중 PASS=${passed}, FAIL=${failedCount}`);
 process.exit(failedCount > 0 ? 1 : 0);
