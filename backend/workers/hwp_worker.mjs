@@ -186,23 +186,41 @@ async function main() {
       continue;
     }
 
-    // occurrence번째 매치 1건만 정밀 치환
+    // occurrence번째 매치 1건만 정밀 치환.
+    // 표 셀 내부 매치(cellContext 존재)는 본문 좌표계의 replaceText로 처리하면
+    // 안 된다 — m.para는 표 컨트롤을 담는 (대개 빈) 본문 문단이라, 라벨 셀은
+    // 그대로 남고 빈 문단에 텍스트가 새 줄로 삽입된다. 셀 매치는 반드시
+    // deleteTextInCell + insertTextInCell로 셀 안에서 치환한다.
     const m = matches[occurrence - 1];
     try {
-      const replaceResultJson = doc.replaceText(m.sec, m.para, m.charOffset, m.length, replacement);
-      const replaceResult = JSON.parse(replaceResultJson);
-      if (!replaceResult || replaceResult.ok !== true) {
-        process.stderr.write(`[hwp_worker] replaceText 실패 op=${operation_id}\n`);
-        failed.push({ operation_id, reason: 'replaceText가 실패를 반환했습니다.' });
+      let ok;
+      if (m.cellContext) {
+        const { parentPara, ctrlIdx, cellIdx, cellPara } = m.cellContext;
+        const delResult = JSON.parse(
+          doc.deleteTextInCell(m.sec, parentPara, ctrlIdx, cellIdx, cellPara, m.charOffset, m.length)
+        );
+        const insResult = JSON.parse(
+          doc.insertTextInCell(m.sec, parentPara, ctrlIdx, cellIdx, cellPara, m.charOffset, replacement)
+        );
+        ok = delResult?.ok === true && insResult?.ok === true;
+      } else {
+        const replaceResult = JSON.parse(
+          doc.replaceText(m.sec, m.para, m.charOffset, m.length, replacement)
+        );
+        ok = replaceResult?.ok === true;
+      }
+      if (!ok) {
+        process.stderr.write(`[hwp_worker] 치환 실패 op=${operation_id}\n`);
+        failed.push({ operation_id, reason: '텍스트 치환이 실패를 반환했습니다.' });
         continue;
       }
       applied.push(operation_id);
       process.stderr.write(
-        `[hwp_worker] 치환 성공 op=${operation_id}: "${original}"(${occurrence}번째) → "${replacement}"\n`
+        `[hwp_worker] 치환 성공 op=${operation_id}: "${original}"(${occurrence}번째${m.cellContext ? ', 표 셀 내부' : ''}) → "${replacement}"\n`
       );
     } catch (err) {
-      process.stderr.write(`[hwp_worker] replaceText 오류 op=${operation_id}: ${err.message}\n`);
-      failed.push({ operation_id, reason: `replaceText 오류: ${err.message}` });
+      process.stderr.write(`[hwp_worker] 치환 오류 op=${operation_id}: ${err.message}\n`);
+      failed.push({ operation_id, reason: `치환 오류: ${err.message}` });
     }
   }
 

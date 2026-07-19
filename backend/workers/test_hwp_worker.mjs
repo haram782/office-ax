@@ -174,5 +174,30 @@ console.log('\n[케이스 6] 원본 공백 2칸, 검색어 공백 1칸 → 공�
   assert(fullText.includes('분당동 102-1'), '치환 결과가 실제 반영됨');
 }
 
+// ── 케이스 7: 표 셀 내부 매치 → 셀 안에서 치환 (본문 문단에 삽입되면 안 됨) ─────
+// 실제 공문서 양식: "주  소" 라벨이 표 셀 안에만 존재하고, 표를 담는 본문 문단은
+// 빈 문단이다. cellContext를 무시하고 본문 좌표로 replaceText하면 라벨 셀은
+// 그대로 남고 빈 본문 문단에 새 줄로 텍스트가 삽입되는 버그가 있었다.
+console.log('\n[케이스 7] 표 셀 내부 매치 → 셀 안에서 치환되고 본문에 새 줄이 생기지 않아야 함');
+{
+  const input = readFileSync(new URL('../../sample-docs/공문서-양식-한글.hwp', import.meta.url));
+
+  const out = runWorker(input, [
+    { operation_id: 'op7', original: '주 소', replacement: '주 소 분당동 102-1', anchor: { occurrence: 1 } },
+  ]);
+
+  assert(out.applied.includes('op7'), 'op7이 applied에 포함됨');
+
+  const outputBytes = Buffer.from(out.output_b64, 'base64');
+  const afterDoc = new HwpDocument(new Uint8Array(outputBytes));
+
+  const bodyMatches = JSON.parse(afterDoc.searchAllText('분당동 102-1', false, false));
+  assert(bodyMatches.length === 0, '치환 결과가 본문 문단에 새로 삽입되지 않음 (본문 검색 0건)');
+
+  const cellMatches = JSON.parse(afterDoc.searchAllText('분당동 102-1', false, true));
+  assert(cellMatches.length === 1, '치환 결과가 문서에 정확히 1건 존재함');
+  assert(cellMatches[0]?.cellContext != null, '치환 결과가 표 셀 내부에 있음 (cellContext 존재)');
+}
+
 console.log(`\n총 ${passed + failedCount}건 중 PASS=${passed}, FAIL=${failedCount}`);
 process.exit(failedCount > 0 ? 1 : 0);
