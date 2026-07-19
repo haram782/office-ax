@@ -2,14 +2,13 @@
 HWP / HWPX 파서.
 
 • .hwpx  ZIP+XML 구조 → stdlib만으로 파싱
-• .hwp   독점 바이너리 → pyhwp(hwp5) CLI → @rhwp/core → olefile fallback → 텍스트 없음
+• .hwp   독점 바이너리 → @rhwp/core(WASM, Node 워커) → olefile fallback → 텍스트 없음
 """
 from __future__ import annotations
 
 import logging
 import re
 import subprocess
-import sys
 import zipfile
 from pathlib import Path
 
@@ -50,40 +49,23 @@ def _parse_hwpx(path: Path) -> tuple[str, dict]:
 # ── HWP 바이너리 ──────────────────────────────────────────────────────────────
 
 def _parse_hwp_binary(path: Path) -> tuple[str, dict]:
-    # 1차 시도: pyhwp (패키지명 hwp5) CLI
-    text = _try_pyhwp(path)
-    if text:
-        return text, {"format": "hwp", "method": "pyhwp"}
-
-    # 2차 시도: HWP 편집 워커와 같은 @rhwp/core WASM으로 읽기 전용 텍스트 추출
+    # 1차 시도: HWP 편집 워커와 같은 @rhwp/core WASM으로 읽기 전용 텍스트 추출
+    # (표/폼필드 내부 텍스트까지 뽑아낸다 — pyhwp CLI보다 실측 커버리지가 넓다)
     text = _try_rhwp(path)
     if text:
         return text, {"format": "hwp", "method": "rhwp"}
 
-    # 3차 시도: olefile로 BodyText/Section0 스트림 직접 읽기
+    # 2차 시도: olefile로 BodyText/Section0 스트림 직접 읽기 (rhwp 미설치 환경 대비)
     text = _try_olefile(path)
     if text:
         return text, {"format": "hwp", "method": "olefile"}
 
-    logger.warning("HWP 텍스트 추출 실패 | file=%s | pip install pyhwp olefile 권장", path)
+    logger.warning("HWP 텍스트 추출 실패 | file=%s | frontend/node_modules에 @rhwp/core 설치 필요", path)
     return (
         f"[HWP_TEXT_UNAVAILABLE]\n파일명: {path.name}\n"
-        "pyhwp 또는 olefile 패키지를 설치하면 내용 추출이 가능합니다.",
+        "@rhwp/core(npm install --prefix frontend @rhwp/core) 설치 후 재시도하세요.",
         {"format": "hwp", "method": "none"},
     )
-
-
-def _try_pyhwp(path: Path) -> str:
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "hwp5.hwp5txt", str(path)],
-            capture_output=True, text=True, timeout=30,
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except Exception:
-        pass
-    return ""
 
 
 def _try_olefile(path: Path) -> str:
