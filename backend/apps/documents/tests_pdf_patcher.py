@@ -243,6 +243,40 @@ class PdfRedactOverlayTest(TestCase):
             "redact_overlay 성공 후 version.status는 READY여야 한다",
         )
 
+    def test_tall_rect_vertically_centers_text_not_bottom_aligned(self):
+        """
+        [버그 수정] find_adjacent_table_cell_rect가 반환하는 인접 셀 rect는
+        라벨 텍스트 자신의 rect보다 훨씬 클 수 있다(표 셀 전체 높이). 기존
+        baseline 계산(rect.y1 - 2)은 rect가 딱 한 줄 텍스트 높이라고 가정해,
+        셀 전체 높이를 그대로 넘기면 값이 셀 바닥에 딱 붙어(위쪽에 큰 여백)
+        라벨과 눈높이가 안 맞아 보인다(실사용 재현: "서식이 깨짐"). 값이
+        셀 세로 중앙 근처에 그려져야 한다.
+        """
+        import fitz
+        from apps.documents.patcher import _apply_pdf_redact_overlay
+
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        tall_rect = fitz.Rect(100, 100, 300, 140)  # 40pt 높이 — font_size(11)보다 훨씬 큼
+
+        class FakeChange:
+            replacement = "박하람"
+            patch = {}
+
+        _apply_pdf_redact_overlay(page, tall_rect, FakeChange())
+
+        words = page.get_text("words")
+        matching = [w for w in words if "박하람" in w[4]]
+        self.assertTrue(matching, "텍스트가 실제로 삽입되지 않음")
+        y0 = min(w[1] for w in matching)
+        y1 = max(w[3] for w in matching)
+        text_center_y = (y0 + y1) / 2
+        rect_center_y = (tall_rect.y0 + tall_rect.y1) / 2
+        self.assertLess(
+            abs(text_center_y - rect_center_y), 8,
+            f"텍스트 중심({text_center_y})이 셀 중심({rect_center_y})에서 너무 멀다 — 바닥에 붙어 있을 가능성",
+        )
+
     def test_redact_overlay_artifact_contains_replacement(self):
         """redact_overlay 후 render_pdf 반환 bytes를 열면 replacement 텍스트가 포함된다."""
         import fitz
