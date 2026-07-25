@@ -1,6 +1,21 @@
+import datetime
 import openpyxl
 import pandas as pd
 from pathlib import Path
+
+
+def _json_safe_cell(value):
+    """
+    openpyxl(data_only=True)이 셀 값으로 datetime/date/time을 그대로 돌려줄 수
+    있는데, 이 값이 UploadLog.result(JSONField)에 저장될 때 psycopg2가 JSON
+    직렬화를 시도하며 "Object of type datetime is not JSON serializable"로
+    죽는다(실제 날짜 셀 있는 xlsx에서 재현됨). isoformat 문자열로 미리 바꿔둔다.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+        return value.isoformat()
+    return value
 
 
 def parse_excel(file_path: str | Path) -> tuple[str, list[str]]:
@@ -37,13 +52,13 @@ def extract_sheet_preview(file_path: str | Path, max_rows: int = 50) -> dict:
         rows_iter = ws.iter_rows(values_only=True)
 
         first_row = next(rows_iter, None) or ()
-        headers = ["" if v is None else str(v) for v in first_row]
+        headers = [str(_json_safe_cell(v)) for v in first_row]
 
         preview_rows: list[list] = []
         for row in rows_iter:
             if len(preview_rows) >= max_rows:
                 break
-            preview_rows.append(["" if v is None else v for v in row])
+            preview_rows.append([_json_safe_cell(v) for v in row])
 
         return {"headers": headers, "preview_rows": preview_rows}
     finally:

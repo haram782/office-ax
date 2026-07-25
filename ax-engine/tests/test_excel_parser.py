@@ -1,3 +1,5 @@
+import datetime
+import json
 import os
 import sys
 import tempfile
@@ -75,6 +77,25 @@ class TestExtractSheetPreview(unittest.TestCase):
         result = extract_sheet_preview(path, max_rows=10)
 
         self.assertEqual(len(result["preview_rows"]), 10)
+
+    def test_datetime_cell_is_json_serializable(self):
+        """
+        [버그 수정] 날짜/시간 셀(openpyxl이 datetime으로 반환)이 그대로 나가면
+        이 결과가 Django JSONField(UploadLog.result)에 저장될 때
+        "Object of type datetime is not JSON serializable"로 죽는다
+        (실제 xlsx 샘플의 거래일자 셀에서 재현됨). isoformat 문자열로
+        변환해서 반환해야 한다.
+        """
+        path = self._make([
+            ["날짜", "품목"],
+            [datetime.datetime(2023, 8, 15, 0, 0), "사무용품A"],
+        ])
+
+        result = extract_sheet_preview(path)
+
+        # json.dumps가 예외 없이 성공해야 실제 DB 저장 경로에서도 안전하다
+        json.dumps(result)
+        self.assertEqual(result["preview_rows"][0][0], "2023-08-15T00:00:00")
 
     def test_header_only_sheet_returns_empty_preview_rows(self):
         """헤더 행만 있고 데이터가 없는 빈 템플릿도 에러 없이 빈 리스트를 반환한다."""
