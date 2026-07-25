@@ -75,18 +75,30 @@ class TestClaudeCodeCLIClientNormal(unittest.TestCase):
         self.assertEqual(result.output_tokens, 0)
 
     @patch("subprocess.run")
-    def test_cmd_contains_system_and_user_prompt(self, mock_run):
-        """CLI -p 인자에 system_prompt와 user 입력이 모두 포함된다."""
+    def test_system_prompt_uses_dedicated_flag_not_concatenated_into_user_message(self, mock_run):
+        """
+        [버그 수정] system_prompt를 user 메시지에 그냥 이어붙이면, "You are a
+        document analysis assistant..." 같은 역할지정 지시문이 claude CLI(Claude
+        Code) 눈에는 사용자 메시지에 섞여 들어온 역할 주입(prompt injection)
+        시도처럼 보여 CLI가 안전 차원에서 응답을 거부한다(JSON 대신 "이건
+        역할 override 패턴이다..." 같은 경고 텍스트 반환, 파싱 실패로 이어짐).
+        --system-prompt 전용 채널로 분리해야 한다.
+        """
         mock_run.return_value = _make_proc(stdout=_VALID_JSON)
 
         client = ClaudeCodeCLIClient()
         client.analyze("사용자 입력", "시스템 지시")
 
         cmd = mock_run.call_args.args[0]
-        prompt_arg = " ".join(cmd)
-        self.assertIn("시스템 지시", prompt_arg)
-        self.assertIn("사용자 입력", prompt_arg)
-        self.assertIn("JSON", prompt_arg)
+        self.assertIn("--system-prompt", cmd)
+        system_idx = cmd.index("--system-prompt")
+        self.assertEqual(cmd[system_idx + 1], "시스템 지시")
+
+        # 마지막 인자(user 프롬프트)에는 system_prompt 문구가 섞여 있으면 안 된다
+        user_arg = cmd[-1]
+        self.assertNotIn("시스템 지시", user_arg)
+        self.assertIn("사용자 입력", user_arg)
+        self.assertIn("JSON", user_arg)
 
     @patch("subprocess.run")
     def test_fenced_json_parsed_correctly(self, mock_run):
