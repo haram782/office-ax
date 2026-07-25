@@ -1,6 +1,5 @@
 import datetime
 import openpyxl
-import pandas as pd
 from pathlib import Path
 
 
@@ -18,21 +17,46 @@ def _json_safe_cell(value):
     return value
 
 
+def _is_blank_cell(value) -> bool:
+    return value is None or (isinstance(value, str) and value.strip() == "")
+
+
 def parse_excel(file_path: str | Path) -> tuple[str, list[str]]:
     """
     Returns (text_representation, sheet_names).
-    dtype=str로 읽어 숫자 포맷 변환 없이 원본 셀 값을 보존한다.
+
+    각 값 옆에 실제 셀 주소(A1 표기)를 함께 담는다 — PatchPlan 생성 LLM이
+    anchor.cell을 "몇 번째 줄에 있었나" 식으로 추측하면, 인접한 라벨(예:
+    '문서번호'/'일자' 같은 연속된 행)을 반복적으로 혼동해 매번 다른 칸을
+    가리키는 문제가 실사용에서 확인됐다. 주소를 텍스트에 직접 노출해
+    추측 자체가 필요 없게 한다.
+
+    내용이 하나도 없는 행은 통째로 생략해 텍스트 길이를 억제하지만,
+    내용이 있는 행은 그 행의 빈 칸 주소도 함께 보여준다 — 라벨 옆의
+    빈 값 칸 주소 자체가 안 보이면, LLM이 "이 라벨을 채우려면 어느
+    칸에 써야 하는지" 알 수 없어 아예 작업을 포기하는 문제가 실사용에서
+    확인됐다.
     """
     path = Path(file_path)
-    xl = pd.ExcelFile(path, engine="openpyxl")
+    wb = openpyxl.load_workbook(path, data_only=True)
+    try:
+        chunks: list[str] = []
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            lines: list[str] = []
+            for row in ws.iter_rows():
+                if all(_is_blank_cell(cell.value) for cell in row):
+                    continue
+                cells = [
+                    f"{cell.coordinate}={'' if _is_blank_cell(cell.value) else _json_safe_cell(cell.value)}"
+                    for cell in row
+                ]
+                lines.append(" | ".join(cells))
+            chunks.append(f"[시트: {sheet_name}]\n" + "\n".join(lines))
 
-    chunks: list[str] = []
-    for sheet in xl.sheet_names:
-        df = pd.read_excel(xl, sheet_name=sheet, dtype=str)
-        df.fillna("", inplace=True)
-        chunks.append(f"[시트: {sheet}]\n{df.to_string(index=False)}")
-
-    return "\n\n".join(chunks), xl.sheet_names
+        return "\n\n".join(chunks), wb.sheetnames
+    finally:
+        wb.close()
 
 
 def extract_sheet_preview(file_path: str | Path, max_rows: int = 50) -> dict:
