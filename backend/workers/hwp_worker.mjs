@@ -122,6 +122,65 @@ function cellIsEmpty(doc, sec, parentPara, ctrlIdx, cellIdx) {
   }
 }
 
+/**
+ * 표 검색(searchAllText)으로 exact 매치를 찾되, cellContext가 있는 매치만 반환한다.
+ */
+function searchCellMatches(doc, text) {
+  try {
+    const matches = JSON.parse(doc.searchAllText(text, false, true));
+    return Array.isArray(matches) ? matches.filter((m) => m.cellContext) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * original이 통째로는 문서에 없지만(예: "대표자 (인)"), 공백으로 나눈 앞부분
+ * ("대표자")과 뒷부분("(인)")이 같은 표의 서로 다른 셀에 떨어져 있고 그 사이에
+ * 셀 1개가 끼어 있는 경우가 있다 — 라벨/서명란처럼 값 칸이 원래 빈 채로
+ * 남아있는 HWP 양식에서 흔한 구조다. original의 모든 분할 지점(head/tail)을
+ * 시도해 head 셀 바로 다음 칸 건너 tail과 일치하는 조합을 찾는다. 같은 패턴이
+ * 문서에 여러 번(예: 공급자용/공급받는자용 사본) 있을 수 있으므로
+ * occurrence(1-based, 문서 등장 순서)로 몇 번째 쌍인지 고른다.
+ *
+ * 사이 칸의 "비어있음"은 후보 판정에 쓰지 않는다 — 같은 배치 안에서 앞선
+ * occurrence가 이미 그 칸을 채우면, occurrence마다 후보 목록이 달라져 뒤
+ * occurrence를 못 찾게 된다(예: occurrence=1이 칸을 채우면 occurrence=2 탐색
+ * 시 그 칸이 후보에서 빠져 순번이 밀린다). head/tail이 정확히 한 칸을 사이에
+ * 두고 있다는 구조적 조건만으로 충분히 신뢰할 수 있는 매칭이다.
+ */
+function resolveLabelGapValueCell(doc, original, occurrence) {
+  const tokens = original.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return null;
+
+  const candidates = [];
+  for (let k = 1; k < tokens.length; k += 1) {
+    const head = tokens.slice(0, k).join(' ');
+    const tail = tokens.slice(k).join(' ');
+    const headMatches = searchCellMatches(doc, head);
+    const tailMatches = searchCellMatches(doc, tail);
+
+    for (const h of headMatches) {
+      const { sec, cellContext: hc } = h;
+      const valueCellIdx = hc.cellIdx + 1;
+
+      const t = tailMatches.find((m) => {
+        const tc = m.cellContext;
+        return m.sec === sec && tc.parentPara === hc.parentPara && tc.ctrlIdx === hc.ctrlIdx
+          && tc.cellIdx === valueCellIdx + 1;
+      });
+      if (!t) continue;
+
+      candidates.push({ sec, parentPara: hc.parentPara, ctrlIdx: hc.ctrlIdx, valueCellIdx, head, tail });
+    }
+  }
+  if (candidates.length === 0) return null;
+
+  // 문서 등장 순서(셀 인덱스 오름차순)로 정렬 후 occurrence번째를 고른다
+  candidates.sort((a, b) => a.valueCellIdx - b.valueCellIdx);
+  return candidates[occurrence - 1] ?? null;
+}
+
 // ── 메인 ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -187,6 +246,27 @@ async function main() {
     }
 
     if (!Array.isArray(matches) || matches.length === 0) {
+      // original이 통째로는 없지만(예: "대표자 (인)") 라벨/빈 값 셀/접미사가
+      // 서로 다른 셀에 나뉘어 있는 패턴일 수 있다 — 그 경우로 한 번 더 시도한다.
+      const gap = resolveLabelGapValueCell(doc, original, occurrence);
+      if (gap && replacement.startsWith(gap.head) && replacement.endsWith(gap.tail)) {
+        const value = replacement.slice(gap.head.length, replacement.length - gap.tail.length).trim();
+        try {
+          const insResult = JSON.parse(
+            doc.insertTextInCell(gap.sec, gap.parentPara, gap.ctrlIdx, gap.valueCellIdx, 0, 0, value)
+          );
+          if (insResult?.ok === true) {
+            applied.push(operation_id);
+            process.stderr.write(
+              `[hwp_worker] 라벨/빈값/접미사 분할 매칭 op=${operation_id}: "${gap.head}"…"${gap.tail}" 사이 셀에 "${value}" 삽입\n`
+            );
+            continue;
+          }
+        } catch (err) {
+          process.stderr.write(`[hwp_worker] 분할 셀 삽입 오류 op=${operation_id}: ${err.message}\n`);
+        }
+      }
+
       process.stderr.write(`[hwp_worker] 텍스트 없음 op=${operation_id}: "${original}"\n`);
       failed.push({ operation_id, reason: '텍스트를 찾을 수 없습니다.' });
       continue;

@@ -223,5 +223,37 @@ console.log('\n[케이스 8] 라벨 셀 옆에 빈 값 셀이 있으면 값만 �
   assert(valueCellText === '분당동 102-1', `값이 옆의 빈 값 셀(cell 1)에 들어감 (실제: ${JSON.stringify(valueCellText)})`);
 }
 
+// ── 케이스 9: 라벨 + 빈 값 셀 + 접미사 셀(3분할) → 값만 가운데 빈 셀에 삽입 ──────
+// 실제 거래명세서 양식: [대표자][빈 값 셀(전각공백)][(인)] 3개 셀로 나뉘어 있어
+// "대표자 (인)" 문자열 자체가 문서 어디에도 존재하지 않는다(공백으로 뭉개도 못
+// 찾음). original을 공백으로 분할해 head("대표자")/tail("(인)")를 각각 찾고,
+// 그 사이 빈 셀에 replacement에서 head/tail을 뺀 나머지만 넣어야 한다.
+// 같은 패턴이 문서에 2번(공급자용/공급받는자용) 있으므로 occurrence도 검증한다.
+console.log('\n[케이스 9] 라벨/빈값/접미사 3분할 셀 → 가운데 빈 셀에 값만 삽입, occurrence로 올바른 쌍 선택');
+{
+  const input = readFileSync(new URL('../../sample-docs/거래명세서-양식.hwp', import.meta.url));
+
+  const out = runWorker(input, [
+    { operation_id: 'op9a', original: '대표자 (인)', replacement: '대표자 박하람 (인)', anchor: { occurrence: 1 } },
+    { operation_id: 'op9b', original: '대표자 (인)', replacement: '대표자 박하람 (인)', anchor: { occurrence: 2 } },
+  ]);
+
+  assert(out.applied.includes('op9a'), 'op9a(occurrence=1)이 applied에 포함됨');
+  assert(out.applied.includes('op9b'), 'op9b(occurrence=2)이 applied에 포함됨');
+  if (out.failed.length > 0) console.log('  failed:', JSON.stringify(out.failed));
+
+  const afterDoc = new HwpDocument(new Uint8Array(Buffer.from(out.output_b64, 'base64')));
+
+  const labelText = afterDoc.getTextInCell(0, 0, 2, 31, 0, 0, 100);
+  const valueText = afterDoc.getTextInCell(0, 0, 2, 32, 0, 0, 100);
+  const suffixText = afterDoc.getTextInCell(0, 0, 2, 33, 0, 0, 100);
+  assert(labelText === '대표자', `1번째 라벨 셀은 원본 그대로 (실제: ${JSON.stringify(labelText)})`);
+  assert(valueText.trim() === '박하람', `1번째 빈 값 셀에 "박하람"만 들어감 (실제: ${JSON.stringify(valueText)})`);
+  assert(suffixText === '(인)', `1번째 접미사 셀은 원본 그대로 (실제: ${JSON.stringify(suffixText)})`);
+
+  const valueText2 = afterDoc.getTextInCell(0, 0, 2, 278, 0, 0, 100);
+  assert(valueText2.trim() === '박하람', `2번째(occurrence=2) 빈 값 셀에도 "박하람"이 들어감 (실제: ${JSON.stringify(valueText2)})`);
+}
+
 console.log(`\n총 ${passed + failedCount}건 중 PASS=${passed}, FAIL=${failedCount}`);
 process.exit(failedCount > 0 ? 1 : 0);
