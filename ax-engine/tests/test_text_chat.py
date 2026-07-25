@@ -309,6 +309,43 @@ class TestTextChatMasking(unittest.TestCase):
         self.assertIn("haram@gmail.com", result["refined_prompt"])
         self.assertNotIn("[REDACTED_EMAIL]", result["refined_prompt"])
 
+    @patch("tasks.text_chat.get_llm_client")
+    @patch("tasks.text_chat._send_callback")
+    def test_patch_intent_refined_prompt_keeps_real_value_when_llm_paraphrases_around_it(
+        self, mock_callback, mock_get_client,
+    ):
+        """
+        [버그 수정] 의도 판별 LLM이 마스킹된 이메일 자리표시자를 그대로
+        되풀이하지 않고 "사용자가 지정한 이메일 주소" 식으로 언급만
+        하고 넘어가는 경우가 실제로 있다(실사용 재현). 이러면
+        unmask_pii가 치환할 자리표시자 자체가 없어 실제 값이 통째로
+        사라진 채 PatchPlan 생성 단계(원문 전송이 본질 — 결정 11)로
+        넘어가고, 다음 LLM이 값을 모른 채 임의의 값으로 채워 넣게
+        된다(실사용 재현: 사용자 채팅 값 대신 사용자 계정 이메일이
+        들어감). refined_prompt 어디에도 실제 값이 없으면 명시적으로
+        덧붙여야 한다.
+        """
+        mock_client = MagicMock()
+        mock_client.analyze.return_value = _make_usage_result(
+            "", parsed_data={
+                "type": "patch_intent",
+                "refined_prompt": "이메일 항목을 사용자가 지정한 이메일 주소로 교체",
+            },
+        )
+        mock_get_client.return_value = mock_client
+        task_self = MagicMock()
+        task_self.app.send_task = MagicMock()
+
+        self._call_task(
+            task_self,
+            content="이메일 haram@gmail.com 으로 입력해줘",
+            chat_message_id=5, session_history=[], upload_id=5,
+        )
+
+        call_args = mock_callback.call_args
+        result = call_args.kwargs.get("result") or call_args.args[2]
+        self.assertIn("haram@gmail.com", result["refined_prompt"])
+
 
 
 
