@@ -398,9 +398,34 @@ class FindAdjacentTableCellRectTest(unittest.TestCase):
         doc.close()
 
         self.assertIsNotNone(adjacent)
-        # 표는 x=100~340, 열 너비 120 — 라벨이 0열(100~220)이므로 인접 칸은 1열(220~340)
-        self.assertAlmostEqual(adjacent.x0, 220, delta=1)
-        self.assertAlmostEqual(adjacent.x1, 340, delta=1)
+        # 표는 x=100~340, 열 너비 120 — 라벨이 0열(100~220)이므로 인접 칸은 1열(220~340).
+        # 경계선을 덮어쓰지 않도록 안쪽으로 살짝 줄인 값이라 정확히 220/340은 아니다.
+        self.assertAlmostEqual(adjacent.x0, 220, delta=3)
+        self.assertAlmostEqual(adjacent.x1, 340, delta=3)
+
+    def test_returned_rect_is_inset_from_raw_cell_bounds_to_avoid_erasing_borders(self):
+        """
+        [버그 수정] 인접 셀의 원래 경계(raw cell bbox)를 그대로 redact
+        rect로 쓰면, 그 경계에 그려진 표 테두리 선까지 흰색으로 덮어써
+        지워버린다(실사용 재현: 값을 채운 행만 테두리가 사라져 표 모양이
+        깨져 보임). 반환된 rect는 원래 셀 경계보다 안쪽으로 들어와 있어야
+        한다.
+        """
+        import fitz
+        pdf_bytes = _build_pdf_with_table("라벨", rows=1, cols=2, label_col=0)
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        layout = build_pdf_document_layout(doc)
+        label_result = AnchorResolver().resolve(
+            {"type": "text_match", "target_text": "라벨", "occurrence": 1}, layout,
+        )
+
+        adjacent = find_adjacent_table_cell_rect(doc, label_result.page, label_result.rect)
+        doc.close()
+
+        self.assertIsNotNone(adjacent)
+        # 원래 인접 칸 경계는 x=220~340 — 반환된 rect는 그보다 안쪽(더 좁게)이어야 한다
+        self.assertGreater(adjacent.x0, 220, "왼쪽 경계선을 덮지 않도록 안쪽으로 들어와야 한다")
+        self.assertLess(adjacent.x1, 340, "오른쪽 경계선을 덮지 않도록 안쪽으로 들어와야 한다")
 
     def test_returns_none_when_label_is_in_last_column(self):
         import fitz
@@ -456,7 +481,8 @@ class ResolvePdfFillAnchorTest(unittest.TestCase):
         doc.close()
 
         self.assertEqual(result.status, AnchorStatus.RESOLVED)
-        self.assertAlmostEqual(result.rect.x0, 220, delta=1, msg="라벨이 아니라 인접 칸을 가리켜야 한다")
+        # 경계선을 덮지 않도록 안쪽으로 살짝 줄인 값이라 정확히 220은 아니다
+        self.assertAlmostEqual(result.rect.x0, 220, delta=3, msg="라벨이 아니라 인접 칸을 가리켜야 한다")
 
     def test_non_blank_fill_keeps_label_rect(self):
         """원본값이 있는 교체 요청은 라벨(target_text) 자신의 rect를 그대로 유지한다."""

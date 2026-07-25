@@ -76,6 +76,11 @@ class PdfDocumentLayout:
 # 같은 줄로 묶을 Y좌표 허용 오차(pt) — ax-engine parsers/pdf_parser.py와 동일 기준
 _LINE_Y_TOLERANCE = 3.0
 
+# find_adjacent_table_cell_rect가 반환하는 인접 셀 rect를 셀 경계보다 안쪽으로
+# 줄이는 여백(pt) — 표 테두리 선(보통 스트로크 폭 1pt 미만)을 redact_overlay가
+# 덮어써 지우지 않도록 하는 안전 여백이다.
+_CELL_INSET = 1.5
+
 
 def build_pdf_document_layout(doc) -> PdfDocumentLayout:
     """
@@ -415,6 +420,11 @@ def find_adjacent_table_cell_rect(doc, page_idx: int, label_rect):
     그려진 표 경계로 판단한다 — 표가 없는 문서에서는 이 판단 근거 자체가
     없으므로 호출자가 라벨의 rect를 그대로 쓰는 기존 동작으로 폴백해야
     한다(이 함수는 그 경우 None을 반환한다).
+
+    반환하는 rect는 셀의 원래 경계보다 _CELL_INSET만큼 안쪽으로 줄인다 —
+    redact_overlay가 원래 경계를 그대로 흰색으로 덮으면 그 경계에 그려진
+    표 테두리 선까지 지워버려 표 모양이 깨진다(실사용 재현: 값을 채운
+    행만 테두리가 사라져 보임).
     """
     import fitz
 
@@ -433,7 +443,11 @@ def find_adjacent_table_cell_rect(doc, page_idx: int, label_rect):
         next_cell = row.cells[col_idx + 1]
         if next_cell is None:
             return None
-        return fitz.Rect(*next_cell)
+        x0, y0, x1, y1 = next_cell
+        return fitz.Rect(
+            x0 + _CELL_INSET, y0 + _CELL_INSET,
+            x1 - _CELL_INSET, y1 - _CELL_INSET,
+        )
     return None
 
 
