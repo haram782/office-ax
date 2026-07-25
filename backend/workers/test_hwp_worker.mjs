@@ -180,7 +180,7 @@ console.log('\n[케이스 6] 원본 공백 2칸, 검색어 공백 1칸 → 공�
 // 그대로 남고 빈 본문 문단에 새 줄로 텍스트가 삽입되는 버그가 있었다.
 console.log('\n[케이스 7] 표 셀 내부 매치 → 셀 안에서 치환되고 본문에 새 줄이 생기지 않아야 함');
 {
-  const input = readFileSync(new URL('../../sample-docs/공문서-양식-한글.hwp', import.meta.url));
+  const input = readFileSync(new URL('../../sample-docs/hwp/공문서-양식-한글.hwp', import.meta.url));
 
   const out = runWorker(input, [
     { operation_id: 'op7', original: '주 소', replacement: '주 소 분당동 102-1', anchor: { occurrence: 1 } },
@@ -205,7 +205,7 @@ console.log('\n[케이스 7] 표 셀 내부 매치 → 셀 안에서 치환되�
 // 감겨 정렬이 깨진다 — 라벨 셀은 그대로 두고 값만 옆의 빈 셀에 넣어야 한다.
 console.log('\n[케이스 8] 라벨 셀 옆에 빈 값 셀이 있으면 값만 그 셀에 넣고 라벨은 유지해야 함');
 {
-  const input = readFileSync(new URL('../../sample-docs/공문서-양식-한글.hwp', import.meta.url));
+  const input = readFileSync(new URL('../../sample-docs/hwp/공문서-양식-한글.hwp', import.meta.url));
 
   const out = runWorker(input, [
     { operation_id: 'op8', original: '주 소', replacement: '주 소 분당동 102-1', anchor: { occurrence: 1 } },
@@ -238,7 +238,7 @@ console.log('\n[케이스 8] 라벨 셀 옆에 빈 값 셀이 있으면 값만 �
 console.log('\n[케이스 8b] 라벨만 매치되는 경로에서도 값 칸의 빈 문단을 정리해 1개로 합쳐야 함');
 {
   for (const [alignValue, alignLabel] of [[0, 'top'], [1, 'center'], [2, 'bottom']]) {
-    const baseBytes = new Uint8Array(readFileSync(new URL('../../sample-docs/거래명세서-양식.hwp', import.meta.url)));
+    const baseBytes = new Uint8Array(readFileSync(new URL('../../sample-docs/hwp/거래명세서-양식.hwp', import.meta.url)));
     const doc = new HwpDocument(baseBytes);
     const setResult = JSON.parse(doc.setCellProperties(0, 0, 2, 32, JSON.stringify({ verticalAlign: alignValue })));
     if (!setResult.ok) { console.log(`  setCellProperties 실패(${alignLabel}), 케이스 건너뜀`); continue; }
@@ -271,7 +271,7 @@ console.log('\n[케이스 8b] 라벨만 매치되는 경로에서도 값 칸의 
 // 같은 패턴이 문서에 2번(공급자용/공급받는자용) 있으므로 occurrence도 검증한다.
 console.log('\n[케이스 9] 라벨/빈값/접미사 3분할 셀 → 가운데 빈 셀에 값만 삽입, occurrence로 올바른 쌍 선택');
 {
-  const input = readFileSync(new URL('../../sample-docs/거래명세서-양식.hwp', import.meta.url));
+  const input = readFileSync(new URL('../../sample-docs/hwp/거래명세서-양식.hwp', import.meta.url));
 
   const out = runWorker(input, [
     { operation_id: 'op9a', original: '대표자 (인)', replacement: '대표자 박하람 (인)', anchor: { occurrence: 1 } },
@@ -327,7 +327,7 @@ console.log('\n[케이스 9] 라벨/빈값/접미사 3분할 셀 → 가운데 �
 console.log('\n[케이스 10] verticalAlign이 무엇이든 빈 문단이 정리돼 문단 1개로 수렴해야 함');
 {
   for (const [alignValue, alignLabel] of [[0, 'top'], [1, 'center'], [2, 'bottom']]) {
-    const baseBytes = new Uint8Array(readFileSync(new URL('../../sample-docs/거래명세서-양식.hwp', import.meta.url)));
+    const baseBytes = new Uint8Array(readFileSync(new URL('../../sample-docs/hwp/거래명세서-양식.hwp', import.meta.url)));
     const doc = new HwpDocument(baseBytes);
     const setResult = JSON.parse(doc.setCellProperties(0, 0, 2, 32, JSON.stringify({ verticalAlign: alignValue })));
     if (!setResult.ok) { console.log(`  setCellProperties 실패(${alignLabel}), 케이스 건너뜀`); continue; }
