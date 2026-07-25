@@ -123,29 +123,45 @@ function cellIsEmpty(doc, sec, parentPara, ctrlIdx, cellIdx) {
 }
 
 /**
- * 표 검색(searchAllText)으로 exact 매치를 찾되, cellContext가 있는 매치만 반환한다.
+ * 값 칸에 문단이 여러 개(빈 줄 패딩) 있어도, 라벨/접미사 셀(대개 문단 1개)과
+ * 구조가 같아지도록 값을 넣고 나머지 빈 문단은 정리해 문단 1개로 합친다.
+ *
+ * 처음에는 셀의 verticalAlign(top/center/bottom)을 읽어 "그에 맞는 문단"에
+ * 넣는 방식으로 구현했는데, 그러면 값 칸이 여전히 문단 여러 개로 남아 이웃
+ * 셀과 구조가 다르다(문서를 편집기로 열면 여전히 "3줄짜리 칸"으로 보임).
+ * 어느 문단에 넣든 나머지를 비우고 합치면 결과가 항상 문단 1개가 되고, 셀
+ * 자체의 verticalAlign이 그대로 적용된다 — enum 값이 top/center/bottom 중
+ * 무엇을 뜻하는지 추측할 필요가 아예 없어져 더 견고하다.
  */
-/**
- * 값을 넣을 셀이 빈 문단 여러 줄로 이루어진 경우, 그 칸의 실제
- * verticalAlign(HWP 표 셀 세로 정렬: 0=위, 1=가운데, 2=아래)을 읽어 삽입할
- * 문단 인덱스를 정한다. 문서마다 셀 정렬이 다를 수 있으므로 문단 개수만
- * 보고 추측하지 않고 셀 속성을 직접 조회한다 — 조회 실패나 알 수 없는 값은
- * 가운데(가장 무난한 폴백)로 처리한다.
- */
-function resolveCellVerticalInsertPara(doc, sec, parentPara, ctrlIdx, cellIdx) {
+function insertValueIntoCell(doc, sec, parentPara, ctrlIdx, cellIdx, value) {
   let paraCount = 1;
   try {
     const count = doc.getCellParagraphCount(sec, parentPara, ctrlIdx, cellIdx);
     if (count > 0) paraCount = count;
   } catch { /* 조회 실패 시 문단 1개로 간주 */ }
-  if (paraCount <= 1) return 0;
 
-  try {
-    const props = JSON.parse(doc.getCellProperties(sec, parentPara, ctrlIdx, cellIdx));
-    if (props?.verticalAlign === 0) return 0;
-    if (props?.verticalAlign === 2) return paraCount - 1;
-  } catch { /* 조회 실패 시 가운데로 폴백 */ }
-  return Math.floor(paraCount / 2);
+  const insResult = JSON.parse(doc.insertTextInCell(sec, parentPara, ctrlIdx, cellIdx, 0, 0, value));
+  if (insResult?.ok !== true) return false;
+  if (paraCount <= 1) return true;
+
+  // 값을 넣은 0번째를 제외한 나머지 빈 문단의 텍스트를 비운다.
+  for (let p = 1; p < paraCount; p += 1) {
+    try {
+      const len = doc.getCellParagraphLength(sec, parentPara, ctrlIdx, cellIdx, p);
+      if (len > 0) doc.deleteTextInCell(sec, parentPara, ctrlIdx, cellIdx, p, 0, len);
+    } catch { /* 비우기 실패는 무시 — 병합 단계에서 자연히 걸러진다 */ }
+  }
+  // 1번 문단을 0번에 반복 병합해 문단 1개로 합친다(Backspace at start 방식이라
+  // 매번 같은 인덱스 1을 병합 대상으로 쓰면 순서대로 다 합쳐진다).
+  for (let i = 1; i < paraCount; i += 1) {
+    try {
+      const mergeResult = JSON.parse(doc.mergeParagraphInCell(sec, parentPara, ctrlIdx, cellIdx, 1));
+      if (mergeResult?.ok !== true) break;
+    } catch {
+      break; // 병합 실패해도 값 삽입 자체는 이미 성공했으므로 구조 정리만 건너뛴다
+    }
+  }
+  return true;
 }
 
 function searchCellMatches(doc, text) {
@@ -194,15 +210,7 @@ function resolveLabelGapValueCell(doc, original, occurrence) {
       });
       if (!t) continue;
 
-      // 값 칸이 빈 문단 여러 줄로 이루어진 경우(예: 이웃 칸들과 행 높이를 맞추려고
-      // 빈 줄을 넣어둔 서명란), 어느 문단에 넣어야 옆 라벨/접미사 셀과 세로로
-      // 맞는지는 문단 개수만으로는 알 수 없다 — 문서마다 셀의 실제 세로 정렬
-      // (top/center/bottom)이 다르기 때문이다. 특정 샘플 문서 하나의 구조(예:
-      // "3문단이면 가운데")를 규칙으로 굳히면 다른 정렬을 쓰는 문서에서 틀린다.
-      // 반드시 그 셀에 실제로 선언된 verticalAlign을 읽어서 위치를 정한다.
-      const valueCellPara = resolveCellVerticalInsertPara(doc, sec, hc.parentPara, hc.ctrlIdx, valueCellIdx);
-
-      candidates.push({ sec, parentPara: hc.parentPara, ctrlIdx: hc.ctrlIdx, valueCellIdx, valueCellPara, head, tail });
+      candidates.push({ sec, parentPara: hc.parentPara, ctrlIdx: hc.ctrlIdx, valueCellIdx, head, tail });
     }
   }
   if (candidates.length === 0) return null;
@@ -283,10 +291,8 @@ async function main() {
       if (gap && replacement.startsWith(gap.head) && replacement.endsWith(gap.tail)) {
         const value = replacement.slice(gap.head.length, replacement.length - gap.tail.length).trim();
         try {
-          const insResult = JSON.parse(
-            doc.insertTextInCell(gap.sec, gap.parentPara, gap.ctrlIdx, gap.valueCellIdx, gap.valueCellPara, 0, value)
-          );
-          if (insResult?.ok === true) {
+          const inserted = insertValueIntoCell(doc, gap.sec, gap.parentPara, gap.ctrlIdx, gap.valueCellIdx, value);
+          if (inserted) {
             applied.push(operation_id);
             process.stderr.write(
               `[hwp_worker] 라벨/빈값/접미사 분할 매칭 op=${operation_id}: "${gap.head}"…"${gap.tail}" 사이 셀에 "${value}" 삽입\n`
@@ -334,14 +340,7 @@ async function main() {
           ? replacement.slice(original.length).trim()
           : '';
         if (appendedValue && cellIsEmpty(doc, m.sec, parentPara, ctrlIdx, cellIdx + 1)) {
-          // 값 칸이 빈 문단 여러 줄이면 resolveLabelGapValueCell과 동일하게
-          // 그 칸의 실제 verticalAlign을 읽어 삽입 위치를 정한다(하드코딩 금지 —
-          // 5.4/5.5 문서 참고: 샘플 문서 하나에서 관찰된 값으로 단정하지 않는다).
-          const valueCellPara = resolveCellVerticalInsertPara(doc, m.sec, parentPara, ctrlIdx, cellIdx + 1);
-          const insResult = JSON.parse(
-            doc.insertTextInCell(m.sec, parentPara, ctrlIdx, cellIdx + 1, valueCellPara, 0, appendedValue)
-          );
-          ok = insResult?.ok === true;
+          ok = insertValueIntoCell(doc, m.sec, parentPara, ctrlIdx, cellIdx + 1, appendedValue);
         } else {
           const delResult = JSON.parse(
             doc.deleteTextInCell(m.sec, parentPara, ctrlIdx, cellIdx, cellPara, m.charOffset, m.length)

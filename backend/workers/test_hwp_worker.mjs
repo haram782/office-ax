@@ -223,16 +223,21 @@ console.log('\n[케이스 8] 라벨 셀 옆에 빈 값 셀이 있으면 값만 �
   assert(valueCellText === '분당동 102-1', `값이 옆의 빈 값 셀(cell 1)에 들어감 (실제: ${JSON.stringify(valueCellText)})`);
 }
 
-// ── 케이스 8b: 라벨만으로 매치되는 경우도 옆 셀의 verticalAlign을 따라야 함 ─────
+// ── 케이스 8b: 라벨만으로 매치되는 경우, 값 칸의 빈 문단들을 정리해 1개로 ──────
 // [버그 수정] "대표자 (인)" 처럼 접미사까지 포함하면 케이스 9(resolveLabelGapValueCell)
-// 경로를 타 verticalAlign을 반영하지만, LLM이 접미사 없이 "대표자"만 original로
-// 준 경우(실제 재현: original="대표자", replacement="대표자 박하람")는 라벨이
-// 그 자체로 바로 매치되어 이 케이스 8 경로(옆 셀 삽입)를 탄다. 이 경로도 옆 값
-// 칸이 여러 문단이면 verticalAlign을 봐야 하는데, 케이스 9만 고치고 이 경로는
-// 그대로 두는 바람에 같은 버그가 남아있었다.
-console.log('\n[케이스 8b] 라벨만 매치되는 경로에서도 옆 값 칸의 verticalAlign을 따라야 함');
+// 경로를 타지만, LLM이 접미사 없이 "대표자"만 original로 준 경우(실제 재현:
+// original="대표자", replacement="대표자 박하람")는 라벨이 그 자체로 바로
+// 매치되어 이 케이스 8 경로(옆 셀 삽입)를 탄다.
+//
+// 처음에는 "verticalAlign을 읽어 그에 맞는 문단에 넣는다"로 고쳤는데, 이러면
+// 값 칸이 여전히 문단 3개로 남아 라벨/접미사 셀(문단 1개)과 구조가 다르다.
+// 더 견고한 해법은 어느 문단에 넣든 나머지 빈 문단을 비우고 하나로 합치는
+// 것이다 — 그러면 결과가 이웃 셀과 동일하게 문단 1개가 되고, 셀 자체의
+// verticalAlign이 자동으로 그대로 적용되어 어떤 정렬값이든 항상 옳다
+// (enum 값을 추측할 필요가 아예 없어진다).
+console.log('\n[케이스 8b] 라벨만 매치되는 경로에서도 값 칸의 빈 문단을 정리해 1개로 합쳐야 함');
 {
-  for (const [alignValue, alignLabel, expectedPara] of [[0, 'top', 0], [1, 'center', 1], [2, 'bottom', 2]]) {
+  for (const [alignValue, alignLabel] of [[0, 'top'], [1, 'center'], [2, 'bottom']]) {
     const baseBytes = new Uint8Array(readFileSync(new URL('../../sample-docs/거래명세서-양식.hwp', import.meta.url)));
     const doc = new HwpDocument(baseBytes);
     const setResult = JSON.parse(doc.setCellProperties(0, 0, 2, 32, JSON.stringify({ verticalAlign: alignValue })));
@@ -247,13 +252,13 @@ console.log('\n[케이스 8b] 라벨만 매치되는 경로에서도 옆 값 칸
 
     const afterDoc = new HwpDocument(new Uint8Array(Buffer.from(out.output_b64, 'base64')));
     const paraCount = afterDoc.getCellParagraphCount(0, 0, 2, 32);
-    let foundPara = -1;
-    for (let p = 0; p < paraCount; p += 1) {
-      if (afterDoc.getTextInCell(0, 0, 2, 32, p, 0, 100).includes('박하람')) { foundPara = p; break; }
-    }
     assert(
-      foundPara === expectedPara,
-      `[케이스 8b] verticalAlign=${alignLabel}(${alignValue}) → ${expectedPara}번째 문단에 삽입돼야 함 (실제: ${foundPara}번째, 총 ${paraCount}문단)`
+      paraCount === 1,
+      `[케이스 8b] verticalAlign=${alignLabel}: 빈 문단이 정리돼 값 칸이 라벨/접미사 셀처럼 문단 1개가 됨 (실제: ${paraCount}개)`
+    );
+    assert(
+      afterDoc.getTextInCell(0, 0, 2, 32, 0, 0, 100).trim() === '박하람',
+      `[케이스 8b] verticalAlign=${alignLabel}: 남은 문단 1개에 값만 정확히 들어감 (실제: ${JSON.stringify(afterDoc.getTextInCell(0, 0, 2, 32, 0, 0, 100))})`
     );
   }
 }
@@ -304,28 +309,24 @@ console.log('\n[케이스 9] 라벨/빈값/접미사 3분할 셀 → 가운데 �
 
   assert(fullCellText(278).trim() === '박하람', `2번째(occurrence=2) 빈 값 셀에도 "박하람"이 들어감 (실제: ${JSON.stringify(fullCellText(278))})`);
 
-  // 이 문서의 값 칸(cell 32/278)은 verticalAlign=1(가운데 정렬)이라 3문단 중
-  // 가운데(1번째)에 들어가야 옆 라벨/접미사 셀의 세로 중앙과 맞는다. 문단 개수의
-  // 절반(항상 "가운데")이 아니라 셀에 실제로 선언된 verticalAlign을 읽어서
-  // 계산한 결과여야 한다 — 이 문서 하나(가운데 정렬, 3문단)에서만 맞는 값이
-  // 아니라 아래 [케이스 10]에서 top/bottom 정렬로도 검증한다.
-  const cellProps32 = JSON.parse(afterDoc.getCellProperties(0, 0, 2, 32));
-  assert(cellProps32.verticalAlign === 1, `값 칸은 이 문서 기준 가운데 정렬(verticalAlign=1)임 (테스트 전제 확인, 실제: ${cellProps32.verticalAlign})`);
-  const paraCount32 = afterDoc.getCellParagraphCount(0, 0, 2, 32);
-  assert(paraCount32 === 3, `값 칸은 원래 빈 문단 3개짜리 구조임 (테스트 전제 확인, 실제: ${paraCount32})`);
-  assert(valueParaIndex(32, '박하람') === 1, `verticalAlign=가운데 → 3문단 중 가운데(1번째)에 들어감 (실제 문단: ${valueParaIndex(32, '박하람')})`);
-  assert(valueParaIndex(278, '박하람') === 1, `2번째 값 칸도 동일하게 가운데 문단(1번째)에 들어감 (실제 문단: ${valueParaIndex(278, '박하람')})`);
+  // [버그 수정] 값을 넣은 뒤에도 값 칸이 여전히 문단 3개(빈 문단 2개 + 값 1개)로
+  // 남아있으면, 문서를 편집기로 열어보면 여전히 "3줄짜리 칸"으로 보인다.
+  // 라벨/접미사 셀(문단 1개)과 구조가 같아지도록 나머지 빈 문단은 정리해
+  // 문단 1개로 합쳐야 한다.
+  assert(afterDoc.getCellParagraphCount(0, 0, 2, 32) === 1, `1번째 값 칸도 빈 문단이 정리돼 문단 1개가 됨 (실제: ${afterDoc.getCellParagraphCount(0, 0, 2, 32)}개)`);
+  assert(afterDoc.getCellParagraphCount(0, 0, 2, 278) === 1, `2번째 값 칸도 빈 문단이 정리돼 문단 1개가 됨 (실제: ${afterDoc.getCellParagraphCount(0, 0, 2, 278)}개)`);
 }
 
-// ── 케이스 10: 값 칸의 verticalAlign(top/bottom)에 따라 삽입 문단이 달라져야 함 ──
-// [버그 수정] "빈 문단이 여러 개면 항상 가운데에 넣는다"는 이전 구현은 케이스 9
-// 문서(우연히 가운데 정렬)에서만 맞는 값이었다. 실제 사용자가 올리는 문서는
-// top/bottom 정렬일 수도 있으므로, 셀에 선언된 verticalAlign을 직접 읽어
-// top이면 첫 문단, bottom이면 마지막 문단에 넣어야 한다는 걸 이 문서를
-// setCellProperties로 조작해 재현·검증한다.
-console.log('\n[케이스 10] verticalAlign이 top/bottom이면 삽입 위치도 그에 맞게 바뀌어야 함');
+// ── 케이스 10: verticalAlign이 무엇이든(top/center/bottom) 문단 1개로 정리되고
+//    셀 자체의 정렬을 그대로 물려받아야 함 ──────────────────────────────────
+// 값을 넣은 뒤 나머지 빈 문단을 비우고 하나로 합치면, 애초에 어느 문단에
+// 넣었는지와 무관하게 결과가 항상 문단 1개가 되고 셀의 verticalAlign이 그대로
+// 적용된다 — enum 값(0/1/2)이 top/center/bottom 중 무엇을 뜻하는지 추측할
+// 필요 자체가 없어져 더 견고하다. setCellProperties로 세 정렬을 모두 강제해
+// 결과가 항상 동일한 구조(문단 1개, 값만 존재)로 수렴하는지 검증한다.
+console.log('\n[케이스 10] verticalAlign이 무엇이든 빈 문단이 정리돼 문단 1개로 수렴해야 함');
 {
-  for (const [alignValue, alignLabel, expectedPara] of [[0, 'top', 0], [2, 'bottom', 2]]) {
+  for (const [alignValue, alignLabel] of [[0, 'top'], [1, 'center'], [2, 'bottom']]) {
     const baseBytes = new Uint8Array(readFileSync(new URL('../../sample-docs/거래명세서-양식.hwp', import.meta.url)));
     const doc = new HwpDocument(baseBytes);
     const setResult = JSON.parse(doc.setCellProperties(0, 0, 2, 32, JSON.stringify({ verticalAlign: alignValue })));
@@ -340,13 +341,10 @@ console.log('\n[케이스 10] verticalAlign이 top/bottom이면 삽입 위치도
 
     const afterDoc = new HwpDocument(new Uint8Array(Buffer.from(out.output_b64, 'base64')));
     const paraCount = afterDoc.getCellParagraphCount(0, 0, 2, 32);
-    let foundPara = -1;
-    for (let p = 0; p < paraCount; p += 1) {
-      if (afterDoc.getTextInCell(0, 0, 2, 32, p, 0, 100).includes('박하람')) { foundPara = p; break; }
-    }
+    assert(paraCount === 1, `verticalAlign=${alignLabel}: 빈 문단이 정리돼 문단 1개가 됨 (실제: ${paraCount}개)`);
     assert(
-      foundPara === expectedPara,
-      `verticalAlign=${alignLabel}(${alignValue}) → ${expectedPara}번째 문단에 삽입돼야 함 (실제: ${foundPara}번째, 총 ${paraCount}문단)`
+      afterDoc.getTextInCell(0, 0, 2, 32, 0, 0, 100).trim() === '박하람',
+      `verticalAlign=${alignLabel}: 남은 문단 1개에 값만 정확히 들어감 (실제: ${JSON.stringify(afterDoc.getTextInCell(0, 0, 2, 32, 0, 0, 100))})`
     );
   }
 }
