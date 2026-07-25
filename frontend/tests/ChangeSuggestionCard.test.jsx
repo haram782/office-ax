@@ -193,3 +193,26 @@ describe('ChangeSuggestionCard — 기존 replace_cell UI 회귀 확인', () => 
     expect(screen.getByText('D12 · Sheet1')).toBeTruthy()
   })
 })
+
+describe('ChangeSuggestionCard — [버그 수정] 공통 접두사(라벨) diff 하이라이팅', () => {
+  it('HWP 패치처럼 라벨 뒤에 값이 붙는 경우, 안 바뀐 라벨은 취소선으로 표시하지 않는다', () => {
+    // 실제 재현 사례: "주 소" 라벨만 있던 필드에 값을 채워 넣는 replace_text 패치.
+    // 예전에는 original("주 소") 전체를 취소선 처리해 라벨 자체가 바뀐 것처럼 보였다.
+    const suggestion = makeSuggestion({
+      id: 'op_hwp_address',
+      operation: 'replace_text',
+      original: '주 소',
+      replacement: '주 소 분당동 102-1',
+      anchor: { type: 'text_match', target_text: '주 소' },
+      patch: {},
+    })
+    renderCard(suggestion)
+
+    // 라벨 "주 소"는 취소선(line-through) 없이 그대로 표시된다
+    const label = screen.getByText('주 소')
+    expect(label.className).not.toContain('line-through')
+
+    // 새로 추가된 부분만 강조(emerald) 표시된다
+    expect(screen.getByText('분당동 102-1')).toBeTruthy()
+  })
+})

@@ -174,5 +174,180 @@ console.log('\n[케이스 6] 원본 공백 2칸, 검색어 공백 1칸 → 공�
   assert(fullText.includes('분당동 102-1'), '치환 결과가 실제 반영됨');
 }
 
+// ── 케이스 7: 표 셀 내부 매치 → 셀 안에서 치환 (본문 문단에 삽입되면 안 됨) ─────
+// 실제 공문서 양식: "주  소" 라벨이 표 셀 안에만 존재하고, 표를 담는 본문 문단은
+// 빈 문단이다. cellContext를 무시하고 본문 좌표로 replaceText하면 라벨 셀은
+// 그대로 남고 빈 본문 문단에 새 줄로 텍스트가 삽입되는 버그가 있었다.
+console.log('\n[케이스 7] 표 셀 내부 매치 → 셀 안에서 치환되고 본문에 새 줄이 생기지 않아야 함');
+{
+  const input = readFileSync(new URL('../../sample-docs/공문서-양식-한글.hwp', import.meta.url));
+
+  const out = runWorker(input, [
+    { operation_id: 'op7', original: '주 소', replacement: '주 소 분당동 102-1', anchor: { occurrence: 1 } },
+  ]);
+
+  assert(out.applied.includes('op7'), 'op7이 applied에 포함됨');
+
+  const outputBytes = Buffer.from(out.output_b64, 'base64');
+  const afterDoc = new HwpDocument(new Uint8Array(outputBytes));
+
+  const bodyMatches = JSON.parse(afterDoc.searchAllText('분당동 102-1', false, false));
+  assert(bodyMatches.length === 0, '치환 결과가 본문 문단에 새로 삽입되지 않음 (본문 검색 0건)');
+
+  const cellMatches = JSON.parse(afterDoc.searchAllText('분당동 102-1', false, true));
+  assert(cellMatches.length === 1, '치환 결과가 문서에 정확히 1건 존재함');
+  assert(cellMatches[0]?.cellContext != null, '치환 결과가 표 셀 내부에 있음 (cellContext 존재)');
+}
+
+// ── 케이스 8: 라벨 셀 + 빈 값 셀 구조 → 값은 옆의 빈 셀에, 라벨은 그대로 ────────
+// 공문서 표는 [주  소][빈 값 셀][TEL]... 라벨/값 셀 쌍 구조다. replacement가
+// "라벨 + 값" 형태일 때 라벨 셀 안에 통째로 넣으면 좁은 라벨 셀에서 여러 줄로
+// 감겨 정렬이 깨진다 — 라벨 셀은 그대로 두고 값만 옆의 빈 셀에 넣어야 한다.
+console.log('\n[케이스 8] 라벨 셀 옆에 빈 값 셀이 있으면 값만 그 셀에 넣고 라벨은 유지해야 함');
+{
+  const input = readFileSync(new URL('../../sample-docs/공문서-양식-한글.hwp', import.meta.url));
+
+  const out = runWorker(input, [
+    { operation_id: 'op8', original: '주 소', replacement: '주 소 분당동 102-1', anchor: { occurrence: 1 } },
+  ]);
+
+  assert(out.applied.includes('op8'), 'op8이 applied에 포함됨');
+
+  const outputBytes = Buffer.from(out.output_b64, 'base64');
+  const afterDoc = new HwpDocument(new Uint8Array(outputBytes));
+
+  const labelCellText = afterDoc.getTextInCell(0, 2, 0, 0, 0, 0, 100);
+  assert(labelCellText === '주  소', `라벨 셀(cell 0)은 원본 그대로 유지됨 (실제: ${JSON.stringify(labelCellText)})`);
+
+  const valueCellText = afterDoc.getTextInCell(0, 2, 0, 1, 0, 0, 100);
+  assert(valueCellText === '분당동 102-1', `값이 옆의 빈 값 셀(cell 1)에 들어감 (실제: ${JSON.stringify(valueCellText)})`);
+}
+
+// ── 케이스 8b: 라벨만으로 매치되는 경우, 값 칸의 빈 문단들을 정리해 1개로 ──────
+// [버그 수정] "대표자 (인)" 처럼 접미사까지 포함하면 케이스 9(resolveLabelGapValueCell)
+// 경로를 타지만, LLM이 접미사 없이 "대표자"만 original로 준 경우(실제 재현:
+// original="대표자", replacement="대표자 박하람")는 라벨이 그 자체로 바로
+// 매치되어 이 케이스 8 경로(옆 셀 삽입)를 탄다.
+//
+// 처음에는 "verticalAlign을 읽어 그에 맞는 문단에 넣는다"로 고쳤는데, 이러면
+// 값 칸이 여전히 문단 3개로 남아 라벨/접미사 셀(문단 1개)과 구조가 다르다.
+// 더 견고한 해법은 어느 문단에 넣든 나머지 빈 문단을 비우고 하나로 합치는
+// 것이다 — 그러면 결과가 이웃 셀과 동일하게 문단 1개가 되고, 셀 자체의
+// verticalAlign이 자동으로 그대로 적용되어 어떤 정렬값이든 항상 옳다
+// (enum 값을 추측할 필요가 아예 없어진다).
+console.log('\n[케이스 8b] 라벨만 매치되는 경로에서도 값 칸의 빈 문단을 정리해 1개로 합쳐야 함');
+{
+  for (const [alignValue, alignLabel] of [[0, 'top'], [1, 'center'], [2, 'bottom']]) {
+    const baseBytes = new Uint8Array(readFileSync(new URL('../../sample-docs/거래명세서-양식.hwp', import.meta.url)));
+    const doc = new HwpDocument(baseBytes);
+    const setResult = JSON.parse(doc.setCellProperties(0, 0, 2, 32, JSON.stringify({ verticalAlign: alignValue })));
+    if (!setResult.ok) { console.log(`  setCellProperties 실패(${alignLabel}), 케이스 건너뜀`); continue; }
+    const input = Buffer.from(doc.exportHwp());
+
+    const out = runWorker(input, [
+      { operation_id: `op8b_${alignLabel}`, original: '대표자', replacement: '대표자 박하람', anchor: { occurrence: 1 } },
+    ]);
+    assert(out.applied.includes(`op8b_${alignLabel}`), `[케이스 8b] verticalAlign=${alignLabel}에서도 적용됨`);
+    if (out.failed.length > 0) console.log('  failed:', JSON.stringify(out.failed));
+
+    const afterDoc = new HwpDocument(new Uint8Array(Buffer.from(out.output_b64, 'base64')));
+    const paraCount = afterDoc.getCellParagraphCount(0, 0, 2, 32);
+    assert(
+      paraCount === 1,
+      `[케이스 8b] verticalAlign=${alignLabel}: 빈 문단이 정리돼 값 칸이 라벨/접미사 셀처럼 문단 1개가 됨 (실제: ${paraCount}개)`
+    );
+    assert(
+      afterDoc.getTextInCell(0, 0, 2, 32, 0, 0, 100).trim() === '박하람',
+      `[케이스 8b] verticalAlign=${alignLabel}: 남은 문단 1개에 값만 정확히 들어감 (실제: ${JSON.stringify(afterDoc.getTextInCell(0, 0, 2, 32, 0, 0, 100))})`
+    );
+  }
+}
+
+// ── 케이스 9: 라벨 + 빈 값 셀 + 접미사 셀(3분할) → 값만 가운데 빈 셀에 삽입 ──────
+// 실제 거래명세서 양식: [대표자][빈 값 셀(전각공백)][(인)] 3개 셀로 나뉘어 있어
+// "대표자 (인)" 문자열 자체가 문서 어디에도 존재하지 않는다(공백으로 뭉개도 못
+// 찾음). original을 공백으로 분할해 head("대표자")/tail("(인)")를 각각 찾고,
+// 그 사이 빈 셀에 replacement에서 head/tail을 뺀 나머지만 넣어야 한다.
+// 같은 패턴이 문서에 2번(공급자용/공급받는자용) 있으므로 occurrence도 검증한다.
+console.log('\n[케이스 9] 라벨/빈값/접미사 3분할 셀 → 가운데 빈 셀에 값만 삽입, occurrence로 올바른 쌍 선택');
+{
+  const input = readFileSync(new URL('../../sample-docs/거래명세서-양식.hwp', import.meta.url));
+
+  const out = runWorker(input, [
+    { operation_id: 'op9a', original: '대표자 (인)', replacement: '대표자 박하람 (인)', anchor: { occurrence: 1 } },
+    { operation_id: 'op9b', original: '대표자 (인)', replacement: '대표자 박하람 (인)', anchor: { occurrence: 2 } },
+  ]);
+
+  assert(out.applied.includes('op9a'), 'op9a(occurrence=1)이 applied에 포함됨');
+  assert(out.applied.includes('op9b'), 'op9b(occurrence=2)이 applied에 포함됨');
+  if (out.failed.length > 0) console.log('  failed:', JSON.stringify(out.failed));
+
+  const afterDoc = new HwpDocument(new Uint8Array(Buffer.from(out.output_b64, 'base64')));
+
+  // 값 칸이 빈 문단 여러 줄로 이루어져 있어(옆 셀과 행 높이를 맞추려는 패딩),
+  // 값이 정확히 어느 문단에 들어가는지 미리 단정하지 않고 셀 전체 문단을 모아 검사한다.
+  function fullCellText(idx) {
+    const paraCount = afterDoc.getCellParagraphCount(0, 0, 2, idx);
+    let text = '';
+    for (let p = 0; p < paraCount; p += 1) text += afterDoc.getTextInCell(0, 0, 2, idx, p, 0, 100);
+    return text;
+  }
+  // 값이 문단 여러 개 중 어디에 들어갔는지(가운데 정렬 확인용)
+  function valueParaIndex(idx, value) {
+    const paraCount = afterDoc.getCellParagraphCount(0, 0, 2, idx);
+    for (let p = 0; p < paraCount; p += 1) {
+      if (afterDoc.getTextInCell(0, 0, 2, idx, p, 0, 100).includes(value)) return p;
+    }
+    return -1;
+  }
+
+  const labelText = afterDoc.getTextInCell(0, 0, 2, 31, 0, 0, 100);
+  const suffixText = afterDoc.getTextInCell(0, 0, 2, 33, 0, 0, 100);
+  assert(labelText === '대표자', `1번째 라벨 셀은 원본 그대로 (실제: ${JSON.stringify(labelText)})`);
+  assert(fullCellText(32).trim() === '박하람', `1번째 빈 값 셀에 "박하람"만 들어감 (실제: ${JSON.stringify(fullCellText(32))})`);
+  assert(suffixText === '(인)', `1번째 접미사 셀은 원본 그대로 (실제: ${JSON.stringify(suffixText)})`);
+
+  assert(fullCellText(278).trim() === '박하람', `2번째(occurrence=2) 빈 값 셀에도 "박하람"이 들어감 (실제: ${JSON.stringify(fullCellText(278))})`);
+
+  // [버그 수정] 값을 넣은 뒤에도 값 칸이 여전히 문단 3개(빈 문단 2개 + 값 1개)로
+  // 남아있으면, 문서를 편집기로 열어보면 여전히 "3줄짜리 칸"으로 보인다.
+  // 라벨/접미사 셀(문단 1개)과 구조가 같아지도록 나머지 빈 문단은 정리해
+  // 문단 1개로 합쳐야 한다.
+  assert(afterDoc.getCellParagraphCount(0, 0, 2, 32) === 1, `1번째 값 칸도 빈 문단이 정리돼 문단 1개가 됨 (실제: ${afterDoc.getCellParagraphCount(0, 0, 2, 32)}개)`);
+  assert(afterDoc.getCellParagraphCount(0, 0, 2, 278) === 1, `2번째 값 칸도 빈 문단이 정리돼 문단 1개가 됨 (실제: ${afterDoc.getCellParagraphCount(0, 0, 2, 278)}개)`);
+}
+
+// ── 케이스 10: verticalAlign이 무엇이든(top/center/bottom) 문단 1개로 정리되고
+//    셀 자체의 정렬을 그대로 물려받아야 함 ──────────────────────────────────
+// 값을 넣은 뒤 나머지 빈 문단을 비우고 하나로 합치면, 애초에 어느 문단에
+// 넣었는지와 무관하게 결과가 항상 문단 1개가 되고 셀의 verticalAlign이 그대로
+// 적용된다 — enum 값(0/1/2)이 top/center/bottom 중 무엇을 뜻하는지 추측할
+// 필요 자체가 없어져 더 견고하다. setCellProperties로 세 정렬을 모두 강제해
+// 결과가 항상 동일한 구조(문단 1개, 값만 존재)로 수렴하는지 검증한다.
+console.log('\n[케이스 10] verticalAlign이 무엇이든 빈 문단이 정리돼 문단 1개로 수렴해야 함');
+{
+  for (const [alignValue, alignLabel] of [[0, 'top'], [1, 'center'], [2, 'bottom']]) {
+    const baseBytes = new Uint8Array(readFileSync(new URL('../../sample-docs/거래명세서-양식.hwp', import.meta.url)));
+    const doc = new HwpDocument(baseBytes);
+    const setResult = JSON.parse(doc.setCellProperties(0, 0, 2, 32, JSON.stringify({ verticalAlign: alignValue })));
+    if (!setResult.ok) { console.log(`  setCellProperties 실패(${alignLabel}), 케이스 건너뜀`); continue; }
+    const input = Buffer.from(doc.exportHwp());
+
+    const out = runWorker(input, [
+      { operation_id: `op10_${alignLabel}`, original: '대표자 (인)', replacement: '대표자 박하람 (인)', anchor: { occurrence: 1 } },
+    ]);
+    assert(out.applied.includes(`op10_${alignLabel}`), `verticalAlign=${alignLabel}에서도 적용됨`);
+    if (out.failed.length > 0) console.log('  failed:', JSON.stringify(out.failed));
+
+    const afterDoc = new HwpDocument(new Uint8Array(Buffer.from(out.output_b64, 'base64')));
+    const paraCount = afterDoc.getCellParagraphCount(0, 0, 2, 32);
+    assert(paraCount === 1, `verticalAlign=${alignLabel}: 빈 문단이 정리돼 문단 1개가 됨 (실제: ${paraCount}개)`);
+    assert(
+      afterDoc.getTextInCell(0, 0, 2, 32, 0, 0, 100).trim() === '박하람',
+      `verticalAlign=${alignLabel}: 남은 문단 1개에 값만 정확히 들어감 (실제: ${JSON.stringify(afterDoc.getTextInCell(0, 0, 2, 32, 0, 0, 100))})`
+    );
+  }
+}
+
 console.log(`\n총 ${passed + failedCount}건 중 PASS=${passed}, FAIL=${failedCount}`);
 process.exit(failedCount > 0 ? 1 : 0);
