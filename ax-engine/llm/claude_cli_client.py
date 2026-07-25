@@ -48,7 +48,26 @@ class ClaudeCodeCLIClient(BaseLLMClient):
         # 응답을 반환한다. --system-prompt 전용 채널로 분리해야 한다.
         user_prompt = masked_text + _JSON_ONLY_INSTRUCTION
 
-        cmd = ["claude", "-p", "--system-prompt", system_prompt, user_prompt]
+        # claude CLI(Claude Code)는 순수 stateless 완성 API가 아니라 CLAUDE.md,
+        # auto-memory, plugin, hook, MCP 같은 ambient 컨텍스트를 자동으로 불러오는
+        # 에이전틱 CLI다. 이 subprocess는 cwd를 프로젝트 디렉터리로 물려받으므로
+        # 이런 ambient 컨텍스트(예: 사용자 전역 CLAUDE.md에 적힌 계정 이메일 같은
+        # 개인정보)가 문서 편집 프롬프트와 무관하게 생성 결과에 섞여 들어갈 수
+        # 있다(실사용 재현: 채팅으로 명시한 이메일이 아니라 사용자 실제 계정
+        # 이메일이 PatchPlan에 들어감).
+        # --bare가 가장 확실히 막지만 ANTHROPIC_API_KEY 인증만 허용해, 이
+        # 클라이언트가 쓰는 Claude Code Pro 구독(OAuth) 인증과 호환되지 않는다
+        # (직접 확인됨: "Not logged in" 오류). 구독 인증을 유지하면서
+        # CLAUDE.md·plugin·hook·MCP·커스텀 명령을 끄는 --safe-mode와, 남은
+        # settings.json 경로(user/project/local)까지 막는 --setting-sources ""를
+        # 함께 준다.
+        cmd = [
+            "claude", "-p",
+            "--safe-mode",
+            "--setting-sources", "",
+            "--system-prompt", system_prompt,
+            user_prompt,
+        ]
         stdout = self._run_cli(cmd)
         parsed = self._extract_json(stdout)
 

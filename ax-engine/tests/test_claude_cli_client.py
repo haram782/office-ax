@@ -101,6 +101,35 @@ class TestClaudeCodeCLIClientNormal(unittest.TestCase):
         self.assertIn("JSON", user_arg)
 
     @patch("subprocess.run")
+    def test_cli_invoked_with_ambient_context_isolation_flags(self, mock_run):
+        """
+        [버그 수정] claude CLI(Claude Code)는 순수 stateless 완성 API가
+        아니라 실제 CLAUDE.md·auto-memory·plugin·hook·MCP 같은 ambient
+        컨텍스트를 자동으로 불러오는 에이전틱 CLI다. 이 subprocess는 cwd를
+        프로젝트 디렉터리로 물려받으므로, 이런 ambient 컨텍스트(예: 사용자
+        전역 CLAUDE.md에 적힌 계정 이메일)가 문서 편집 프롬프트와 무관하게
+        생성 결과에 섞여 들어갈 수 있다(실사용 재현: 채팅으로 명시한
+        이메일이 아니라 사용자 실제 계정 이메일이 PatchPlan에 들어감).
+
+        --bare는 이 문제를 가장 확실히 막지만 ANTHROPIC_API_KEY 인증만
+        허용해 이 프로젝트가 쓰는 Claude Code Pro 구독(OAuth) 인증과
+        호환되지 않는다(직접 확인: "Not logged in" 오류). 구독 인증을
+        유지하면서 CLAUDE.md·plugin·hook·MCP·커스텀 명령을 끄는
+        --safe-mode와, 남은 settings.json 경로까지 막는
+        --setting-sources ""를 함께 준다.
+        """
+        mock_run.return_value = _make_proc(stdout=_VALID_JSON)
+
+        client = ClaudeCodeCLIClient()
+        client.analyze("사용자 입력", "시스템 지시")
+
+        cmd = mock_run.call_args.args[0]
+        self.assertIn("--safe-mode", cmd)
+        self.assertIn("--setting-sources", cmd)
+        setting_sources_idx = cmd.index("--setting-sources")
+        self.assertEqual(cmd[setting_sources_idx + 1], "")
+
+    @patch("subprocess.run")
     def test_fenced_json_parsed_correctly(self, mock_run):
         """마크다운 코드펜스로 감싸인 JSON도 정상 파싱한다."""
         fenced = f"```json\n{_VALID_JSON}\n```"
