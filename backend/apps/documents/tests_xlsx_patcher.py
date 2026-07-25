@@ -271,6 +271,36 @@ class XlsxPatcherTaskTest(TestCase):
             self.version.status, "failed", "모든 항목 불일치 시 version은 failed여야 한다"
         )
 
+    def test_patcher_treats_blank_original_as_matching_empty_cell(self):
+        """
+        [버그 수정] LLM은 추출된 텍스트만으로는 빈 셀이 ""인지 " "인지
+        구분할 수 없어, 실제로 원본값을 " "로 잘못 추정하는 경우가 있다
+        (같은 문서의 다른 빈 셀은 진짜 빈 문자열이었음 — 실사용 재현).
+        둘 다 "비어 있음"이라는 같은 뜻이므로 이 공백 차이로 패치를
+        실패시키면 안 된다.
+        """
+        # F14: 아무 값도 넣지 않은 진짜 빈 셀(None)
+        change_blank = DocumentChange.objects.create(
+            version=self.version,
+            operation_id="op_replace_f14_blank",
+            format="excel",
+            operation="replace_cell",
+            original=" ",
+            replacement="haram@gmail.com",
+            reason="이메일 입력",
+            confidence=0.85,
+            anchor={"type": "cell", "sheet": "정산내역", "cell": "F14"},
+            status=DocumentChange.Status.APPLIED,
+        )
+
+        patch_document_version(self.version.pk)
+
+        change_blank.refresh_from_db()
+        self.assertEqual(
+            change_blank.status, "applied",
+            "빈 셀(None/\"\")과 원본값 \" \"의 공백 차이는 매칭되어야 한다",
+        )
+
     def test_patcher_no_source_file_sets_version_failed(self):
         """upload_log.file이 없으면 version.status='failed', error_message에 사유가 기록된다."""
         self.upload.file.delete(save=True)

@@ -150,6 +150,22 @@ def collect_applied_changes(version, operations: list[str] | None = None) -> lis
 
 # ── 2단계: render — 순수 변환 ─────────────────────────────────────────────────
 
+def _xlsx_original_matches(actual: str, expected: str) -> bool:
+    """
+    replace_cell의 실제 셀 값과 PatchPlan이 예상한 원본 값을 비교한다.
+
+    완전히 같지 않아도 둘 다 공백뿐이면 같은 것으로 본다 — LLM은 추출된
+    텍스트만으로는 빈 셀이 ""인지 " "인지 구분할 수 없고, 같은 문서
+    안에서도 셀마다 실제 저장값이 다르다(실사용 재현: 어떤 빈 셀은
+    None/"", 다른 빈 셀은 " "). 이 차이로 유효한 패치를 실패 처리하면
+    안 된다 — 진짜 값이 다른 경우(예: "5,000,000" vs "WRONG_VALUE")는
+    여전히 불일치로 잡아낸다.
+    """
+    if actual == expected:
+        return True
+    return actual.strip() == "" and expected.strip() == ""
+
+
 def render_xlsx(original_bytes: bytes, changes: list) -> PatchResult:
     """
     XLSX bytes + applied change 목록 → PatchResult.
@@ -235,7 +251,7 @@ def render_xlsx(original_bytes: bytes, changes: list) -> PatchResult:
         ws = wb[sheet_name]
         current_value = str(ws[cell_ref].value) if ws[cell_ref].value is not None else ""
 
-        if current_value != change.original:
+        if not _xlsx_original_matches(current_value, change.original):
             failed_items.append({
                 "operation_id": change.operation_id,
                 "reason": f"원본 값 불일치: expected={change.original!r}, actual={current_value!r}",
