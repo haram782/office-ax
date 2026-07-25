@@ -103,6 +103,21 @@ function colLetterToIndex(letters) {
   return result - 1
 }
 
+/** 0-based 컬럼 인덱스 → "ABC" (colLetterToIndex의 역함수, 시트 미리보기 열 머리글용) */
+function colIndexToLetter(index) {
+  let n = index + 1
+  let letters = ''
+  while (n > 0) {
+    const rem = (n - 1) % 26
+    letters = String.fromCharCode(65 + rem) + letters
+    n = Math.floor((n - 1) / 26)
+  }
+  return letters
+}
+
+// 시트 미리보기 행 머리글(row number) 열의 고정 너비
+const ROW_HEADER_WIDTH_PX = 40
+
 /** "D12" → { col: 3, row: 11 } (0-based). 파싱 실패 시 null 반환 */
 function parseCellAddress(cell) {
   const m = String(cell).match(/^([A-Za-z]+)(\d+)$/)
@@ -186,7 +201,9 @@ function ExcelViewer({ previewData, highlights = [], selectedHighlightId = null,
         const res = await fetch(fileUrl)
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const buf = await res.arrayBuffer()
-        const wb = XLSX.read(buf, { type: 'array' })
+        // cellStyles: true — 이게 있어야 !cols[i].wpx/!rows[i].hpx(실제 열너비·행높이)가 채워진다.
+        // 기본 옵션만 주면 SheetJS가 이 값을 파싱하지 않아 auto-width로 렌더되어 원본과 비율이 어긋난다.
+        const wb = XLSX.read(buf, { type: 'array', cellStyles: true })
         const ws = wb.Sheets[wb.SheetNames[0]]
         if (cancelled) return
         setSheetGrid(buildSheetGrid(XLSX, ws))
@@ -257,12 +274,34 @@ function ExcelViewer({ previewData, highlights = [], selectedHighlightId = null,
           <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-200">시트 미리보기</span>
           <span className="ml-auto text-[10px] text-zinc-400">{filename}</span>
         </div>
-        <div className="overflow-x-auto">
+        <div className="overflow-auto max-h-[60vh]">
           {sheetGrid ? (
-            <table className="text-xs border-collapse">
+            <table className="text-xs border-collapse" style={{ tableLayout: 'fixed' }}>
+              <colgroup>
+                <col style={{ width: ROW_HEADER_WIDTH_PX }} />
+                {sheetGrid.colWidths.map((w, i) => <col key={i} style={{ width: w }} />)}
+              </colgroup>
+              <thead>
+                {/* 열 머리글(A, B, C...) — 세로 스크롤 시 위쪽에 고정 */}
+                <tr>
+                  <th className="sticky top-0 left-0 z-20 bg-zinc-100 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-600" />
+                  {sheetGrid.colWidths.map((_, i) => (
+                    <th
+                      key={i}
+                      className="sticky top-0 z-10 bg-zinc-100 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-600 font-medium text-zinc-500 dark:text-zinc-400 text-center py-0.5"
+                    >
+                      {colIndexToLetter(sheetGrid.startCol + i)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
               <tbody>
                 {sheetGrid.rows.map((row, rowIdx) => (
-                  <tr key={rowIdx}>
+                  <tr key={rowIdx} style={{ height: sheetGrid.rowHeights[rowIdx] }}>
+                    {/* 행 머리글(1, 2, 3...) — 가로 스크롤 시 왼쪽에 고정 */}
+                    <th className="sticky left-0 z-10 bg-zinc-100 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-600 font-medium text-zinc-500 dark:text-zinc-400 text-center">
+                      {sheetGrid.startRow + rowIdx + 1}
+                    </th>
                     {row.map(cell => {
                       const matchH = cellMap[`${cell.col}:${cell.row}`]
                       return (
@@ -271,7 +310,8 @@ function ExcelViewer({ previewData, highlights = [], selectedHighlightId = null,
                           rowSpan={cell.rowSpan}
                           colSpan={cell.colSpan}
                           onClick={() => matchH && onSelectHighlight?.(matchH.id)}
-                          className={`border border-zinc-100 dark:border-zinc-800 px-2 py-1.5 align-top text-zinc-700 dark:text-zinc-200 whitespace-nowrap transition-colors
+                          className={`border border-zinc-300 dark:border-zinc-700 px-1.5 align-middle overflow-hidden text-ellipsis whitespace-nowrap text-zinc-700 dark:text-zinc-200 transition-colors
+                            ${cell.align === 'right' ? 'text-right' : 'text-left'}
                             ${matchH ? 'cursor-pointer ' + cellHighlightCls(matchH, selectedHighlightId) : ''}
                           `}
                         >
