@@ -157,7 +157,7 @@ def analyze_document(
             return output
 
         # ── 2. PII 마스킹 ────────────────────────────────────────────────────
-        masked_text, pii_counts = mask_pii(raw_text)
+        masked_text, pii_counts, _pii_mapping = mask_pii(raw_text)
         if pii_counts:
             logger.info("PII 마스킹 완료 | upload_id=%s | %s", upload_id, pii_counts)
 

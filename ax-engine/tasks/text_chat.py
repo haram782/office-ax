@@ -13,7 +13,7 @@ from celery import shared_task
 from celery.utils.log import get_task_logger
 
 from llm import get_llm_client
-from masking.pii_masker import mask_pii
+from masking.pii_masker import mask_pii, unmask_pii
 from prompts.chat import CHAT_INTENT_SYSTEM_PROMPT, CHAT_SYSTEM_PROMPT
 
 logger = get_task_logger(__name__)
@@ -171,7 +171,7 @@ def _run_text_chat(
     # RAG 참고 자산도 마스킹 이전에 주입해 동일 정책을 적용받는다.
     # 상세: closed-beta-launch-plan-v1-ko.md 결정 11
     raw_prompt = _build_rag_context(rag_files) + _build_prompt(content, session_history)
-    prompt_text, pii_counts = mask_pii(raw_prompt)
+    prompt_text, pii_counts, pii_mapping = mask_pii(raw_prompt)
     if pii_counts:
         logger.info("text_chat PII 마스킹 | chat_message_id=%s | counts=%s", chat_message_id, pii_counts)
 
@@ -195,9 +195,17 @@ def _run_text_chat(
             intent_type = intent.get("type", "qa")
 
             if intent_type == "patch_intent":
+                # PatchPlan 생성 단계는 원문 전송이 본질(결정 11) — 의도 판별
+                # LLM 호출 자체는 마스킹된 텍스트로 하되, 사용자가 채팅으로
+                # 직접 준 값(예: 문서에 적어달라고 요청한 이메일)은 여기서
+                # 실제 값으로 복원해야 PatchPlan이 자리표시자를 "유효하지
+                # 않은 값"으로 오인해 작업을 누락시키지 않는다.
+                refined_prompt = intent.get("refined_prompt", content)
+                if pii_mapping:
+                    refined_prompt = unmask_pii(refined_prompt, pii_mapping)
                 output = {
                     "type":           "patch_intent",
-                    "refined_prompt": intent.get("refined_prompt", content),
+                    "refined_prompt": refined_prompt,
                     "upload_id":      upload_id,
                     "summary":        "",
                     "errors":         [],

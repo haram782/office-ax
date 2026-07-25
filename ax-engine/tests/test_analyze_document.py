@@ -37,7 +37,7 @@ class TestAnalyzeDocumentUsageKeys(unittest.TestCase):
         self, mock_mask_pii, mock_get_client,
     ):
         """backend usage_metadata_from_result()가 기대하는 usage/model/provider 키가 채워진다."""
-        mock_mask_pii.return_value = ("csv 마스킹 텍스트", {})
+        mock_mask_pii.return_value = ("csv 마스킹 텍스트", {}, {})
 
         mock_client = MagicMock()
         mock_client.analyze.return_value = _make_result()
@@ -110,7 +110,7 @@ class TestScannedDocumentGuidance(unittest.TestCase):
     @patch("tasks.analyze_document.mask_pii")
     def test_digital_pdf_still_analyzed(self, mock_mask_pii, mock_get_client):
         """[회귀] 텍스트가 충분한 디지털 PDF는 기존대로 LLM 분석을 수행한다."""
-        mock_mask_pii.return_value = ("마스킹된 본문", {})
+        mock_mask_pii.return_value = ("마스킹된 본문", {}, {})
         mock_client = MagicMock()
         mock_client.analyze.return_value = _make_result()
         mock_get_client.return_value = mock_client
