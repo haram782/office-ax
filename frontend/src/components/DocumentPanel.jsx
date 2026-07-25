@@ -1,8 +1,10 @@
 import { useMemo, useRef, useCallback, useState, useEffect } from 'react'
 import { resolveAssistantMsg } from '../utils/fileItemsUtils'
 import { computeHighlightRects } from '../utils/hwpHighlight'
+import { buildSheetGrid } from '../utils/excelGrid'
 import { DiffText } from './DiffText'
 import initRhwp, { HwpDocument } from '@rhwp/core'
+import * as XLSX from 'xlsx'
 // ?url — Vite가 해당 파일을 asset으로 복사하고 실제 경로(해시 포함)를 반환
 // node_modules 번들링 시 import.meta.url 기반 경로가 깨지는 문제를 우회
 import rhwpWasmUrl from '@rhwp/core/rhwp_bg.wasm?url'
@@ -163,9 +165,40 @@ function ExcelOutOfRangeNotice({ notice }) {
 }
 
 function ExcelViewer({ previewData, highlights = [], selectedHighlightId = null, onSelectHighlight = null }) {
-  const { filename, snippetData: data } = previewData
+  const { filename, fileUrl, snippetData: data } = previewData
 
-  // { "col:row" → highlight } — 미리보기 테이블 셀 하이라이트용
+  // 원본 파일을 클라이언트에서 직접 파싱해 병합 셀을 반영한 실제 엑셀 그리드를 만든다.
+  // ax-engine의 headers/preview_rows는 병합 셀을 모르는 단순 평탄화라 폼 스타일
+  // 문서에서 레이아웃이 어긋나므로, 가능하면 이 grid로 렌더하고 실패 시에만 폴백한다.
+  const [sheetGrid, setSheetGrid] = useState(null)
+  const [sheetLoadFailed, setSheetLoadFailed] = useState(false)
+
+  useEffect(() => {
+    setSheetGrid(null)
+    setSheetLoadFailed(false)
+    if (!fileUrl) {
+      setSheetLoadFailed(true)
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch(fileUrl)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const buf = await res.arrayBuffer()
+        const wb = XLSX.read(buf, { type: 'array' })
+        const ws = wb.Sheets[wb.SheetNames[0]]
+        if (cancelled) return
+        setSheetGrid(buildSheetGrid(XLSX, ws))
+      } catch {
+        // 네트워크 오류·손상된 파일 등 인프라성 실패 — 아래에서 단순 표로 폴백한다
+        if (!cancelled) setSheetLoadFailed(true)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [fileUrl])
+
+  // { "col:row" → highlight } — row/col은 워크시트 절대 좌표, anchor.cell(A1 표기)과 그대로 대응
   const cellMap = useMemo(() => {
     const map = {}
     for (const h of highlights) {
@@ -188,22 +221,18 @@ function ExcelViewer({ previewData, highlights = [], selectedHighlightId = null,
     return map
   }, [highlights])
 
-  // 선택된 제안이 cell anchor이지만 현재 preview_rows 범위 밖이면 notice 표시용으로 반환
+  // 선택된 제안이 cell anchor이지만 현재 렌더된 grid 범위 밖이면 notice 표시용으로 반환
   const outOfRangeNotice = useMemo(() => {
-    if (!selectedHighlightId || !data) return null
+    if (!selectedHighlightId || !sheetGrid) return null
     const h = highlights.find(h => h.id === selectedHighlightId && h.anchor?.type === 'cell')
     if (!h) return null
     const pos = parseCellAddress(h.anchor.cell)
     if (!pos) return null
-    const rows = data.preview_rows ?? []
-    // 열 개수: headers 또는 첫 행 길이 기준
-    const colCount = data.headers?.length ?? rows[0]?.length ?? 0
-    // 행 또는 열이 미리보기 범위 안이면 notice 불필요
-    const rowVisible = pos.row < rows.length
-    const colVisible = colCount === 0 || pos.col < colCount
+    const rowVisible = pos.row < sheetGrid.rowCount
+    const colVisible = pos.col < sheetGrid.colCount
     if (rowVisible && colVisible) return null
     return h
-  }, [selectedHighlightId, highlights, data])
+  }, [selectedHighlightId, highlights, sheetGrid])
 
   if (!data) {
     return (
@@ -221,7 +250,7 @@ function ExcelViewer({ previewData, highlights = [], selectedHighlightId = null,
         <ExcelOutOfRangeNotice notice={outOfRangeNotice} />
       )}
 
-      {/* 원본 데이터 테이블 */}
+      {/* 원본 데이터 테이블 — 병합 셀을 반영해 실제 엑셀과 비슷하게 렌더 */}
       <div className="rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-hidden shadow-sm">
         <div className="px-4 py-2.5 bg-gradient-to-r from-zinc-50 dark:from-zinc-800 to-white dark:to-zinc-900 border-b border-zinc-200 dark:border-zinc-700 flex items-center gap-2">
           <span className="text-sm">📊</span>
@@ -229,39 +258,64 @@ function ExcelViewer({ previewData, highlights = [], selectedHighlightId = null,
           <span className="ml-auto text-[10px] text-zinc-400">{filename}</span>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="bg-zinc-50 dark:bg-zinc-800 border-b border-zinc-200 dark:border-zinc-700">
-                {(data.headers || []).map((h, i) => (
-                  <th key={i} className="px-3 py-2 text-left font-semibold text-zinc-600 dark:text-zinc-300 whitespace-nowrap">
-                    {h}
-                  </th>
+          {sheetGrid ? (
+            <table className="text-xs border-collapse">
+              <tbody>
+                {sheetGrid.rows.map((row, rowIdx) => (
+                  <tr key={rowIdx}>
+                    {row.map(cell => {
+                      const matchH = cellMap[`${cell.col}:${cell.row}`]
+                      return (
+                        <td
+                          key={cell.col}
+                          rowSpan={cell.rowSpan}
+                          colSpan={cell.colSpan}
+                          onClick={() => matchH && onSelectHighlight?.(matchH.id)}
+                          className={`border border-zinc-100 dark:border-zinc-800 px-2 py-1.5 align-top text-zinc-700 dark:text-zinc-200 whitespace-nowrap transition-colors
+                            ${matchH ? 'cursor-pointer ' + cellHighlightCls(matchH, selectedHighlightId) : ''}
+                          `}
+                        >
+                          {cell.value}
+                        </td>
+                      )
+                    })}
+                  </tr>
                 ))}
-              </tr>
-            </thead>
-            <tbody>
-              {(data.preview_rows || []).map((row, rowIdx) => (
-                <tr key={rowIdx} className="border-t border-zinc-100 dark:border-zinc-800 hover:bg-blue-50/30 transition-colors">
-                  {row.map((cell, colIdx) => {
-                    // preview_rows[rowIdx] = Excel의 rowIdx+1 행 (헤더가 row 0, 데이터가 row 1~)
-                    const matchH = cellMap[`${colIdx}:${rowIdx}`]
-                    return (
-                      <td
-                        key={colIdx}
-                        onClick={() => matchH && onSelectHighlight?.(matchH.id)}
-                        className={`px-3 py-2 text-zinc-700 dark:text-zinc-200 whitespace-nowrap transition-colors
-                          ${matchH ? 'cursor-pointer ' + cellHighlightCls(matchH, selectedHighlightId) : ''}
-                        `}
-                      >
+              </tbody>
+            </table>
+          ) : sheetLoadFailed ? (
+            // 원본 파일 파싱 실패 — ax-engine이 만든 headers/preview_rows 단순 표로 폴백
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="bg-zinc-50 dark:bg-zinc-800 border-b border-zinc-200 dark:border-zinc-700">
+                  {(data.headers || []).map((h, i) => (
+                    <th key={i} className="px-3 py-2 text-left font-semibold text-zinc-600 dark:text-zinc-300 whitespace-nowrap">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {(data.preview_rows || []).map((row, rowIdx) => (
+                  <tr key={rowIdx} className="border-t border-zinc-100 dark:border-zinc-800 hover:bg-blue-50/30 transition-colors">
+                    {row.map((cell, colIdx) => (
+                      <td key={colIdx} className="px-3 py-2 text-zinc-700 dark:text-zinc-200 whitespace-nowrap">
                         {typeof cell === 'number' ? cell.toLocaleString() : cell}
                       </td>
-                    )
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="px-4 py-8 text-center text-xs text-zinc-400">불러오는 중...</div>
+          )}
         </div>
+        {sheetGrid && (sheetGrid.truncatedRows || sheetGrid.truncatedCols) && (
+          <div className="px-4 py-1.5 text-[10px] text-zinc-400 border-t border-zinc-100 dark:border-zinc-800">
+            시트가 커서 일부만 표시했습니다 (최대 {sheetGrid.rowCount}행 × {sheetGrid.colCount}열)
+          </div>
+        )}
       </div>
 
       {/* 감지된 오류 및 수정 목록 */}
