@@ -244,15 +244,37 @@ console.log('\n[케이스 9] 라벨/빈값/접미사 3분할 셀 → 가운데 �
 
   const afterDoc = new HwpDocument(new Uint8Array(Buffer.from(out.output_b64, 'base64')));
 
+  // 값 칸이 빈 문단 여러 줄로 이루어져 있어(옆 셀과 행 높이를 맞추려는 패딩),
+  // 값이 정확히 어느 문단에 들어가는지 미리 단정하지 않고 셀 전체 문단을 모아 검사한다.
+  function fullCellText(idx) {
+    const paraCount = afterDoc.getCellParagraphCount(0, 0, 2, idx);
+    let text = '';
+    for (let p = 0; p < paraCount; p += 1) text += afterDoc.getTextInCell(0, 0, 2, idx, p, 0, 100);
+    return text;
+  }
+  // 값이 문단 여러 개 중 어디에 들어갔는지(가운데 정렬 확인용)
+  function valueParaIndex(idx, value) {
+    const paraCount = afterDoc.getCellParagraphCount(0, 0, 2, idx);
+    for (let p = 0; p < paraCount; p += 1) {
+      if (afterDoc.getTextInCell(0, 0, 2, idx, p, 0, 100).includes(value)) return p;
+    }
+    return -1;
+  }
+
   const labelText = afterDoc.getTextInCell(0, 0, 2, 31, 0, 0, 100);
-  const valueText = afterDoc.getTextInCell(0, 0, 2, 32, 0, 0, 100);
   const suffixText = afterDoc.getTextInCell(0, 0, 2, 33, 0, 0, 100);
   assert(labelText === '대표자', `1번째 라벨 셀은 원본 그대로 (실제: ${JSON.stringify(labelText)})`);
-  assert(valueText.trim() === '박하람', `1번째 빈 값 셀에 "박하람"만 들어감 (실제: ${JSON.stringify(valueText)})`);
+  assert(fullCellText(32).trim() === '박하람', `1번째 빈 값 셀에 "박하람"만 들어감 (실제: ${JSON.stringify(fullCellText(32))})`);
   assert(suffixText === '(인)', `1번째 접미사 셀은 원본 그대로 (실제: ${JSON.stringify(suffixText)})`);
 
-  const valueText2 = afterDoc.getTextInCell(0, 0, 2, 278, 0, 0, 100);
-  assert(valueText2.trim() === '박하람', `2번째(occurrence=2) 빈 값 셀에도 "박하람"이 들어감 (실제: ${JSON.stringify(valueText2)})`);
+  assert(fullCellText(278).trim() === '박하람', `2번째(occurrence=2) 빈 값 셀에도 "박하람"이 들어감 (실제: ${JSON.stringify(fullCellText(278))})`);
+
+  // [버그 수정] 값 칸(3문단)에서 맨 위(0번째)가 아니라 가운데(1번째) 문단에
+  // 들어가야 라벨/접미사 셀의 세로 중앙과 정렬이 맞는다.
+  const paraCount32 = afterDoc.getCellParagraphCount(0, 0, 2, 32);
+  assert(paraCount32 === 3, `값 칸은 원래 빈 문단 3개짜리 구조임 (테스트 전제 확인, 실제: ${paraCount32})`);
+  assert(valueParaIndex(32, '박하람') === 1, `값이 가운데 문단(1번째)에 들어가 세로 정렬이 맞음 (실제 문단: ${valueParaIndex(32, '박하람')})`);
+  assert(valueParaIndex(278, '박하람') === 1, `2번째 값 칸도 가운데 문단(1번째)에 들어감 (실제 문단: ${valueParaIndex(278, '박하람')})`);
 }
 
 console.log(`\n총 ${passed + failedCount}건 중 PASS=${passed}, FAIL=${failedCount}`);

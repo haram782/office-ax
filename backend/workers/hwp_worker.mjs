@@ -171,7 +171,17 @@ function resolveLabelGapValueCell(doc, original, occurrence) {
       });
       if (!t) continue;
 
-      candidates.push({ sec, parentPara: hc.parentPara, ctrlIdx: hc.ctrlIdx, valueCellIdx, head, tail });
+      // 값 칸이 빈 문단 여러 줄로 이루어진 경우(예: 이웃 칸들과 행 높이를 맞추려고
+      // 빈 줄을 위아래로 넣어둔 서명란), 첫 문단(0)에 넣으면 텍스트가 칸 맨 위에
+      // 붙어 옆 셀(라벨/접미사)의 세로 중앙과 어긋나 보인다. 가운데 문단에 넣어
+      // 위아래 여백이 대칭이 되게 한다(빈 줄이 없으면 그대로 0번째).
+      let valueCellPara = 0;
+      try {
+        const paraCount = doc.getCellParagraphCount(sec, hc.parentPara, hc.ctrlIdx, valueCellIdx);
+        if (paraCount > 0) valueCellPara = Math.floor(paraCount / 2);
+      } catch { /* 조회 실패 시 0번째 문단으로 폴백 */ }
+
+      candidates.push({ sec, parentPara: hc.parentPara, ctrlIdx: hc.ctrlIdx, valueCellIdx, valueCellPara, head, tail });
     }
   }
   if (candidates.length === 0) return null;
@@ -253,7 +263,7 @@ async function main() {
         const value = replacement.slice(gap.head.length, replacement.length - gap.tail.length).trim();
         try {
           const insResult = JSON.parse(
-            doc.insertTextInCell(gap.sec, gap.parentPara, gap.ctrlIdx, gap.valueCellIdx, 0, 0, value)
+            doc.insertTextInCell(gap.sec, gap.parentPara, gap.ctrlIdx, gap.valueCellIdx, gap.valueCellPara, 0, value)
           );
           if (insResult?.ok === true) {
             applied.push(operation_id);
