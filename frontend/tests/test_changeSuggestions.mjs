@@ -159,6 +159,59 @@ test('change_highlights target=text이면 anchor.type이 "text_match"다', () =>
   assert.equal(s.anchor.context_after, '님의 주문')
 })
 
+// ── pdf_bbox anchor (patch_changes.preview_anchor) ─────────────────────────────
+// [버그 수정] PDF 제안은 anchor.type이 항상 text_match라 PdfPageCanvas(pdf_bbox
+// 전용)가 하이라이트를 그릴 좌표를 못 받아 아무것도 표시되지 않았다(실사용 재현).
+// 백엔드가 PatchPlan 생성 시점에 미리 계산해 주는 preview_anchor(page/rect)를
+// pdf_bbox anchor로 변환해야 한다.
+
+console.log('\n[pdf_bbox anchor]')
+
+test('format=pdf + preview_anchor가 있으면 anchor.type이 "pdf_bbox"로 바뀐다', () => {
+  const snippetData = {
+    patch_changes: [{
+      id: 7,
+      operation_id: 'op_pdf_01',
+      format: 'pdf',
+      anchor: { type: 'text_match', target_text: '이메일', occurrence: 1 },
+      preview_anchor: { page: 2, rect: { x0: 10, y0: 20, x1: 100, y1: 40 } },
+    }],
+  }
+  const [s] = deriveChangeSuggestions(snippetData)
+  assert.equal(s.anchor.type, 'pdf_bbox')
+  assert.equal(s.anchor.page, 2)
+  assert.deepEqual(s.anchor.rect, { x0: 10, y0: 20, x1: 100, y1: 40 })
+})
+
+test('format=pdf이지만 preview_anchor가 없으면(모호함/못 찾음) 원본 text_match anchor를 유지한다', () => {
+  const snippetData = {
+    patch_changes: [{
+      id: 8,
+      operation_id: 'op_pdf_02',
+      format: 'pdf',
+      anchor: { type: 'text_match', target_text: '이메일', occurrence: 1 },
+      preview_anchor: {},
+    }],
+  }
+  const [s] = deriveChangeSuggestions(snippetData)
+  assert.equal(s.anchor.type, 'text_match')
+  assert.equal(s.anchor.target_text, '이메일')
+})
+
+test('format이 pdf가 아니면 preview_anchor가 있어도 무시하고 원본 anchor를 유지한다', () => {
+  const snippetData = {
+    patch_changes: [{
+      id: 9,
+      operation_id: 'op_xlsx_01',
+      format: 'xlsx',
+      anchor: { type: 'cell', cell: 'A1', sheet: 'Sheet1' },
+      preview_anchor: { page: 1, rect: { x0: 0, y0: 0, x1: 1, y1: 1 } },
+    }],
+  }
+  const [s] = deriveChangeSuggestions(snippetData)
+  assert.equal(s.anchor.type, 'cell')
+})
+
 // ── change_highlights 변환 ────────────────────────────────────────────────────
 
 console.log('\n[change_highlights 변환]')

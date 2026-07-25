@@ -339,6 +339,10 @@ class DocumentChange(models.Model):
     confidence = models.FloatField()
     # 포맷별 위치 정보 (patch-plan-schema-v0-ko.md 7절 anchor 기준)
     anchor = models.JSONField(default=dict)
+    # PDF text_match anchor를 PatchPlan 생성 시점에 미리 해석한 결과
+    # ({"page": <1-based>, "rect": {...}}) — 미리보기 하이라이트(PdfPageCanvas)용.
+    # RESOLVED가 아니었으면(모호함/못 찾음) 빈 dict로 남아 하이라이트를 그리지 않는다.
+    preview_anchor = models.JSONField(default=dict, blank=True)
     # patcher 지시 필드 (예: {"method": "pymupdf_redact_overlay", "font": "auto"})
     patch = models.JSONField(default=dict, blank=True)
     status = models.CharField(

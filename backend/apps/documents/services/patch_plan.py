@@ -13,6 +13,7 @@ from uuid import uuid4
 from celery import current_app
 from celery.exceptions import CeleryError, TimeoutError as CeleryTimeoutError
 
+from ..anchor_resolution import resolve_pdf_preview_anchor
 from ..models import DocumentChange, DocumentVersion, UploadLog
 
 
@@ -112,12 +113,37 @@ def _get_valid_upload_log(upload_id: int, prompt: str, user) -> tuple[UploadLog,
     return upload_log, stripped_prompt
 
 
+def _resolve_pdf_preview_anchors(operations: list, pdf_bytes: bytes | None) -> dict[int, dict]:
+    """
+    PDF text_match anchor를 가진 operation들의 미리보기 하이라이트(page/rect)를
+    미리 계산한다. index → preview_anchor dict(빈 dict 가능)로 반환한다.
+
+    PDF는 anchor.type이 항상 text_match라, 이 변환 없이는 프론트엔드
+    PdfPageCanvas(pdf_bbox 전용)가 하이라이트를 그릴 좌표를 아예 받지
+    못한다(실사용 재현 — PDF 제안을 선택해도 아무 하이라이트도 안 뜸).
+    """
+    if pdf_bytes is None:
+        return {}
+    result: dict[int, dict] = {}
+    for i, op in enumerate(operations):
+        if op.get("format") != "pdf":
+            continue
+        anchor = op.get("anchor") or {}
+        if anchor.get("type") != "text_match":
+            continue
+        preview = resolve_pdf_preview_anchor(pdf_bytes, anchor)
+        if preview:
+            result[i] = preview
+    return result
+
+
 def _create_changes(
-    version: DocumentVersion, operations: list, plan_id: str
+    version: DocumentVersion, operations: list, plan_id: str, pdf_bytes: bytes | None = None,
 ) -> list[dict]:
     """operations 배열을 DocumentChange 행으로 일괄 저장하고 응답용 dict 목록을 반환한다."""
+    preview_anchors = _resolve_pdf_preview_anchors(operations, pdf_bytes)
     changes = []
-    for op in operations:
+    for i, op in enumerate(operations):
         risk = op.get("risk") or {}
         patch = dict(op.get("patch") or {})
         # XLSX 양식 operation의 expected_context는 patch.expected_context로 병합 저장
@@ -136,6 +162,7 @@ def _create_changes(
             reason=op.get("reason", ""),
             confidence=float(op.get("confidence", 0.0)),
             anchor=op.get("anchor") or {},
+            preview_anchor=preview_anchors.get(i, {}),
             patch=patch,
             risk_level=risk.get("level", ""),
             status=DocumentChange.Status.PENDING,
@@ -151,6 +178,7 @@ def _create_changes(
             "reason": change.reason,
             "confidence": change.confidence,
             "anchor": change.anchor,
+            "preview_anchor": change.preview_anchor,
             "patch": change.patch,
             "status": change.status,
         })
@@ -205,7 +233,18 @@ class PatchPlanService:
             summary=patch_plan.get("summary", ""),
             patch_plan=patch_plan,
         )
-        changes = _create_changes(version, operations, plan_id)
+
+        # PDF operation이 있을 때만 원본 바이트를 읽는다 — 다른 포맷 요청에
+        # 불필요한 파일 I/O를 추가하지 않기 위함.
+        pdf_bytes = None
+        if any(op.get("format") == "pdf" for op in operations):
+            try:
+                with upload_log.file.open("rb") as f:
+                    pdf_bytes = f.read()
+            except Exception:
+                pdf_bytes = None
+
+        changes = _create_changes(version, operations, plan_id, pdf_bytes=pdf_bytes)
 
         return {"version_id": version.pk, "plan_id": plan_id, "changes": changes}
 

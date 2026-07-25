@@ -388,3 +388,46 @@ class AnchorResolver:
             confidence=chosen["confidence"],
             candidates=candidates,
         )
+
+
+def resolve_pdf_preview_anchor(pdf_bytes: bytes, anchor: dict) -> dict | None:
+    """
+    text_match anchor를 PDF 원본 바이트에 대해 미리 해석해, 프론트엔드
+    하이라이트(PdfPageCanvas의 pdf_bbox)가 그대로 쓸 수 있는
+    {"page": <1-based>, "rect": {"x0","y0","x1","y1"}} dict로 반환한다.
+
+    PatchPlan 생성 시점(적용 전)에 한 번 호출해 DocumentChange에 저장해
+    두면, 실제 patch 적용 시 patcher.py가 다시 해석하는 것과 별개로
+    미리보기 하이라이트를 즉시 보여줄 수 있다.
+
+    RESOLVED가 아니면(AMBIGUOUS/NOT_FOUND/UNSUPPORTED) None을 반환한다 —
+    애매한 위치를 추측해서 잘못 표시하는 것보다 하이라이트가 아예 없는
+    편이 안전하다(이 모듈의 다른 실패 처리와 동일한 원칙).
+
+    page는 AnchorResolver 내부 표현(0-based)이 아니라 프론트엔드(PDF.js,
+    1-based)에 맞춰 1-based로 변환해 반환한다.
+    """
+    import fitz
+
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception:
+        # 손상된 파일 등 인프라성 실패 — 미리보기 하이라이트 없이 진행
+        return None
+
+    try:
+        layout = build_pdf_document_layout(doc)
+        result = AnchorResolver().resolve(anchor, layout)
+    finally:
+        doc.close()
+
+    if result.status != AnchorStatus.RESOLVED or result.rect is None:
+        return None
+
+    return {
+        "page": result.page + 1,
+        "rect": {
+            "x0": result.rect.x0, "y0": result.rect.y0,
+            "x1": result.rect.x1, "y1": result.rect.y1,
+        },
+    }

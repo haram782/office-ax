@@ -12,6 +12,7 @@ from apps.documents.anchor_resolution import (
     Token,
     _group_search_rects_into_occurrences,
     build_pdf_document_layout,
+    resolve_pdf_preview_anchor,
 )
 
 
@@ -282,6 +283,61 @@ class AnchorResolverTextMatchTest(unittest.TestCase):
 
         self.assertEqual(result.status, AnchorStatus.NOT_FOUND)
         self.assertTrue(result.reason)
+
+
+class ResolvePdfPreviewAnchorTest(unittest.TestCase):
+    """
+    resolve_pdf_preview_anchor — PatchPlan 생성 시점에 text_match anchor를
+    미리 해석해 프론트엔드 하이라이트(page/rect)로 쓸 수 있는 dict를 만든다.
+
+    PDF는 anchor.type이 항상 text_match라 프론트가 하이라이트를 그릴 좌표가
+    없었다(pdf_bbox 전용인 PdfPageCanvas가 아예 아무것도 못 그림 — 실사용
+    재현). 이 함수가 그 변환을 담당한다.
+    """
+
+    def test_resolved_match_returns_1_based_page_and_rect_dict(self):
+        """
+        [버그 수정] AnchorResolver의 page는 0-based인데 프론트(PDF.js)는
+        1-based 페이지 번호를 쓴다 — 그대로 넘기면 페이지가 하나씩 밀린다.
+        """
+        pdf_bytes = _build_pdf_simple("Hello World")
+
+        result = resolve_pdf_preview_anchor(
+            pdf_bytes, {"type": "text_match", "target_text": "World", "occurrence": 1},
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["page"], 1, "단일 페이지 문서는 1-based로 1이어야 한다")
+        rect = result["rect"]
+        self.assertLess(rect["x0"], rect["x1"])
+        self.assertLess(rect["y0"], rect["y1"])
+
+    def test_ambiguous_match_returns_none(self):
+        """후보가 여러 개라 위치를 특정 못 하면(AMBIGUOUS) 잘못 추측해 표시하지 않고 None."""
+        pdf_bytes = _build_pdf_two_occurrences(left_first=True)
+
+        result = resolve_pdf_preview_anchor(
+            pdf_bytes, {"type": "text_match", "target_text": "개인정보"},
+        )
+
+        self.assertIsNone(result)
+
+    def test_not_found_returns_none(self):
+        pdf_bytes = _build_pdf_simple("Hello World")
+
+        result = resolve_pdf_preview_anchor(
+            pdf_bytes, {"type": "text_match", "target_text": "존재하지 않는 문구"},
+        )
+
+        self.assertIsNone(result)
+
+    def test_corrupt_pdf_bytes_returns_none_without_raising(self):
+        """손상된 파일 등 인프라성 실패는 예외를 전파하지 않고 None으로 격리한다."""
+        result = resolve_pdf_preview_anchor(
+            b"not a real pdf", {"type": "text_match", "target_text": "World"},
+        )
+
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":
