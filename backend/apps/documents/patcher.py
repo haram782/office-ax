@@ -997,10 +997,9 @@ def render_pdf(original_bytes: bytes, changes: list) -> PatchResult:
             [{"operation_id": c.operation_id, "reason": f"PDF 로드 실패: {exc}"} for c in changes],
         )
 
-    from .anchor_resolution import AnchorResolver, AnchorStatus, build_pdf_document_layout
+    from .anchor_resolution import AnchorStatus, build_pdf_document_layout, resolve_pdf_fill_anchor
 
     layout = build_pdf_document_layout(doc)
-    resolver = AnchorResolver()
 
     applied_ids: list[str] = []
     failed_items: list[dict] = []
@@ -1009,7 +1008,10 @@ def render_pdf(original_bytes: bytes, changes: list) -> PatchResult:
     applied_records: list[dict] = []
 
     for change in changes:
-        result = resolver.resolve(change.anchor, layout)
+        # original이 빈 문자열이면 "라벨 뒤에 새 값을 채워라"는 의도다 — 라벨
+        # 자신의 rect를 덮어쓰면 라벨 텍스트가 사라지므로(실사용 재현),
+        # 감지된 표의 인접 셀로 rect를 옮긴다(anchor_resolution.py 참고).
+        result = resolve_pdf_fill_anchor(layout, change.anchor, is_blank_fill=(change.original == ""))
 
         if result.status == AnchorStatus.RESOLVED:
             page = doc[result.page]

@@ -131,7 +131,8 @@ def _resolve_pdf_preview_anchors(operations: list, pdf_bytes: bytes | None) -> d
         anchor = op.get("anchor") or {}
         if anchor.get("type") != "text_match":
             continue
-        preview = resolve_pdf_preview_anchor(pdf_bytes, anchor)
+        is_blank_fill = not (op.get("original") or "")
+        preview = resolve_pdf_preview_anchor(pdf_bytes, anchor, is_blank_fill=is_blank_fill)
         if preview:
             result[i] = preview
     return result

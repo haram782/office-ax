@@ -12,6 +12,8 @@ from apps.documents.anchor_resolution import (
     Token,
     _group_search_rects_into_occurrences,
     build_pdf_document_layout,
+    find_adjacent_table_cell_rect,
+    resolve_pdf_fill_anchor,
     resolve_pdf_preview_anchor,
 )
 
@@ -338,6 +340,154 @@ class ResolvePdfPreviewAnchorTest(unittest.TestCase):
         )
 
         self.assertIsNone(result)
+
+
+def _build_pdf_with_table(label: str, rows: int = 1, cols: int = 2, label_col: int = 0) -> bytes:
+    """
+    실제 선(line)으로 그린 표 안에 label을 넣은 PDF. PyMuPDF의 find_tables()가
+    실제로 감지할 수 있는 표 구조를 만든다(테스트 대상 함수가 이 감지 결과에
+    의존하므로, 감지 가능한 진짜 표가 있어야 의미 있는 테스트가 된다).
+    """
+    import fitz
+    import io
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    x0, y0 = 100, 100
+    col_w, row_h = 120, 40
+    x1 = x0 + col_w * cols
+    y1 = y0 + row_h * rows
+
+    for r in range(rows + 1):
+        y = y0 + r * row_h
+        page.draw_line((x0, y), (x1, y))
+    for c in range(cols + 1):
+        x = x0 + c * col_w
+        page.draw_line((x, y0), (x, y1))
+
+    label_x = x0 + label_col * col_w + 10
+    label_y = y0 + row_h // 2 + 4
+    page.insert_text((label_x, label_y), label, fontsize=11, fontname="korea-s")
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    doc.close()
+    return buf.getvalue()
+
+
+class FindAdjacentTableCellRectTest(unittest.TestCase):
+    """
+    find_adjacent_table_cell_rect — "라벨 뒤에 값을 채워라"(change.original == "")
+    요청에서 redact_overlay가 라벨 자신의 rect를 덮어써 라벨이 사라지는 문제
+    (실사용 재현)를 막기 위해, 실제로 감지된 표 구조에서 라벨 옆(같은 행,
+    다음 열) 칸의 실제 bbox를 찾는다 — "빈 공간이 이 정도일 것"이라는 추측이
+    아니라 문서에 실제로 그려진 표 경계를 근거로 삼는다.
+    """
+
+    def test_returns_next_column_cell_in_same_row(self):
+        import fitz
+        pdf_bytes = _build_pdf_with_table("라벨", rows=1, cols=2, label_col=0)
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        layout = build_pdf_document_layout(doc)
+        label_result = AnchorResolver().resolve(
+            {"type": "text_match", "target_text": "라벨", "occurrence": 1}, layout,
+        )
+        self.assertEqual(label_result.status, AnchorStatus.RESOLVED)
+
+        adjacent = find_adjacent_table_cell_rect(doc, label_result.page, label_result.rect)
+        doc.close()
+
+        self.assertIsNotNone(adjacent)
+        # 표는 x=100~340, 열 너비 120 — 라벨이 0열(100~220)이므로 인접 칸은 1열(220~340)
+        self.assertAlmostEqual(adjacent.x0, 220, delta=1)
+        self.assertAlmostEqual(adjacent.x1, 340, delta=1)
+
+    def test_returns_none_when_label_is_in_last_column(self):
+        import fitz
+        pdf_bytes = _build_pdf_with_table("라벨", rows=1, cols=2, label_col=1)
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        layout = build_pdf_document_layout(doc)
+        label_result = AnchorResolver().resolve(
+            {"type": "text_match", "target_text": "라벨", "occurrence": 1}, layout,
+        )
+
+        adjacent = find_adjacent_table_cell_rect(doc, label_result.page, label_result.rect)
+        doc.close()
+
+        self.assertIsNone(adjacent, "마지막 열이라 다음 칸이 없으므로 None이어야 한다")
+
+    def test_returns_none_when_no_table_detected(self):
+        """표 없이 그냥 텍스트만 있으면(find_tables가 아무것도 못 찾음) None."""
+        import fitz
+        # 표(선) 없이 순수 텍스트만 있는 PDF — 라벨 자체는 라틴 문자라
+        # 기본(helv) 폰트로도 검색 가능하다(한글 폰트 이슈와 무관하게 격리).
+        pdf_bytes = _build_pdf_simple("Label")
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        layout = build_pdf_document_layout(doc)
+        label_result = AnchorResolver().resolve(
+            {"type": "text_match", "target_text": "Label", "occurrence": 1}, layout,
+        )
+        self.assertEqual(label_result.status, AnchorStatus.RESOLVED)
+
+        adjacent = find_adjacent_table_cell_rect(doc, label_result.page, label_result.rect)
+        doc.close()
+
+        self.assertIsNone(adjacent)
+
+
+class ResolvePdfFillAnchorTest(unittest.TestCase):
+    """
+    resolve_pdf_fill_anchor — is_blank_fill(change.original == "")일 때만
+    AnchorResolver의 결과 rect를 표의 인접 칸으로 바꿔치기한다. 기존 "이
+    텍스트 자체를 교체"하는 경우(원본값이 있는 경우)는 라벨 자신의 rect를
+    그대로 써야 하므로 건드리지 않는다.
+    """
+
+    def test_blank_fill_shifts_rect_to_adjacent_cell(self):
+        import fitz
+        pdf_bytes = _build_pdf_with_table("라벨", rows=1, cols=2, label_col=0)
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        layout = build_pdf_document_layout(doc)
+
+        result = resolve_pdf_fill_anchor(
+            layout, {"type": "text_match", "target_text": "라벨", "occurrence": 1},
+            is_blank_fill=True,
+        )
+        doc.close()
+
+        self.assertEqual(result.status, AnchorStatus.RESOLVED)
+        self.assertAlmostEqual(result.rect.x0, 220, delta=1, msg="라벨이 아니라 인접 칸을 가리켜야 한다")
+
+    def test_non_blank_fill_keeps_label_rect(self):
+        """원본값이 있는 교체 요청은 라벨(target_text) 자신의 rect를 그대로 유지한다."""
+        import fitz
+        pdf_bytes = _build_pdf_with_table("라벨", rows=1, cols=2, label_col=0)
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        layout = build_pdf_document_layout(doc)
+
+        result = resolve_pdf_fill_anchor(
+            layout, {"type": "text_match", "target_text": "라벨", "occurrence": 1},
+            is_blank_fill=False,
+        )
+        doc.close()
+
+        self.assertEqual(result.status, AnchorStatus.RESOLVED)
+        # 라벨 텍스트는 셀 왼쪽 경계(100)가 아니라 실제로 그려진 위치(110, 셀 안쪽 여백)에서
+        # 시작한다 — 인접 칸(220)으로 바뀌지 않고 라벨 자신의 위치를 유지하는지가 핵심이다.
+        self.assertAlmostEqual(result.rect.x0, 110, delta=3, msg="교체 요청은 라벨 자신의 rect를 유지해야 한다")
+
+    def test_ambiguous_result_unaffected_by_blank_fill_flag(self):
+        import fitz
+        pdf_bytes = _build_pdf_two_occurrences(left_first=True)
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        layout = build_pdf_document_layout(doc)
+
+        result = resolve_pdf_fill_anchor(
+            layout, {"type": "text_match", "target_text": "개인정보"}, is_blank_fill=True,
+        )
+        doc.close()
+
+        self.assertEqual(result.status, AnchorStatus.AMBIGUOUS)
 
 
 if __name__ == "__main__":

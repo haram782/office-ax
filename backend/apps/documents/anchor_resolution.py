@@ -390,7 +390,82 @@ class AnchorResolver:
         )
 
 
-def resolve_pdf_preview_anchor(pdf_bytes: bytes, anchor: dict) -> dict | None:
+def _find_cell_containing_point(table, x: float, y: float) -> tuple[int, int] | None:
+    """(x, y) 점을 포함하는 표 셀의 (row_idx, col_idx)를 반환한다. 없으면 None."""
+    for row_idx, row in enumerate(table.rows):
+        for col_idx, cell_bbox in enumerate(row.cells):
+            if cell_bbox is None:
+                continue
+            cx0, cy0, cx1, cy1 = cell_bbox
+            if cx0 <= x <= cx1 and cy0 <= y <= cy1:
+                return row_idx, col_idx
+    return None
+
+
+def find_adjacent_table_cell_rect(doc, page_idx: int, label_rect):
+    """
+    label_rect(라벨 텍스트의 bbox)가 실제로 감지된 표(PyMuPDF
+    page.find_tables()) 안에 있으면, 같은 행의 바로 다음 열 셀 bbox를
+    fitz.Rect로 반환한다. 표를 못 찾거나 다음 열이 없으면 None.
+
+    "라벨 뒤에 값을 채워라"(change.original == "") 요청에서 redact_overlay가
+    라벨 자신의 rect를 덮어써 라벨 텍스트가 사라지는 문제(실사용 재현: "성명
+    (한글)" 라벨이 지워지고 그 자리에 값이 들어감)를 막기 위한 것이다.
+    "빈 공간이 대략 이 정도일 것"이라는 추측이 아니라, 문서에 실제로
+    그려진 표 경계로 판단한다 — 표가 없는 문서에서는 이 판단 근거 자체가
+    없으므로 호출자가 라벨의 rect를 그대로 쓰는 기존 동작으로 폴백해야
+    한다(이 함수는 그 경우 None을 반환한다).
+    """
+    import fitz
+
+    page = doc[page_idx]
+    cx = (label_rect.x0 + label_rect.x1) / 2
+    cy = (label_rect.y0 + label_rect.y1) / 2
+
+    for table in page.find_tables().tables:
+        found = _find_cell_containing_point(table, cx, cy)
+        if found is None:
+            continue
+        row_idx, col_idx = found
+        row = table.rows[row_idx]
+        if col_idx + 1 >= len(row.cells):
+            return None
+        next_cell = row.cells[col_idx + 1]
+        if next_cell is None:
+            return None
+        return fitz.Rect(*next_cell)
+    return None
+
+
+def resolve_pdf_fill_anchor(layout: PdfDocumentLayout, anchor: dict, is_blank_fill: bool) -> ResolveResult:
+    """
+    AnchorResolver.resolve()를 감싸, is_blank_fill=True(즉 change.original이
+    빈 문자열이라 "라벨 뒤에 새 값을 채워라"는 의도)이면 라벨 자신의 rect
+    대신 감지된 표의 인접 셀 rect로 바꿔 반환한다.
+
+    is_blank_fill=False(원본값이 있는 "이 텍스트 자체를 교체" 요청)이거나
+    표를 못 찾았거나 RESOLVED가 아니면, 원래 결과를 그대로 반환한다.
+    """
+    result = AnchorResolver().resolve(anchor, layout)
+    if result.status != AnchorStatus.RESOLVED or not is_blank_fill:
+        return result
+
+    adjacent_rect = find_adjacent_table_cell_rect(layout.doc, result.page, result.rect)
+    if adjacent_rect is None:
+        return result
+
+    return ResolveResult(
+        status=result.status,
+        page=result.page,
+        rect=adjacent_rect,
+        matched_text=result.matched_text,
+        confidence=result.confidence,
+        reason=result.reason,
+        candidates=result.candidates,
+    )
+
+
+def resolve_pdf_preview_anchor(pdf_bytes: bytes, anchor: dict, is_blank_fill: bool = False) -> dict | None:
     """
     text_match anchor를 PDF 원본 바이트에 대해 미리 해석해, 프론트엔드
     하이라이트(PdfPageCanvas의 pdf_bbox)가 그대로 쓸 수 있는
@@ -417,7 +492,7 @@ def resolve_pdf_preview_anchor(pdf_bytes: bytes, anchor: dict) -> dict | None:
 
     try:
         layout = build_pdf_document_layout(doc)
-        result = AnchorResolver().resolve(anchor, layout)
+        result = resolve_pdf_fill_anchor(layout, anchor, is_blank_fill)
     finally:
         doc.close()
 
