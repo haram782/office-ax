@@ -269,12 +269,51 @@ console.log('\n[케이스 9] 라벨/빈값/접미사 3분할 셀 → 가운데 �
 
   assert(fullCellText(278).trim() === '박하람', `2번째(occurrence=2) 빈 값 셀에도 "박하람"이 들어감 (실제: ${JSON.stringify(fullCellText(278))})`);
 
-  // [버그 수정] 값 칸(3문단)에서 맨 위(0번째)가 아니라 가운데(1번째) 문단에
-  // 들어가야 라벨/접미사 셀의 세로 중앙과 정렬이 맞는다.
+  // 이 문서의 값 칸(cell 32/278)은 verticalAlign=1(가운데 정렬)이라 3문단 중
+  // 가운데(1번째)에 들어가야 옆 라벨/접미사 셀의 세로 중앙과 맞는다. 문단 개수의
+  // 절반(항상 "가운데")이 아니라 셀에 실제로 선언된 verticalAlign을 읽어서
+  // 계산한 결과여야 한다 — 이 문서 하나(가운데 정렬, 3문단)에서만 맞는 값이
+  // 아니라 아래 [케이스 10]에서 top/bottom 정렬로도 검증한다.
+  const cellProps32 = JSON.parse(afterDoc.getCellProperties(0, 0, 2, 32));
+  assert(cellProps32.verticalAlign === 1, `값 칸은 이 문서 기준 가운데 정렬(verticalAlign=1)임 (테스트 전제 확인, 실제: ${cellProps32.verticalAlign})`);
   const paraCount32 = afterDoc.getCellParagraphCount(0, 0, 2, 32);
   assert(paraCount32 === 3, `값 칸은 원래 빈 문단 3개짜리 구조임 (테스트 전제 확인, 실제: ${paraCount32})`);
-  assert(valueParaIndex(32, '박하람') === 1, `값이 가운데 문단(1번째)에 들어가 세로 정렬이 맞음 (실제 문단: ${valueParaIndex(32, '박하람')})`);
-  assert(valueParaIndex(278, '박하람') === 1, `2번째 값 칸도 가운데 문단(1번째)에 들어감 (실제 문단: ${valueParaIndex(278, '박하람')})`);
+  assert(valueParaIndex(32, '박하람') === 1, `verticalAlign=가운데 → 3문단 중 가운데(1번째)에 들어감 (실제 문단: ${valueParaIndex(32, '박하람')})`);
+  assert(valueParaIndex(278, '박하람') === 1, `2번째 값 칸도 동일하게 가운데 문단(1번째)에 들어감 (실제 문단: ${valueParaIndex(278, '박하람')})`);
+}
+
+// ── 케이스 10: 값 칸의 verticalAlign(top/bottom)에 따라 삽입 문단이 달라져야 함 ──
+// [버그 수정] "빈 문단이 여러 개면 항상 가운데에 넣는다"는 이전 구현은 케이스 9
+// 문서(우연히 가운데 정렬)에서만 맞는 값이었다. 실제 사용자가 올리는 문서는
+// top/bottom 정렬일 수도 있으므로, 셀에 선언된 verticalAlign을 직접 읽어
+// top이면 첫 문단, bottom이면 마지막 문단에 넣어야 한다는 걸 이 문서를
+// setCellProperties로 조작해 재현·검증한다.
+console.log('\n[케이스 10] verticalAlign이 top/bottom이면 삽입 위치도 그에 맞게 바뀌어야 함');
+{
+  for (const [alignValue, alignLabel, expectedPara] of [[0, 'top', 0], [2, 'bottom', 2]]) {
+    const baseBytes = new Uint8Array(readFileSync(new URL('../../sample-docs/거래명세서-양식.hwp', import.meta.url)));
+    const doc = new HwpDocument(baseBytes);
+    const setResult = JSON.parse(doc.setCellProperties(0, 0, 2, 32, JSON.stringify({ verticalAlign: alignValue })));
+    if (!setResult.ok) { console.log(`  setCellProperties 실패(${alignLabel}), 케이스 건너뜀`); continue; }
+    const input = Buffer.from(doc.exportHwp());
+
+    const out = runWorker(input, [
+      { operation_id: `op10_${alignLabel}`, original: '대표자 (인)', replacement: '대표자 박하람 (인)', anchor: { occurrence: 1 } },
+    ]);
+    assert(out.applied.includes(`op10_${alignLabel}`), `verticalAlign=${alignLabel}에서도 적용됨`);
+    if (out.failed.length > 0) console.log('  failed:', JSON.stringify(out.failed));
+
+    const afterDoc = new HwpDocument(new Uint8Array(Buffer.from(out.output_b64, 'base64')));
+    const paraCount = afterDoc.getCellParagraphCount(0, 0, 2, 32);
+    let foundPara = -1;
+    for (let p = 0; p < paraCount; p += 1) {
+      if (afterDoc.getTextInCell(0, 0, 2, 32, p, 0, 100).includes('박하람')) { foundPara = p; break; }
+    }
+    assert(
+      foundPara === expectedPara,
+      `verticalAlign=${alignLabel}(${alignValue}) → ${expectedPara}번째 문단에 삽입돼야 함 (실제: ${foundPara}번째, 총 ${paraCount}문단)`
+    );
+  }
 }
 
 console.log(`\n총 ${passed + failedCount}건 중 PASS=${passed}, FAIL=${failedCount}`);

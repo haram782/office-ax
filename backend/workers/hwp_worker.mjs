@@ -125,6 +125,29 @@ function cellIsEmpty(doc, sec, parentPara, ctrlIdx, cellIdx) {
 /**
  * 표 검색(searchAllText)으로 exact 매치를 찾되, cellContext가 있는 매치만 반환한다.
  */
+/**
+ * 값을 넣을 셀이 빈 문단 여러 줄로 이루어진 경우, 그 칸의 실제
+ * verticalAlign(HWP 표 셀 세로 정렬: 0=위, 1=가운데, 2=아래)을 읽어 삽입할
+ * 문단 인덱스를 정한다. 문서마다 셀 정렬이 다를 수 있으므로 문단 개수만
+ * 보고 추측하지 않고 셀 속성을 직접 조회한다 — 조회 실패나 알 수 없는 값은
+ * 가운데(가장 무난한 폴백)로 처리한다.
+ */
+function resolveCellVerticalInsertPara(doc, sec, parentPara, ctrlIdx, cellIdx) {
+  let paraCount = 1;
+  try {
+    const count = doc.getCellParagraphCount(sec, parentPara, ctrlIdx, cellIdx);
+    if (count > 0) paraCount = count;
+  } catch { /* 조회 실패 시 문단 1개로 간주 */ }
+  if (paraCount <= 1) return 0;
+
+  try {
+    const props = JSON.parse(doc.getCellProperties(sec, parentPara, ctrlIdx, cellIdx));
+    if (props?.verticalAlign === 0) return 0;
+    if (props?.verticalAlign === 2) return paraCount - 1;
+  } catch { /* 조회 실패 시 가운데로 폴백 */ }
+  return Math.floor(paraCount / 2);
+}
+
 function searchCellMatches(doc, text) {
   try {
     const matches = JSON.parse(doc.searchAllText(text, false, true));
@@ -172,14 +195,12 @@ function resolveLabelGapValueCell(doc, original, occurrence) {
       if (!t) continue;
 
       // 값 칸이 빈 문단 여러 줄로 이루어진 경우(예: 이웃 칸들과 행 높이를 맞추려고
-      // 빈 줄을 위아래로 넣어둔 서명란), 첫 문단(0)에 넣으면 텍스트가 칸 맨 위에
-      // 붙어 옆 셀(라벨/접미사)의 세로 중앙과 어긋나 보인다. 가운데 문단에 넣어
-      // 위아래 여백이 대칭이 되게 한다(빈 줄이 없으면 그대로 0번째).
-      let valueCellPara = 0;
-      try {
-        const paraCount = doc.getCellParagraphCount(sec, hc.parentPara, hc.ctrlIdx, valueCellIdx);
-        if (paraCount > 0) valueCellPara = Math.floor(paraCount / 2);
-      } catch { /* 조회 실패 시 0번째 문단으로 폴백 */ }
+      // 빈 줄을 넣어둔 서명란), 어느 문단에 넣어야 옆 라벨/접미사 셀과 세로로
+      // 맞는지는 문단 개수만으로는 알 수 없다 — 문서마다 셀의 실제 세로 정렬
+      // (top/center/bottom)이 다르기 때문이다. 특정 샘플 문서 하나의 구조(예:
+      // "3문단이면 가운데")를 규칙으로 굳히면 다른 정렬을 쓰는 문서에서 틀린다.
+      // 반드시 그 셀에 실제로 선언된 verticalAlign을 읽어서 위치를 정한다.
+      const valueCellPara = resolveCellVerticalInsertPara(doc, sec, hc.parentPara, hc.ctrlIdx, valueCellIdx);
 
       candidates.push({ sec, parentPara: hc.parentPara, ctrlIdx: hc.ctrlIdx, valueCellIdx, valueCellPara, head, tail });
     }
