@@ -42,9 +42,13 @@ class ClaudeCodeCLIClient(BaseLLMClient):
         self._model_label = os.environ.get("CLAUDE_CLI_MODEL", "claude-cli")
 
     def analyze(self, masked_text: str, system_prompt: str, **context) -> AnalysisResult:
-        prompt = system_prompt + "\n\n" + masked_text + _JSON_ONLY_INSTRUCTION
+        # system_prompt("너는 문서 분석 어시스턴트다...")를 user 메시지에 그냥
+        # 이어붙이면, claude CLI(Claude Code) 입장에서는 사용자 메시지에 섞여
+        # 들어온 역할 주입(prompt injection) 시도처럼 보여 JSON 대신 거부
+        # 응답을 반환한다. --system-prompt 전용 채널로 분리해야 한다.
+        user_prompt = masked_text + _JSON_ONLY_INSTRUCTION
 
-        cmd = ["claude", "-p", prompt]
+        cmd = ["claude", "-p", "--system-prompt", system_prompt, user_prompt]
         stdout = self._run_cli(cmd)
         parsed = self._extract_json(stdout)
 
