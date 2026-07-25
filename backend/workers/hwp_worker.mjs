@@ -334,8 +334,12 @@ async function main() {
           ? replacement.slice(original.length).trim()
           : '';
         if (appendedValue && cellIsEmpty(doc, m.sec, parentPara, ctrlIdx, cellIdx + 1)) {
+          // 값 칸이 빈 문단 여러 줄이면 resolveLabelGapValueCell과 동일하게
+          // 그 칸의 실제 verticalAlign을 읽어 삽입 위치를 정한다(하드코딩 금지 —
+          // 5.4/5.5 문서 참고: 샘플 문서 하나에서 관찰된 값으로 단정하지 않는다).
+          const valueCellPara = resolveCellVerticalInsertPara(doc, m.sec, parentPara, ctrlIdx, cellIdx + 1);
           const insResult = JSON.parse(
-            doc.insertTextInCell(m.sec, parentPara, ctrlIdx, cellIdx + 1, 0, 0, appendedValue)
+            doc.insertTextInCell(m.sec, parentPara, ctrlIdx, cellIdx + 1, valueCellPara, 0, appendedValue)
           );
           ok = insResult?.ok === true;
         } else {

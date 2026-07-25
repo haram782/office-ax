@@ -223,6 +223,41 @@ console.log('\n[케이스 8] 라벨 셀 옆에 빈 값 셀이 있으면 값만 �
   assert(valueCellText === '분당동 102-1', `값이 옆의 빈 값 셀(cell 1)에 들어감 (실제: ${JSON.stringify(valueCellText)})`);
 }
 
+// ── 케이스 8b: 라벨만으로 매치되는 경우도 옆 셀의 verticalAlign을 따라야 함 ─────
+// [버그 수정] "대표자 (인)" 처럼 접미사까지 포함하면 케이스 9(resolveLabelGapValueCell)
+// 경로를 타 verticalAlign을 반영하지만, LLM이 접미사 없이 "대표자"만 original로
+// 준 경우(실제 재현: original="대표자", replacement="대표자 박하람")는 라벨이
+// 그 자체로 바로 매치되어 이 케이스 8 경로(옆 셀 삽입)를 탄다. 이 경로도 옆 값
+// 칸이 여러 문단이면 verticalAlign을 봐야 하는데, 케이스 9만 고치고 이 경로는
+// 그대로 두는 바람에 같은 버그가 남아있었다.
+console.log('\n[케이스 8b] 라벨만 매치되는 경로에서도 옆 값 칸의 verticalAlign을 따라야 함');
+{
+  for (const [alignValue, alignLabel, expectedPara] of [[0, 'top', 0], [1, 'center', 1], [2, 'bottom', 2]]) {
+    const baseBytes = new Uint8Array(readFileSync(new URL('../../sample-docs/거래명세서-양식.hwp', import.meta.url)));
+    const doc = new HwpDocument(baseBytes);
+    const setResult = JSON.parse(doc.setCellProperties(0, 0, 2, 32, JSON.stringify({ verticalAlign: alignValue })));
+    if (!setResult.ok) { console.log(`  setCellProperties 실패(${alignLabel}), 케이스 건너뜀`); continue; }
+    const input = Buffer.from(doc.exportHwp());
+
+    const out = runWorker(input, [
+      { operation_id: `op8b_${alignLabel}`, original: '대표자', replacement: '대표자 박하람', anchor: { occurrence: 1 } },
+    ]);
+    assert(out.applied.includes(`op8b_${alignLabel}`), `[케이스 8b] verticalAlign=${alignLabel}에서도 적용됨`);
+    if (out.failed.length > 0) console.log('  failed:', JSON.stringify(out.failed));
+
+    const afterDoc = new HwpDocument(new Uint8Array(Buffer.from(out.output_b64, 'base64')));
+    const paraCount = afterDoc.getCellParagraphCount(0, 0, 2, 32);
+    let foundPara = -1;
+    for (let p = 0; p < paraCount; p += 1) {
+      if (afterDoc.getTextInCell(0, 0, 2, 32, p, 0, 100).includes('박하람')) { foundPara = p; break; }
+    }
+    assert(
+      foundPara === expectedPara,
+      `[케이스 8b] verticalAlign=${alignLabel}(${alignValue}) → ${expectedPara}번째 문단에 삽입돼야 함 (실제: ${foundPara}번째, 총 ${paraCount}문단)`
+    );
+  }
+}
+
 // ── 케이스 9: 라벨 + 빈 값 셀 + 접미사 셀(3분할) → 값만 가운데 빈 셀에 삽입 ──────
 // 실제 거래명세서 양식: [대표자][빈 값 셀(전각공백)][(인)] 3개 셀로 나뉘어 있어
 // "대표자 (인)" 문자열 자체가 문서 어디에도 존재하지 않는다(공백으로 뭉개도 못
