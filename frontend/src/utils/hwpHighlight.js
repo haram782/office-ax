@@ -56,13 +56,20 @@ export function computeHighlightRects(doc, highlight) {
   const targetText = anchor.target_text || anchor.text_match || highlight.original || ''
   const replacement = highlight.replacement || ''
 
+  // 같은 값이 문서에 여러 번(예: 공급자용/공급받는자용 두 사본) 들어갈 수 있으므로
+  // occurrence(1-based)로 몇 번째 매치인지 항상 반영한다 — 특정 위치 없이
+  // 무조건 첫 매치만 고르면, 뒤 occurrence를 선택해도 첫 번째 위치가 하이라이트된다.
+  const occurrence = Number.isInteger(anchor.occurrence) && anchor.occurrence > 0
+    ? anchor.occurrence
+    : 1
+
   let match = null
   let charOffset, length
 
   // 1차: replacement가 문서에 있으면 추가된 부분만 하이라이트.
-  // replacement는 구체적인 긴 문자열이라 첫 매치만 쓴다.
   if (replacement) {
-    const [m] = searchMatches(doc, replacement)
+    const matches = searchMatches(doc, replacement)
+    const m = matches[occurrence - 1]
     if (m) {
       match = m
       const range = addedRangeInReplacement(targetText, replacement)
@@ -82,7 +89,8 @@ export function computeHighlightRects(doc, highlight) {
     const range = addedRangeInReplacement(targetText, replacement)
     if (range) {
       const addedText = replacement.slice(range.start, range.end)
-      const [m] = searchMatches(doc, addedText)
+      const matches = searchMatches(doc, addedText)
+      const m = matches[occurrence - 1]
       if (m) {
         match = m
         charOffset = m.charOffset
@@ -94,9 +102,6 @@ export function computeHighlightRects(doc, highlight) {
   // 3차: 기존 동작 — target_text의 occurrence번째 매치를 하이라이트
   if (!match) {
     if (!targetText) return []
-    const occurrence = Number.isInteger(anchor.occurrence) && anchor.occurrence > 0
-      ? anchor.occurrence
-      : 1
     const matches = searchMatches(doc, targetText)
     if (matches.length < occurrence) return []
     match = matches[occurrence - 1]

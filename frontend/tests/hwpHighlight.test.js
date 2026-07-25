@@ -2,9 +2,12 @@ import { describe, it, expect } from 'vitest'
 import { addedRangeInReplacement, computeHighlightRects } from '../src/utils/hwpHighlight'
 
 // @rhwp/core HwpDocument의 검색/선택영역 API만 흉내내는 fake.
-// bodyText(본문)와 cellText(표 셀 내부)에서 실제로 검색하고, 두 좌표계 API 호출을
-// 각각 기록해 어느 구간이 어느 API로 하이라이트됐는지 검증할 수 있게 한다.
-function makeFakeDoc(bodyText, cellText = '') {
+// bodyText(본문)와 cellTexts(표 셀들, 셀마다 독립된 텍스트)에서 실제로 검색하고,
+// 두 좌표계 API 호출을 각각 기록해 어느 구간이 어느 API로 하이라이트됐는지,
+// 여러 셀에 같은 텍스트가 있을 때 어느 셀이 선택됐는지 검증할 수 있게 한다.
+// cellTexts: string(단일 셀, 하위호환) 또는 string[](셀 인덱스별 텍스트, occurrence 테스트용)
+function makeFakeDoc(bodyText, cellTexts = '') {
+  const cells = Array.isArray(cellTexts) ? cellTexts : (cellTexts ? [cellTexts] : [])
   const calls = []
   const cellCalls = []
   return {
@@ -17,15 +20,17 @@ function makeFakeDoc(bodyText, cellText = '') {
         matches.push({ sec: 0, para: 0, charOffset: idx, length: query.length })
         idx = bodyText.indexOf(query, idx + 1)
       }
-      if (includeCells && cellText) {
-        let cIdx = cellText.indexOf(query)
-        while (cIdx !== -1) {
-          matches.push({
-            sec: 0, para: 2, charOffset: cIdx, length: query.length,
-            cellContext: { parentPara: 2, ctrlIdx: 0, cellIdx: 0, cellPara: 0 },
-          })
-          cIdx = cellText.indexOf(query, cIdx + 1)
-        }
+      if (includeCells) {
+        cells.forEach((cellText, cellIdx) => {
+          let cIdx = cellText.indexOf(query)
+          while (cIdx !== -1) {
+            matches.push({
+              sec: 0, para: 2, charOffset: cIdx, length: query.length,
+              cellContext: { parentPara: 2, ctrlIdx: 0, cellIdx, cellPara: 0 },
+            })
+            cIdx = cellText.indexOf(query, cIdx + 1)
+          }
+        })
       }
       return JSON.stringify(matches)
     },
@@ -150,6 +155,25 @@ describe('computeHighlightRects', () => {
     expect(doc.cellCalls.length).toBe(1)
     const call = doc.cellCalls[0]
     expect('분당동 102-1'.slice(call.startOffset, call.endOffset)).toBe('분당동 102-1')
+  })
+
+  it('[버그 수정] 같은 추가 값이 여러 셀에 있으면 anchor.occurrence번째 셀을 하이라이트한다', () => {
+    // 실제 재현 사례: 거래명세서(공급자용/공급받는자용) 양쪽 "대표자" 값 칸에
+    // 둘 다 "박하람"을 넣는 patch 2건. 예전에는 항상 첫 매치(cellIdx 0)만
+    // 골라서, occurrence=2 항목을 선택해도 첫 번째 위치가 하이라이트됐다.
+    const doc = makeFakeDoc('본문', ['박하람', '박하람'])
+    const highlight = {
+      id: 'h7',
+      original: '대표자 (인)',
+      replacement: '대표자 박하람 (인)',
+      anchor: { type: 'text_match', target_text: '대표자 (인)', occurrence: 2 },
+    }
+
+    const rects = computeHighlightRects(doc, highlight)
+
+    expect(rects.length).toBe(1)
+    expect(doc.cellCalls.length).toBe(1)
+    expect(doc.cellCalls[0].cellIdx).toBe(1)
   })
 
   it('target_text도 replacement도 못 찾으면 빈 배열을 반환한다', () => {
