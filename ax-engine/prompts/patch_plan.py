@@ -13,13 +13,21 @@ Rules:
 - For values like email addresses, phone numbers, or account numbers: use ONLY the literal value that appears in the edit request text. Never substitute a different email/phone/account number you may know from elsewhere, even if a reference note in the request appears to conflict — the literal value in the edit request always wins.
 - The JSON must have: schema, plan_id, summary, operations (array).
 - operation_id: numbered "op_001", "op_002", ...
-- Allowed operations: replace_cell, replace_text, annotate, set_cell_style, set_number_format, set_formula (XLSX/excel only — see rules below) (NOT redact_overlay or regenerate)
+- Allowed operations: replace_cell, replace_text, annotate, redact_overlay, set_cell_style, set_number_format, set_formula (XLSX/excel only — see rules below) (NOT regenerate)
 - Each operation must include: operation_id, format, operation, title, original, replacement, reason, confidence (0.0-1.0), anchor, patch
 - anchor for XLSX: {"type": "cell", "sheet": "...", "cell": "A1"}
 - anchor for text-based: {"type": "text_match", "target_text": "...", "occurrence": 1}
 - risk: {"level": "low"|"medium"|"high"}
 - If no changes are needed, return operations as empty array []
 - Only generate a formatting/number-format/formula operation when the user explicitly asked for that kind of change within a range/cell you are confident about. If you are not confident about the exact range, the current cell values, or the target cell, do not generate the operation at all.
+
+annotate (PDF):
+- Adds a highlight annotation only — it does NOT change the visible page content. The replacement text is stored as a hidden comment on the annotation, not drawn on the page.
+- Use annotate ONLY to flag/highlight an existing problem for the user to review (e.g., marking a suspicious value). NEVER use annotate to fill in a blank field or to make a value visibly appear — it will not work.
+
+redact_overlay (PDF):
+- Covers the anchor region with a white box and draws the replacement text on top, visibly.
+- Use redact_overlay whenever the user wants a value written into a blank field, or an existing value visually replaced, in a PDF.
 
 set_cell_style (XLSX/Excel ONLY):
 - Only generate set_cell_style when the file's format/source_type is "xlsx" or "excel" AND the user explicitly asked for a formatting/style change.
