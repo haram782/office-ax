@@ -356,3 +356,18 @@ T3(및 PDF T2의 vision fallback)에서 page render image나 crop을 LLM에 넘�
 | 구조 변경 op 순서 의존성 처리 (11.2-2의 a/b) | 방향 2개 식별 | T2 구조 op 착수 전 |
 | operation dispatch table 명시화 | 방향만 합의 | T2 operation 추가 시점 |
 | HWP location 표현 상세 | 미착수 | DOCX resolver 검증 후 |
+| `claude_cli` LLM provider의 ambient 컨텍스트 누출 (아래 상세) | 완화만 적용, 근본 해결 보류 | `ANTHROPIC_API_KEY` 확보 시 |
+
+### 12.1 `claude_cli` LLM provider의 ambient 컨텍스트 누출 (2026-07-26 실사용 발견)
+
+로컬 개발용 `ClaudeCodeCLIClient`(`ax-engine/llm/claude_cli_client.py`)는 `claude` CLI를 subprocess로 호출해 Claude Code Pro/Max 구독으로 API 과금 없이 쓰기 위한 선택이다. 그런데 이 CLI는 순수 stateless 완성 API가 아니라 CLAUDE.md·auto-memory·계정 인증(OAuth) 같은 ambient 컨텍스트를 자동으로 인식하는 에이전틱 CLI다 — 실사용에서 사용자가 채팅으로 직접 준 이메일 값 대신 **로그인된 개발자 계정의 실제 이메일**이 PatchPlan에 들어가는 문제가 반복 재현됐다(문서 편집과 무관한 값이 섞여 들어간 사례).
+
+시도한 완화책과 한계:
+
+- `--safe-mode --setting-sources ""`: CLAUDE.md·플러그인·훅·커스텀 설정은 끄지만, 문서에 "Auth... work normally"라고 명시돼 있듯 OAuth 인증 자체(계정 정체성)는 그대로 유지된다 — 적용 후에도 같은 증상 재현됨.
+- `--bare`: 가장 강력한 격리(auto-memory 포함 전부 차단)지만 `ANTHROPIC_API_KEY` 인증만 허용해 OAuth 구독 인증과 근본적으로 호환되지 않는다(직접 확인: "Not logged in" 즉시 실패).
+- 시스템 프롬프트에 "메시지에 실제로 없는 값으로 대체 금지" 규칙 추가: 방어선 한 겹이지만 CLI 자체의 근본 원인을 없애지는 못한다.
+
+**근본 해결책은 이미 코드베이스에 존재한다.** `AnthropicClient`(`ax-engine/llm/anthropic_client.py`)는 Anthropic Messages API를 `system`/`messages`만으로 직접 호출하는 완전한 stateless 구현이 이미 완성돼 있다 — `claude_cli_client.py` 자체 주석에도 "프로덕션에서는 AnthropicClient(API 키)를 사용한다"고 명시돼 있다. `LLM_PROVIDER=anthropic` + 실제 `ANTHROPIC_API_KEY`로 전환하면 이 클래스의 문제가 구조적으로 사라진다.
+
+전환을 보류한 이유: 무료 구독 과금 → 실제 API 종량 과금으로 바뀐다(테스트 규모라 크지는 않을 것으로 예상되나 0원은 아님). 사용자가 API 키를 준비하는 시점에 전환하기로 하고, 2026-07-26 기준으로는 XLSX 작업을 마무리하고 다른 포맷으로 넘어가면서 보류.
