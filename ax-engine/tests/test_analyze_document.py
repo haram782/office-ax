@@ -156,7 +156,7 @@ class TestXlsxSheetPreviewSnippet(unittest.TestCase):
     def test_snippet_data_has_real_headers_and_rows_without_artifact(
         self, mock_mask_pii, mock_get_client,
     ):
-        mock_mask_pii.return_value = ("마스킹된 본문", {})
+        mock_mask_pii.return_value = ("마스킹된 본문", {}, {})
         mock_client = MagicMock()
         mock_client.analyze.return_value = _make_result()
         mock_get_client.return_value = mock_client
