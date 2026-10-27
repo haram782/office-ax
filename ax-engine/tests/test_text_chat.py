@@ -273,6 +273,79 @@ class TestTextChatMasking(unittest.TestCase):
         prompt = self._analyze_prompt(mock_client)
         self.assertIn("합계 행 추가하는 방법 알려줘", prompt)
 
+    @patch("tasks.text_chat.get_llm_client")
+    @patch("tasks.text_chat._send_callback")
+    def test_patch_intent_refined_prompt_restores_real_pii_value(self, mock_callback, mock_get_client):
+        """
+        [버그 수정] 사용자가 채팅으로 직접 준 값(예: 문서에 적어달라고 요청한
+        이메일)이 의도 판별 단계에서 마스킹된 뒤 그 자리표시자가 그대로
+        PatchPlan 생성으로 넘어가면, PatchPlan LLM이 "실제 값이 아니다"라고
+        판단해 해당 작업 자체를 누락시킨다(실제로 재현된 버그).
+
+        closed-beta-launch-plan-v1-ko.md 결정 11: PatchPlan 생성 단계는
+        원문 전송이 본질(expected_context 정합) — 의도 판별 LLM 호출 자체는
+        마스킹된 텍스트로 하되, 그 결과인 refined_prompt는 PatchPlan으로
+        넘어가기 전에 실제 값으로 복원되어야 한다.
+        """
+        mock_client = MagicMock()
+        mock_client.analyze.return_value = _make_usage_result(
+            "", parsed_data={
+                "type": "patch_intent",
+                "refined_prompt": "연락처(이메일) 필드를 [REDACTED_EMAIL]로 입력",
+            },
+        )
+        mock_get_client.return_value = mock_client
+        task_self = MagicMock()
+        task_self.app.send_task = MagicMock()
+
+        self._call_task(
+            task_self,
+            content="이메일 haram@gmail.com 으로 입력해줘",
+            chat_message_id=4, session_history=[], upload_id=5,
+        )
+
+        call_args = mock_callback.call_args
+        result = call_args.kwargs.get("result") or call_args.args[2]
+        self.assertIn("haram@gmail.com", result["refined_prompt"])
+        self.assertNotIn("[REDACTED_EMAIL]", result["refined_prompt"])
+
+    @patch("tasks.text_chat.get_llm_client")
+    @patch("tasks.text_chat._send_callback")
+    def test_patch_intent_refined_prompt_keeps_real_value_when_llm_paraphrases_around_it(
+        self, mock_callback, mock_get_client,
+    ):
+        """
+        [버그 수정] 의도 판별 LLM이 마스킹된 이메일 자리표시자를 그대로
+        되풀이하지 않고 "사용자가 지정한 이메일 주소" 식으로 언급만
+        하고 넘어가는 경우가 실제로 있다(실사용 재현). 이러면
+        unmask_pii가 치환할 자리표시자 자체가 없어 실제 값이 통째로
+        사라진 채 PatchPlan 생성 단계(원문 전송이 본질 — 결정 11)로
+        넘어가고, 다음 LLM이 값을 모른 채 임의의 값으로 채워 넣게
+        된다(실사용 재현: 사용자 채팅 값 대신 사용자 계정 이메일이
+        들어감). refined_prompt 어디에도 실제 값이 없으면 명시적으로
+        덧붙여야 한다.
+        """
+        mock_client = MagicMock()
+        mock_client.analyze.return_value = _make_usage_result(
+            "", parsed_data={
+                "type": "patch_intent",
+                "refined_prompt": "이메일 항목을 사용자가 지정한 이메일 주소로 교체",
+            },
+        )
+        mock_get_client.return_value = mock_client
+        task_self = MagicMock()
+        task_self.app.send_task = MagicMock()
+
+        self._call_task(
+            task_self,
+            content="이메일 haram@gmail.com 으로 입력해줘",
+            chat_message_id=5, session_history=[], upload_id=5,
+        )
+
+        call_args = mock_callback.call_args
+        result = call_args.kwargs.get("result") or call_args.args[2]
+        self.assertIn("haram@gmail.com", result["refined_prompt"])
+
 
 
 

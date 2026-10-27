@@ -13,7 +13,7 @@ from celery import shared_task
 from celery.utils.log import get_task_logger
 
 from llm import get_llm_client
-from masking.pii_masker import mask_pii
+from masking.pii_masker import mask_pii, unmask_pii
 from prompts.chat import CHAT_INTENT_SYSTEM_PROMPT, CHAT_SYSTEM_PROMPT
 
 logger = get_task_logger(__name__)
@@ -88,6 +88,29 @@ def _build_rag_context(rag_files: list[dict] | None) -> str:
         "아래는 사용자가 지정한 참고 자산이다. 어투 자산은 문체·톤을 모방하고, "
         "양식 자산은 구조·형식을 따르라.\n\n" + "\n\n".join(blocks) + "\n\n"
     )
+
+
+def _ensure_pii_values_present(refined_prompt: str, pii_mapping: dict[str, list[str]]) -> str:
+    """
+    의도 판별 LLM이 refined_prompt를 다시 쓰면서 마스킹 자리표시자를
+    그대로 남기지도, 실제 값으로 풀어 쓰지도 않고 "사용자가 지정한
+    값" 식으로 언급만 하고 지나가는 경우가 있다(실사용 재현). 이러면
+    unmask_pii가 치환할 자리표시자 자체가 없어 실제 값이 refined_prompt
+    어디에도 남지 않고, PatchPlan 생성 단계(원문 전송이 본질 — 결정
+    11)가 값을 모른 채 작업을 하게 되어 LLM이 임의의(잘못된) 값으로
+    채워 넣을 위험이 있다(실사용 재현: 사용자가 준 값 대신 사용자
+    계정 이메일이 들어감). 복원 후에도 원본값이 빠져 있으면 명시적으로
+    덧붙여 반드시 실제 값이 남게 한다.
+    """
+    missing = [
+        original
+        for originals in pii_mapping.values()
+        for original in originals
+        if original not in refined_prompt
+    ]
+    if not missing:
+        return refined_prompt
+    return refined_prompt + "\n\n(참고: 사용자가 실제로 제공한 값 — " + ", ".join(missing) + ")"
 
 
 def _build_prompt(content: str, session_history: list[dict]) -> str:
@@ -171,7 +194,7 @@ def _run_text_chat(
     # RAG 참고 자산도 마스킹 이전에 주입해 동일 정책을 적용받는다.
     # 상세: closed-beta-launch-plan-v1-ko.md 결정 11
     raw_prompt = _build_rag_context(rag_files) + _build_prompt(content, session_history)
-    prompt_text, pii_counts = mask_pii(raw_prompt)
+    prompt_text, pii_counts, pii_mapping = mask_pii(raw_prompt)
     if pii_counts:
         logger.info("text_chat PII 마스킹 | chat_message_id=%s | counts=%s", chat_message_id, pii_counts)
 
@@ -195,9 +218,18 @@ def _run_text_chat(
             intent_type = intent.get("type", "qa")
 
             if intent_type == "patch_intent":
+                # PatchPlan 생성 단계는 원문 전송이 본질(결정 11) — 의도 판별
+                # LLM 호출 자체는 마스킹된 텍스트로 하되, 사용자가 채팅으로
+                # 직접 준 값(예: 문서에 적어달라고 요청한 이메일)은 여기서
+                # 실제 값으로 복원해야 PatchPlan이 자리표시자를 "유효하지
+                # 않은 값"으로 오인해 작업을 누락시키지 않는다.
+                refined_prompt = intent.get("refined_prompt", content)
+                if pii_mapping:
+                    refined_prompt = unmask_pii(refined_prompt, pii_mapping)
+                    refined_prompt = _ensure_pii_values_present(refined_prompt, pii_mapping)
                 output = {
                     "type":           "patch_intent",
-                    "refined_prompt": intent.get("refined_prompt", content),
+                    "refined_prompt": refined_prompt,
                     "upload_id":      upload_id,
                     "summary":        "",
                     "errors":         [],

@@ -6,14 +6,14 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from masking.pii_masker import mask_pii
+from masking.pii_masker import mask_pii, unmask_pii
 
 PASS = "\033[92m[PASS]\033[0m"
 FAIL = "\033[91m[FAIL]\033[0m"
 
 
 def check(name: str, text: str, expect_label: str, expect_original_absent: bool = True):
-    masked, counts = mask_pii(text)
+    masked, counts, _mapping = mask_pii(text)
     label_present = expect_label in masked
     original_absent = expect_original_absent and (text == masked or expect_label in masked)
 
@@ -69,7 +69,7 @@ def run():
 
     # 6. 복합 — 여러 PII가 한 문장에
     text_multi = "고객: 홍길동, 주민번호 850101-1234567, 연락처 010-9876-5432, 이메일 hong@test.com"
-    masked, counts = mask_pii(text_multi)
+    masked, counts, _mapping = mask_pii(text_multi)
     ok = (
         "[REDACTED_ID]" in masked
         and "[REDACTED_PHONE]" in masked
@@ -86,13 +86,39 @@ def run():
 
     # 7. PII 없는 일반 텍스트 — 마스킹 없어야 함
     text_clean = "2024년 1월 매출: 1,200,000원, 영업이익률 12.5%"
-    masked_clean, counts_clean = mask_pii(text_clean)
+    masked_clean, counts_clean, _mapping_clean = mask_pii(text_clean)
     ok_clean = masked_clean == text_clean and counts_clean == {}
     results.append(ok_clean)
     print(f"  {'[PASS]' if ok_clean else '[FAIL]'}  일반 텍스트 (마스킹 없어야 함)")
     print(f"         입력  : {text_clean}")
     print(f"         결과  : {masked_clean}")
     print(f"         카운트: {counts_clean}\n")
+
+    # 8. unmask_pii — mapping으로 자리표시자를 원본값으로 복원 (결정 11: PatchPlan은 원문 전송이 본질)
+    text_restore = "담당자 이메일 haram@gmail.com, 연락처 010-1234-5678 입력해줘"
+    masked_restore, _counts_restore, mapping_restore = mask_pii(text_restore)
+    restored = unmask_pii(masked_restore, mapping_restore)
+    ok_restore = (
+        "haram@gmail.com" not in masked_restore
+        and "010-1234-5678" not in masked_restore
+        and restored == text_restore
+    )
+    results.append(ok_restore)
+    print(f"  {'[PASS]' if ok_restore else '[FAIL]'}  unmask_pii 왕복 복원 (마스킹 → 복원 == 원본)")
+    print(f"         입력   : {text_restore}")
+    print(f"         마스킹 : {masked_restore}")
+    print(f"         복원   : {restored}\n")
+
+    # 9. unmask_pii — 같은 라벨이 여러 번 나와도 발견 순서대로 복원
+    text_multi_restore = "이메일 a@test.com 과 b@test.com 둘 다 입력"
+    masked_multi, _counts_multi, mapping_multi = mask_pii(text_multi_restore)
+    restored_multi = unmask_pii(masked_multi, mapping_multi)
+    ok_multi_restore = restored_multi == text_multi_restore
+    results.append(ok_multi_restore)
+    print(f"  {'[PASS]' if ok_multi_restore else '[FAIL]'}  unmask_pii 동일 라벨 다중 복원 순서")
+    print(f"         입력   : {text_multi_restore}")
+    print(f"         마스킹 : {masked_multi}")
+    print(f"         복원   : {restored_multi}\n")
 
     print("=" * 55)
     passed = sum(results)

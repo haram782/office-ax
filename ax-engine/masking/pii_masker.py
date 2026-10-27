@@ -26,17 +26,33 @@ _RULES: list[tuple[re.Pattern, str]] = [
 ]
 
 
-def mask_pii(text: str) -> tuple[str, dict[str, int]]:
+def mask_pii(text: str) -> tuple[str, dict[str, int], dict[str, list[str]]]:
     """
-    Returns (masked_text, {label: count}).
+    Returns (masked_text, {label: count}, {label: [원본값, ...]}).
     count는 Django 백엔드가 마스킹 감사 로그를 기록할 때 활용한다.
+    mapping은 발견 순서대로 원본값을 담아 unmask_pii로 복원할 때 쓴다
+    (예: text_chat 의도 판별 단계에서 마스킹한 값을 PatchPlan 생성 직전에
+    되돌리는 용도 — closed-beta-launch-plan-v1-ko.md 결정 11).
     """
     counts: dict[str, int] = {}
+    mapping: dict[str, list[str]] = {}
 
     for pattern, label in _RULES:
         matches = pattern.findall(text)
         if matches:
             counts[label] = counts.get(label, 0) + len(matches)
+            mapping.setdefault(label, []).extend(matches)
         text = pattern.sub(label, text)
 
-    return text, counts
+    return text, counts, mapping
+
+
+def unmask_pii(text: str, mapping: dict[str, list[str]]) -> str:
+    """
+    mask_pii가 반환한 mapping으로 자리표시자를 원본값으로 되돌린다.
+    같은 라벨이 여러 번 나오면 마스킹 시 발견된 순서대로 하나씩 복원한다.
+    """
+    for label, originals in mapping.items():
+        for original in originals:
+            text = text.replace(label, original, 1)
+    return text
