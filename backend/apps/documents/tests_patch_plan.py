@@ -13,10 +13,13 @@ LLM → patch plan 생성 → DocumentChange 저장 API 테스트.
   6. LLM JSON 파싱 실패 mock → 400
   7. operations 빈 배열 mock → 200 + changes=[]
 """
+import shutil
+import tempfile
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.core.files.base import ContentFile
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from apps.documents.models import (
@@ -291,3 +294,119 @@ class PatchPlanLLMDispatchTest(TestCase):
         file_context = mock_send_task.call_args.kwargs["kwargs"]["file_context"]
         self.assertEqual(file_context["document_text"], "")
         self.assertEqual(file_context["file_path"], "/tmp/sample.hwp")
+
+
+_PDF_TEMP_MEDIA = tempfile.mkdtemp(prefix="office_ax_patch_plan_pdf_test_")
+
+
+def teardown_module(_module):
+    """모듈 종료 시 임시 디렉터리 삭제."""
+    shutil.rmtree(_PDF_TEMP_MEDIA, ignore_errors=True)
+
+
+def _build_pdf_bytes_cjk(text: str) -> bytes:
+    """CJK 문자가 포함된 텍스트를 실제로 검색 가능하게 삽입한 단일 페이지 PDF."""
+    import fitz
+    import io
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), text, fontsize=12, fontname="korea-s", color=(0, 0, 0))
+    buf = io.BytesIO()
+    doc.save(buf)
+    doc.close()
+    return buf.getvalue()
+
+
+@override_settings(MEDIA_ROOT=_PDF_TEMP_MEDIA)
+class PersistPatchPlanPdfPreviewAnchorTest(TestCase):
+    """
+    persist_patch_plan이 PDF text_match anchor의 미리보기 하이라이트
+    (preview_anchor)를 계산해 DocumentChange에 저장하는지 검증한다.
+
+    [버그 수정] 이 변환이 없으면 PDF 제안은 anchor.type이 항상 text_match라
+    프론트엔드(PdfPageCanvas, pdf_bbox 전용)가 하이라이트를 그릴 좌표를
+    받지 못해 아무것도 표시되지 않았다(실사용 재현).
+    """
+
+    def setUp(self):
+        self.user = _make_user("pdf_preview_anchor_user")
+        fs, _ = FileStructure.objects.get_or_create(
+            hash="pdf_preview_anchor_hash",
+            defaults={"source_type": FileStructure.SourceType.PDF, "column_schema": []},
+        )
+        self.upload = UploadLog.objects.create(
+            user=self.user,
+            file_structure=fs,
+            original_filename="sample.pdf",
+            status=UploadLog.Status.DONE,
+            result={"source_type": "pdf", "summary": "분석 완료", "document_text": "본문"},
+        )
+        self.upload.file.save(
+            "sample.pdf", ContentFile(_build_pdf_bytes_cjk("담당자 이메일 확인 요망")), save=True,
+        )
+
+    def tearDown(self):
+        try:
+            if self.upload.file:
+                self.upload.file.delete(save=False)
+        except Exception:
+            pass
+
+    def test_resolved_text_match_gets_preview_anchor_saved(self):
+        from apps.documents.services.patch_plan import PatchPlanService
+
+        plan = {
+            "plan_id": "plan_pdf_preview_001",
+            "summary": "이메일 확인 문구 강조",
+            "operations": [{
+                "operation_id": "op_001",
+                "format": "pdf",
+                "operation": "annotate",
+                "title": "이메일 확인 강조",
+                "original": "",
+                "replacement": "",
+                "reason": "테스트",
+                "confidence": 0.9,
+                "anchor": {"type": "text_match", "target_text": "이메일", "occurrence": 1},
+                "patch": {},
+                "risk": {"level": "low"},
+            }],
+        }
+
+        result = PatchPlanService.persist_patch_plan(self.upload, "이메일 문구 강조해줘", self.user, plan)
+
+        change = DocumentChange.objects.get(pk=result["changes"][0]["id"])
+        self.assertEqual(change.preview_anchor.get("page"), 1)
+        rect = change.preview_anchor.get("rect")
+        self.assertIsNotNone(rect)
+        self.assertIn("x0", rect)
+        # API 응답 dict에도 그대로 포함돼야 프론트가 받을 수 있다
+        self.assertEqual(result["changes"][0]["preview_anchor"], change.preview_anchor)
+
+    def test_ambiguous_text_match_leaves_preview_anchor_empty(self):
+        """모호한 경우(여러 후보) 잘못 추측해 표시하지 않고 빈 dict로 남긴다."""
+        from apps.documents.services.patch_plan import PatchPlanService
+
+        plan = {
+            "plan_id": "plan_pdf_preview_002",
+            "summary": "테스트",
+            "operations": [{
+                "operation_id": "op_001",
+                "format": "pdf",
+                "operation": "annotate",
+                "title": "테스트",
+                "original": "",
+                "replacement": "",
+                "reason": "테스트",
+                "confidence": 0.9,
+                # occurrence 없이 존재하지 않는 문구 — NOT_FOUND로 preview_anchor 없음
+                "anchor": {"type": "text_match", "target_text": "존재하지 않는 문구"},
+                "patch": {},
+                "risk": {"level": "low"},
+            }],
+        }
+
+        result = PatchPlanService.persist_patch_plan(self.upload, "테스트", self.user, plan)
+
+        change = DocumentChange.objects.get(pk=result["changes"][0]["id"])
+        self.assertEqual(change.preview_anchor, {})

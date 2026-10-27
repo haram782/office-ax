@@ -1050,10 +1050,9 @@ def render_pdf(original_bytes: bytes, changes: list) -> PatchResult:
             [{"operation_id": c.operation_id, "reason": f"PDF 로드 실패: {exc}"} for c in changes],
         )
 
-    from .anchor_resolution import AnchorResolver, AnchorStatus, build_pdf_document_layout
+    from .anchor_resolution import AnchorStatus, build_pdf_document_layout, resolve_pdf_fill_anchor
 
     layout = build_pdf_document_layout(doc)
-    resolver = AnchorResolver()
 
     applied_ids: list[str] = []
     failed_items: list[dict] = []
@@ -1062,7 +1061,10 @@ def render_pdf(original_bytes: bytes, changes: list) -> PatchResult:
     applied_records: list[dict] = []
 
     for change in changes:
-        result = resolver.resolve(change.anchor, layout)
+        # original이 빈 문자열이면 "라벨 뒤에 새 값을 채워라"는 의도다 — 라벨
+        # 자신의 rect를 덮어쓰면 라벨 텍스트가 사라지므로(실사용 재현),
+        # 감지된 표의 인접 셀로 rect를 옮긴다(anchor_resolution.py 참고).
+        result = resolve_pdf_fill_anchor(layout, change.anchor, is_blank_fill=(change.original == ""))
 
         if result.status == AnchorStatus.RESOLVED:
             page = doc[result.page]
@@ -1380,6 +1382,12 @@ def _apply_pdf_redact_overlay(page, rect, change) -> None:
     pdf.js는 대체하지 못해 텍스트가 완전히 투명하게 렌더링된다.
     page.insert_font(fontfile=...)로 실제 글리프 데이터를 PDF에 임베드하면
     어떤 뷰어에서도 동일하게 보인다.
+
+    baseline은 rect 세로 중앙 근처에 둔다 — rect가 항상 한 줄 텍스트 높이인
+    것은 아니다. find_adjacent_table_cell_rect(빈칸 채우기용 인접 셀)가 주는
+    rect는 표 셀 전체 높이라 라벨 rect보다 훨씬 클 수 있는데, "rect 바닥에서
+    2pt 위"로 고정하면 값이 셀 바닥에 붙어 라벨과 눈높이가 안 맞아 보인다
+    (실사용 재현: "서식이 깨짐").
     """
     page.add_redact_annot(rect, fill=(1, 1, 1))
     page.apply_redactions()
@@ -1394,8 +1402,9 @@ def _apply_pdf_redact_overlay(page, rect, change) -> None:
     else:
         fontname = "helv"
 
+    baseline_y = rect.y0 + (rect.y1 - rect.y0 + font_size * 0.7) / 2
     page.insert_text(
-        (rect.x0, rect.y1 - 2),
+        (rect.x0, baseline_y),
         replacement,
         fontsize=font_size,
         fontname=fontname,

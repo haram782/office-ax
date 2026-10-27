@@ -76,6 +76,11 @@ class PdfDocumentLayout:
 # 같은 줄로 묶을 Y좌표 허용 오차(pt) — ax-engine parsers/pdf_parser.py와 동일 기준
 _LINE_Y_TOLERANCE = 3.0
 
+# find_adjacent_table_cell_rect가 반환하는 인접 셀 rect를 셀 경계보다 안쪽으로
+# 줄이는 여백(pt) — 표 테두리 선(보통 스트로크 폭 1pt 미만)을 redact_overlay가
+# 덮어써 지우지 않도록 하는 안전 여백이다.
+_CELL_INSET = 1.5
+
 
 def build_pdf_document_layout(doc) -> PdfDocumentLayout:
     """
@@ -388,3 +393,130 @@ class AnchorResolver:
             confidence=chosen["confidence"],
             candidates=candidates,
         )
+
+
+def _find_cell_containing_point(table, x: float, y: float) -> tuple[int, int] | None:
+    """(x, y) 점을 포함하는 표 셀의 (row_idx, col_idx)를 반환한다. 없으면 None."""
+    for row_idx, row in enumerate(table.rows):
+        for col_idx, cell_bbox in enumerate(row.cells):
+            if cell_bbox is None:
+                continue
+            cx0, cy0, cx1, cy1 = cell_bbox
+            if cx0 <= x <= cx1 and cy0 <= y <= cy1:
+                return row_idx, col_idx
+    return None
+
+
+def find_adjacent_table_cell_rect(doc, page_idx: int, label_rect):
+    """
+    label_rect(라벨 텍스트의 bbox)가 실제로 감지된 표(PyMuPDF
+    page.find_tables()) 안에 있으면, 같은 행의 바로 다음 열 셀 bbox를
+    fitz.Rect로 반환한다. 표를 못 찾거나 다음 열이 없으면 None.
+
+    "라벨 뒤에 값을 채워라"(change.original == "") 요청에서 redact_overlay가
+    라벨 자신의 rect를 덮어써 라벨 텍스트가 사라지는 문제(실사용 재현: "성명
+    (한글)" 라벨이 지워지고 그 자리에 값이 들어감)를 막기 위한 것이다.
+    "빈 공간이 대략 이 정도일 것"이라는 추측이 아니라, 문서에 실제로
+    그려진 표 경계로 판단한다 — 표가 없는 문서에서는 이 판단 근거 자체가
+    없으므로 호출자가 라벨의 rect를 그대로 쓰는 기존 동작으로 폴백해야
+    한다(이 함수는 그 경우 None을 반환한다).
+
+    반환하는 rect는 셀의 원래 경계보다 _CELL_INSET만큼 안쪽으로 줄인다 —
+    redact_overlay가 원래 경계를 그대로 흰색으로 덮으면 그 경계에 그려진
+    표 테두리 선까지 지워버려 표 모양이 깨진다(실사용 재현: 값을 채운
+    행만 테두리가 사라져 보임).
+    """
+    import fitz
+
+    page = doc[page_idx]
+    cx = (label_rect.x0 + label_rect.x1) / 2
+    cy = (label_rect.y0 + label_rect.y1) / 2
+
+    for table in page.find_tables().tables:
+        found = _find_cell_containing_point(table, cx, cy)
+        if found is None:
+            continue
+        row_idx, col_idx = found
+        row = table.rows[row_idx]
+        if col_idx + 1 >= len(row.cells):
+            return None
+        next_cell = row.cells[col_idx + 1]
+        if next_cell is None:
+            return None
+        x0, y0, x1, y1 = next_cell
+        return fitz.Rect(
+            x0 + _CELL_INSET, y0 + _CELL_INSET,
+            x1 - _CELL_INSET, y1 - _CELL_INSET,
+        )
+    return None
+
+
+def resolve_pdf_fill_anchor(layout: PdfDocumentLayout, anchor: dict, is_blank_fill: bool) -> ResolveResult:
+    """
+    AnchorResolver.resolve()를 감싸, is_blank_fill=True(즉 change.original이
+    빈 문자열이라 "라벨 뒤에 새 값을 채워라"는 의도)이면 라벨 자신의 rect
+    대신 감지된 표의 인접 셀 rect로 바꿔 반환한다.
+
+    is_blank_fill=False(원본값이 있는 "이 텍스트 자체를 교체" 요청)이거나
+    표를 못 찾았거나 RESOLVED가 아니면, 원래 결과를 그대로 반환한다.
+    """
+    result = AnchorResolver().resolve(anchor, layout)
+    if result.status != AnchorStatus.RESOLVED or not is_blank_fill:
+        return result
+
+    adjacent_rect = find_adjacent_table_cell_rect(layout.doc, result.page, result.rect)
+    if adjacent_rect is None:
+        return result
+
+    return ResolveResult(
+        status=result.status,
+        page=result.page,
+        rect=adjacent_rect,
+        matched_text=result.matched_text,
+        confidence=result.confidence,
+        reason=result.reason,
+        candidates=result.candidates,
+    )
+
+
+def resolve_pdf_preview_anchor(pdf_bytes: bytes, anchor: dict, is_blank_fill: bool = False) -> dict | None:
+    """
+    text_match anchor를 PDF 원본 바이트에 대해 미리 해석해, 프론트엔드
+    하이라이트(PdfPageCanvas의 pdf_bbox)가 그대로 쓸 수 있는
+    {"page": <1-based>, "rect": {"x0","y0","x1","y1"}} dict로 반환한다.
+
+    PatchPlan 생성 시점(적용 전)에 한 번 호출해 DocumentChange에 저장해
+    두면, 실제 patch 적용 시 patcher.py가 다시 해석하는 것과 별개로
+    미리보기 하이라이트를 즉시 보여줄 수 있다.
+
+    RESOLVED가 아니면(AMBIGUOUS/NOT_FOUND/UNSUPPORTED) None을 반환한다 —
+    애매한 위치를 추측해서 잘못 표시하는 것보다 하이라이트가 아예 없는
+    편이 안전하다(이 모듈의 다른 실패 처리와 동일한 원칙).
+
+    page는 AnchorResolver 내부 표현(0-based)이 아니라 프론트엔드(PDF.js,
+    1-based)에 맞춰 1-based로 변환해 반환한다.
+    """
+    import fitz
+
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception:
+        # 손상된 파일 등 인프라성 실패 — 미리보기 하이라이트 없이 진행
+        return None
+
+    try:
+        layout = build_pdf_document_layout(doc)
+        result = resolve_pdf_fill_anchor(layout, anchor, is_blank_fill)
+    finally:
+        doc.close()
+
+    if result.status != AnchorStatus.RESOLVED or result.rect is None:
+        return None
+
+    return {
+        "page": result.page + 1,
+        "rect": {
+            "x0": result.rect.x0, "y0": result.rect.y0,
+            "x1": result.rect.x1, "y1": result.rect.y1,
+        },
+    }

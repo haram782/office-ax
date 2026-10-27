@@ -81,6 +81,20 @@ function _highlightToAnchor(h) {
 // ── 소스별 변환 함수 ────────────────────────────────────────────────────────────
 
 /**
+ * PDF 제안의 anchor는 항상 text_match라 PdfPageCanvas(pdf_bbox 전용)가
+ * 하이라이트를 그릴 좌표를 못 받는다. 백엔드가 PatchPlan 생성 시점에 미리
+ * 계산해 두는 preview_anchor(page/rect)가 있으면 pdf_bbox anchor로 바꾼다.
+ * 없으면(모호함/못 찾음) 원본 anchor를 그대로 둔다 — 잘못 추측해 표시하는
+ * 것보다 하이라이트가 없는 편이 안전하다.
+ */
+function _withPdfPreviewAnchor(c, anchor) {
+  if (c.format !== 'pdf') return anchor
+  const preview = c.preview_anchor
+  if (!preview || typeof preview.page !== 'number' || !preview.rect) return anchor
+  return { type: 'pdf_bbox', page: preview.page, rect: preview.rect }
+}
+
+/**
  * patch_changes 항목 → suggestion.
  * BE의 DocumentChange 모델을 직접 반영하므로 changeDbId = id이다.
  */
@@ -102,7 +116,7 @@ function _fromPatchChange(c, index, inferredFormat) {
     original:    c.original                     ?? '',
     replacement: c.replacement  ?? c.corrected  ?? '',
     reason:      c.reason       ?? c.summary    ?? '',
-    anchor:      c.anchor                       ?? { type: 'unknown' },
+    anchor:      _withPdfPreviewAnchor(c, c.anchor ?? { type: 'unknown' }),
     // set_cell_style 등 operation별 patcher 지시값. ChangeSuggestionCard가 스타일 요약 표시에 사용한다.
     patch:       c.patch                        ?? {},
     // patch_changes는 항상 BE의 DocumentChange PK를 id 필드로 가진다
