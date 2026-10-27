@@ -70,14 +70,18 @@ def _make_upload(user, fs=None):
     )
 
 
-def _make_xlsx_bytes(sheet_name: str = "정산내역", data: dict | None = None) -> bytes:
-    """테스트용 인메모리 XLSX 생성."""
+def _make_xlsx_bytes(
+    sheet_name: str = "정산내역", data: dict | None = None, merges: list[str] | None = None,
+) -> bytes:
+    """테스트용 인메모리 XLSX 생성. merges: ["B10:D10", ...] 형태의 병합 범위."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = sheet_name
     if data:
         for cell_ref, value in data.items():
             ws[cell_ref] = value
+    for merge_range in merges or []:
+        ws.merge_cells(merge_range)
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -269,6 +273,85 @@ class XlsxPatcherTaskTest(TestCase):
         self.version.refresh_from_db()
         self.assertEqual(
             self.version.status, "failed", "모든 항목 불일치 시 version은 failed여야 한다"
+        )
+
+    def test_patcher_treats_blank_original_as_matching_empty_cell(self):
+        """
+        [버그 수정] LLM은 추출된 텍스트만으로는 빈 셀이 ""인지 " "인지
+        구분할 수 없어, 실제로 원본값을 " "로 잘못 추정하는 경우가 있다
+        (같은 문서의 다른 빈 셀은 진짜 빈 문자열이었음 — 실사용 재현).
+        둘 다 "비어 있음"이라는 같은 뜻이므로 이 공백 차이로 패치를
+        실패시키면 안 된다.
+        """
+        # F14: 아무 값도 넣지 않은 진짜 빈 셀(None)
+        change_blank = DocumentChange.objects.create(
+            version=self.version,
+            operation_id="op_replace_f14_blank",
+            format="excel",
+            operation="replace_cell",
+            original=" ",
+            replacement="haram@gmail.com",
+            reason="이메일 입력",
+            confidence=0.85,
+            anchor={"type": "cell", "sheet": "정산내역", "cell": "F14"},
+            status=DocumentChange.Status.APPLIED,
+        )
+
+        patch_document_version(self.version.pk)
+
+        change_blank.refresh_from_db()
+        self.assertEqual(
+            change_blank.status, "applied",
+            "빈 셀(None/\"\")과 원본값 \" \"의 공백 차이는 매칭되어야 한다",
+        )
+
+    def test_patcher_writes_to_merge_anchor_when_target_is_merged_follower_cell(self):
+        """
+        [버그 수정] anchor.cell이 병합 범위의 시작 칸(anchor)이 아닌 나머지
+        칸을 가리키면 openpyxl에서 그 칸은 MergedCell이라 값을 쓰면
+        AttributeError(read-only)가 난다. 이 예외가 try/except 없이
+        render_xlsx 밖으로 전파돼 해당 버전의 모든 변경 건이 함께
+        실패하던 버그를 재현한다(실사용 재현 — 폼 문서의 값 칸이 여러
+        열에 걸쳐 병합돼 있었음). 병합 범위를 논리적으로 하나의 칸으로
+        보고 시작 칸에 써야 한다.
+        """
+        from apps.documents.patcher import collect_applied_changes, render_xlsx
+
+        xlsx_bytes = _make_xlsx_bytes(
+            sheet_name="정산내역",
+            data={"D12": "5,000,000"},
+            merges=["B10:D10"],
+        )
+        self.upload.file.delete(save=False)
+        self.upload.file.save("sample_merged.xlsx", ContentFile(xlsx_bytes), save=True)
+
+        change_merged = DocumentChange.objects.create(
+            version=self.version,
+            operation_id="op_replace_merged_date",
+            format="excel",
+            operation="replace_cell",
+            original="",
+            replacement="2026-07-25",
+            reason="일자 입력",
+            confidence=0.85,
+            anchor={"type": "cell", "sheet": "정산내역", "cell": "C10"},  # 병합 anchor(B10)가 아닌 칸
+            status=DocumentChange.Status.APPLIED,
+        )
+
+        changes = collect_applied_changes(self.version, operations=["replace_cell"])
+        with self.upload.file.open("rb") as f:
+            original_bytes = f.read()
+        result = render_xlsx(original_bytes, changes)
+
+        self.assertIn(
+            "op_replace_merged_date", result.applied_ids,
+            "병합 anchor가 아닌 칸을 가리켜도 예외 없이 적용되어야 한다",
+        )
+        wb = openpyxl.load_workbook(io.BytesIO(result.output_bytes), data_only=False)
+        ws = wb["정산내역"]
+        self.assertEqual(
+            str(ws["B10"].value), "2026-07-25",
+            "실제 값은 병합의 시작 칸(B10)에 들어가야 한다",
         )
 
     def test_patcher_no_source_file_sets_version_failed(self):

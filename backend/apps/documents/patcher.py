@@ -150,6 +150,44 @@ def collect_applied_changes(version, operations: list[str] | None = None) -> lis
 
 # ── 2단계: render — 순수 변환 ─────────────────────────────────────────────────
 
+def _xlsx_original_matches(actual: str, expected: str) -> bool:
+    """
+    replace_cell의 실제 셀 값과 PatchPlan이 예상한 원본 값을 비교한다.
+
+    완전히 같지 않아도 둘 다 공백뿐이면 같은 것으로 본다 — LLM은 추출된
+    텍스트만으로는 빈 셀이 ""인지 " "인지 구분할 수 없고, 같은 문서
+    안에서도 셀마다 실제 저장값이 다르다(실사용 재현: 어떤 빈 셀은
+    None/"", 다른 빈 셀은 " "). 이 차이로 유효한 패치를 실패 처리하면
+    안 된다 — 진짜 값이 다른 경우(예: "5,000,000" vs "WRONG_VALUE")는
+    여전히 불일치로 잡아낸다.
+    """
+    if actual == expected:
+        return True
+    return actual.strip() == "" and expected.strip() == ""
+
+
+def _xlsx_resolve_merge_anchor(ws, cell_ref: str) -> str:
+    """
+    cell_ref가 병합 범위에 속한 셀이면 병합의 시작 칸(anchor) 주소로 바꿔
+    반환한다.
+
+    openpyxl에서 병합 범위 중 시작 칸이 아닌 나머지 칸은 MergedCell이라
+    항상 값이 None으로 읽히고, 쓰려고 하면 AttributeError(read-only)가
+    난다(실사용 재현 — 폼 문서의 값 칸이 여러 열에 걸쳐 병합돼 있었음).
+    병합 범위 전체를 논리적으로 하나의 칸으로 보고 읽기·쓰기 모두 이
+    anchor 주소로 통일하면 이 구분 자체가 필요 없어진다.
+    """
+    from openpyxl.cell.cell import MergedCell
+    from openpyxl.utils import get_column_letter
+
+    if not isinstance(ws[cell_ref], MergedCell):
+        return cell_ref
+    for merged_range in ws.merged_cells.ranges:
+        if cell_ref in merged_range:
+            return f"{get_column_letter(merged_range.min_col)}{merged_range.min_row}"
+    return cell_ref  # 이론상 도달하지 않음 — 안전하게 원본 반환
+
+
 def render_xlsx(original_bytes: bytes, changes: list) -> PatchResult:
     """
     XLSX bytes + applied change 목록 → PatchResult.
@@ -233,9 +271,10 @@ def render_xlsx(original_bytes: bytes, changes: list) -> PatchResult:
             continue
 
         ws = wb[sheet_name]
+        cell_ref = _xlsx_resolve_merge_anchor(ws, cell_ref)
         current_value = str(ws[cell_ref].value) if ws[cell_ref].value is not None else ""
 
-        if current_value != change.original:
+        if not _xlsx_original_matches(current_value, change.original):
             failed_items.append({
                 "operation_id": change.operation_id,
                 "reason": f"원본 값 불일치: expected={change.original!r}, actual={current_value!r}",
@@ -246,7 +285,21 @@ def render_xlsx(original_bytes: bytes, changes: list) -> PatchResult:
             )
             continue
 
-        ws[cell_ref] = change.replacement
+        # 병합 anchor 해석 후에도 예상 못한 openpyxl 예외(보호된 시트 등)가 나면
+        # 이 change만 실패 처리한다 — render_* 규칙(모듈 상단 docstring): 예외를
+        # caller로 전파하지 않는다.
+        try:
+            ws[cell_ref] = change.replacement
+        except Exception as exc:
+            failed_items.append({
+                "operation_id": change.operation_id,
+                "reason": f"적용 중 예외 발생: {exc}",
+            })
+            logger.warning(
+                "render_xlsx: replace_cell 적용 실패 | op=%s | exc=%s",
+                change.operation_id, exc,
+            )
+            continue
         applied_ids.append(change.operation_id)
 
     if not applied_ids:
