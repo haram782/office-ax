@@ -28,7 +28,7 @@ sys.path.insert(0, str(AX_ENGINE_DIR))
 from parsers.hwp_parser import parse_hwp  # noqa: E402
 import tasks.generate_patch_plan as gpp  # noqa: E402
 
-SAMPLE_DOCS_DIR = Path("/Users/haram/orca/office-ax/sample-docs")
+SAMPLE_DOCS_DIR = Path("/Users/haram/orca/office-ax/sample-docs/hwp")
 EVAL_DOCS_DIR = Path(__file__).resolve().parent / "eval_docs"
 
 # (문서 경로, 자연어 지시) — 전부 "빈 양식에 값 채우기" 시나리오.

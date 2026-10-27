@@ -44,7 +44,7 @@ function runVerify(hwpBytes, anchors) {
 }
 
 const sampleBytes = readFileSync(SAMPLE_PATH);
-const LOAN_FORM_PATH = new URL('../../sample-docs/차용증-양식.hwp', import.meta.url);
+const LOAN_FORM_PATH = new URL('../../sample-docs/hwp/차용증-양식.hwp', import.meta.url);
 const loanFormBytes = readFileSync(LOAN_FORM_PATH);
 const POWER_OF_ATTORNEY_PATH = new URL('../../scripts/eval_docs/위임장.hwp', import.meta.url);
 const powerOfAttorneyBytes = readFileSync(POWER_OF_ATTORNEY_PATH);
