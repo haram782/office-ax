@@ -424,6 +424,35 @@ class NotifyChatResponseChangeHighlightsTest(TestCase):
         self.assertGreater(len(highlights), 0, "fallback corrections에서 highlights 파생 필요")
         self.assertEqual(highlights[0]["kind"], "correction")
 
+    def test_xlsx_initial_analysis_without_artifact_still_gets_sheet_preview(self):
+        """
+        [버그 수정] 패치 적용 전 최초 분석(artifact_url 없음)에서도 ax-engine이
+        만든 실제 headers/preview_rows가 snippet_data에 반영돼야 한다.
+
+        기존 코드는 `elif artifact_url:` 분기로 게이트돼 있어, 패치가 한 번도
+        적용되지 않은 최초 업로드(artifact_url="")에서는 이 분기 자체가
+        스킵되고 snippet_data가 빈 dict로 남았다 — 업로드 직후 "시트 미리보기"
+        패널에 헤더 바만 뜨고 내용이 비어 보이던 원인.
+        """
+        result = {
+            "summary": "완료",
+            "source_type": "xlsx",
+            "artifact_url": "",  # 최초 분석은 patch 전이라 artifact가 없다
+            "snippet_data": {
+                "type": "excel_preview",
+                "headers": ["회사명", "주소", "TEL", "FAX"],
+                "preview_rows": [["", "", "", ""]],
+            },
+        }
+
+        notify_chat_response(self.user_msg.pk, result)
+
+        assistant = ChatMessage.objects.get(
+            session=self.session, role=ChatMessage.Role.ASSISTANT
+        )
+        self.assertEqual(assistant.snippet_data.get("headers"), ["회사명", "주소", "TEL", "FAX"])
+        self.assertEqual(assistant.snippet_data.get("preview_rows"), [["", "", "", ""]])
+
     def test_pptx_result_change_highlights_passed_through(self):
         """PPTX 분석 결과의 change_highlights 가 snippet_data 에 포함되어야 한다."""
         pptx_highlights = [

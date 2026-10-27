@@ -317,8 +317,10 @@ class ChatMessageCreateView(APIView):
                     "change_highlights": result.get("change_highlights", []),
                 }
             else:
-                dup_has_snippet  = bool(artifact_url)
                 dup_snippet_data = dict(result.get("snippet_data") or {})
+                # artifact(패치 후)뿐 아니라 ax-engine이 만든 시트 미리보기
+                # (patch 전 최초 분석)만 있어도 스니펫이 있는 것으로 본다.
+                dup_has_snippet  = bool(artifact_url) or bool(dup_snippet_data)
                 # change_highlights: snippet_data에 이미 있으면 유지,
                 # 없으면 top-level result.change_highlights 우선 보존,
                 # 그것도 없으면 corrections에서 파생 — notify_chat_response와 동일 정책

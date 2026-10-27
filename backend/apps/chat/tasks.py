@@ -102,8 +102,12 @@ def notify_chat_response(chat_message_id: int, result: dict) -> None:
             # AX Engine이 제공하는 변경 영역 메타데이터
             "change_highlights": result.get("change_highlights", []),
         }
-    elif artifact_url:
-        # Excel / CSV / 기타: artifact + 교정 스니펫
+    elif artifact_url or result.get("snippet_data"):
+        # Excel / CSV / 기타: artifact(패치 후) 또는 ax-engine이 만든 시트
+        # 미리보기(패치 전 최초 분석)가 있으면 스니펫을 구성한다.
+        # artifact_url만 보고 게이트하면, 패치가 한 번도 적용되지 않은 최초
+        # 업로드(artifact 없음)는 ax-engine이 실제 headers/preview_rows를
+        # 만들어 보내도 이 분기에 도달하지 못해 스니펫이 빈 채로 남는다.
         has_snippet  = True
         snippet_data = dict(
             result.get("snippet_data") or {

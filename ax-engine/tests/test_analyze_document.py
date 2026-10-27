@@ -8,7 +8,9 @@ analyze_document Celery 태스크 단위 테스트.
 """
 import os
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -127,6 +129,47 @@ class TestScannedDocumentGuidance(unittest.TestCase):
         self.assertEqual(output["document_text"], "마스킹된 본문")
         mock_client.analyze.assert_called_once()
 
+
+
+class TestXlsxSheetPreviewSnippet(unittest.TestCase):
+    """
+    [버그 수정] XLSX 최초 분석(patch 적용 전, artifact 없음)에서도
+    "시트 미리보기" 표를 채울 실제 headers/preview_rows가 output에
+    포함돼야 한다. 이전에는 이 데이터 자체를 만들지 않아, 프론트엔드가
+    빈 스니펫만 받아 미리보기 칸이 텅 비어 보였다.
+    """
+
+    def setUp(self):
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["회사명", "주소", "TEL"])
+        ws.append(["", "", ""])
+        fd, path = tempfile.mkstemp(suffix=".xlsx")
+        os.close(fd)
+        wb.save(path)
+        self.addCleanup(lambda: Path(path).unlink(missing_ok=True))
+        self.xlsx_path = path
+
+    @patch("tasks.analyze_document.get_llm_client")
+    @patch("tasks.analyze_document.mask_pii")
+    def test_snippet_data_has_real_headers_and_rows_without_artifact(
+        self, mock_mask_pii, mock_get_client,
+    ):
+        mock_mask_pii.return_value = ("마스킹된 본문", {})
+        mock_client = MagicMock()
+        mock_client.analyze.return_value = _make_result()
+        mock_get_client.return_value = mock_client
+
+        from tasks.analyze_document import analyze_document
+
+        with patch.object(analyze_document.app, "send_task"):
+            output = analyze_document.run(file_path=self.xlsx_path, upload_id=42)
+
+        self.assertEqual(output["artifact_url"], "", "patch 전이라 artifact는 없어야 함(테스트 전제)")
+        self.assertEqual(output["snippet_data"]["type"], "excel_preview")
+        self.assertEqual(output["snippet_data"]["headers"], ["회사명", "주소", "TEL"])
+        self.assertEqual(output["snippet_data"]["preview_rows"], [["", "", ""]])
 
 
 if __name__ == "__main__":

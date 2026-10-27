@@ -7,7 +7,7 @@ from celery.utils.log import get_task_logger
 
 from masking.pii_masker import mask_pii
 from llm import get_llm_client, AnalysisResult
-from parsers.excel_parser import parse_excel
+from parsers.excel_parser import extract_sheet_preview, parse_excel
 from parsers.pdf_parser import parse_pdf
 from parsers.csv_parser import parse_csv
 from parsers.docx_parser import parse_docx
@@ -206,6 +206,19 @@ def analyze_document(
                     "DOCX 페이지 렌더링 실패 (LibreOffice/pdftoppm 미설치?): %s", render_err
                 )
 
+        # ── 4-d. XLSX: 최초 분석 단계에서도 "시트 미리보기" 표를 채울 실제
+        # headers/preview_rows를 추출한다. patch 적용 전(artifact 없음)에도
+        # 뷰어에 원본 시트 내용이 보이게 하기 위함이다.
+        snippet_data: dict = {}
+        if source_type == "xlsx":
+            try:
+                preview = extract_sheet_preview(path)
+                snippet_data = {"type": "excel_preview", **preview}
+            except Exception as preview_err:
+                logger.warning(
+                    "XLSX 시트 미리보기 추출 실패 | upload_id=%s | %s", upload_id, preview_err
+                )
+
         output = {
             "upload_id":    upload_id,
             "summary":      result.summary,
@@ -234,6 +247,8 @@ def analyze_document(
             "docx_page_count": len(docx_page_urls),
             # AI 패치 엔진용 구조화 데이터 (source_type == "pptx" 일 때만 채워짐)
             "pptx_structured": meta.get("structured", []) if source_type == "pptx" else [],
+            # XLSX 전용 — "시트 미리보기" 표. 빈 dict이면 백엔드가 fallback 데모로 대체
+            "snippet_data": snippet_data,
         }
 
         # ── 5. 콜백 라우팅 ────────────────────────────────────────────────
