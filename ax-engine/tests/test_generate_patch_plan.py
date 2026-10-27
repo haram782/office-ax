@@ -7,6 +7,7 @@ LLM_PROVIDER에 따른 실제 클라이언트 선택은 get_llm_client()가 담�
 import json
 import os
 import sys
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -238,6 +239,143 @@ class GeneratePatchPlanTaskTest(unittest.TestCase):
             task_self.app.send_task.call_args.kwargs["kwargs"]["result"]["plan_id"],
             "plan_ax_test_001",
         )
+
+
+class AnchorVerificationRetryTest(unittest.TestCase):
+    """
+    generate_hwp_patch_plan_with_anchor_verification: HWP anchor 검증 + 재시도 테스트.
+
+    hwp_verify_anchor.mjs subprocess는 mock한다 — 실제 WASM/문서 파싱 없이
+    "검증 결과를 보고 재시도하는 제어 흐름" 자체만 검증한다.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.NamedTemporaryFile(suffix=".hwp", delete=False)
+        self._tmp.write(b"dummy hwp bytes")
+        self._tmp.close()
+        self.file_context = {
+            "filename": "sample.hwp",
+            "source_type": "hwp",
+            "document_text": "채권자 성 명 : 주 소 :",
+            "file_path": self._tmp.name,
+            "snippet_data": {},
+        }
+
+    def tearDown(self):
+        os.unlink(self._tmp.name)
+
+    def _plan_with_op(self, operation_id="op_001", original="채권자 성 명 :", replacement="채권자 성 명 : 박하람"):
+        return {
+            "plan_id": "plan_test",
+            "operations": [{
+                "operation_id": operation_id,
+                "operation": "replace_text",
+                "original": original,
+                "replacement": replacement,
+                "anchor": {"type": "text_match", "target_text": original},
+            }],
+        }
+
+    def _mock_verify_result(self, *, found: bool):
+        mock = MagicMock()
+        mock.returncode = 0
+        mock.stdout = json.dumps({
+            "results": [{"operation_id": "op_001", "found": found, "match_count": 1 if found else 0, "used_query": ""}],
+        }).encode()
+        return mock
+
+    @patch("tasks.generate_patch_plan._run_generate_patch_plan")
+    @patch("tasks.generate_patch_plan.subprocess")
+    def test_non_hwp_source_type_skips_verification_entirely(self, mock_subprocess, mock_run_plan):
+        """HWP/HWPX가 아니면 검증 subprocess를 전혀 호출하지 않고 plan을 그대로 반환한다."""
+        from tasks.generate_patch_plan import generate_hwp_patch_plan_with_anchor_verification
+
+        plan = self._plan_with_op()
+        mock_run_plan.return_value = plan
+        self.file_context["source_type"] = "docx"
+
+        result = generate_hwp_patch_plan_with_anchor_verification("요청", self.file_context)
+
+        self.assertIs(result, plan)
+        mock_subprocess.run.assert_not_called()
+
+    @patch("tasks.generate_patch_plan._run_generate_patch_plan")
+    @patch("tasks.generate_patch_plan.subprocess")
+    def test_anchor_found_on_first_try_returns_plan_unmodified(self, mock_subprocess, mock_run_plan):
+        """첫 시도에서 anchor가 바로 찾아지면 재시도 없이 그대로 반환한다."""
+        from tasks.generate_patch_plan import generate_hwp_patch_plan_with_anchor_verification
+
+        plan = self._plan_with_op()
+        mock_run_plan.return_value = plan
+        mock_subprocess.run.return_value = self._mock_verify_result(found=True)
+
+        result = generate_hwp_patch_plan_with_anchor_verification("요청", self.file_context)
+
+        self.assertEqual(len(result["operations"]), 1)
+        mock_subprocess.run.assert_called_once()
+
+    @patch("tasks.generate_patch_plan._call_llm_patch_plan")
+    @patch("tasks.generate_patch_plan._run_generate_patch_plan")
+    @patch("tasks.generate_patch_plan.subprocess")
+    def test_failed_anchor_triggers_retry_with_feedback_and_succeeds(
+        self, mock_subprocess, mock_run_plan, mock_call_llm,
+    ):
+        """첫 anchor가 실패하면 피드백과 함께 재시도하고, 재시도 결과가 성공하면 그걸 반환한다."""
+        from tasks.generate_patch_plan import generate_hwp_patch_plan_with_anchor_verification
+
+        first_plan = self._plan_with_op(original="채권자 성 명 :", replacement="채권자 성 명 : 박하람")
+        retried_plan = self._plan_with_op(original="성 명", replacement="성 명 박하람")
+        mock_run_plan.return_value = first_plan
+        mock_call_llm.return_value = retried_plan
+
+        # 1번째 검증(실패) → 2번째 검증(성공)
+        mock_subprocess.run.side_effect = [
+            self._mock_verify_result(found=False),
+            self._mock_verify_result(found=True),
+        ]
+
+        result = generate_hwp_patch_plan_with_anchor_verification("채권자 성명에 박하람을 채워줘", self.file_context)
+
+        self.assertEqual(result["operations"][0]["original"], "성 명")
+        mock_call_llm.assert_called_once()
+        # 재시도 프롬프트에 실패한 anchor 원문이 피드백으로 포함돼야 한다
+        retry_prompt = mock_call_llm.call_args.args[0]
+        self.assertIn("채권자 성 명 :", retry_prompt)
+
+    @patch("tasks.generate_patch_plan._call_llm_patch_plan")
+    @patch("tasks.generate_patch_plan._run_generate_patch_plan")
+    @patch("tasks.generate_patch_plan.subprocess")
+    def test_all_retries_exhausted_drops_failing_operation(
+        self, mock_subprocess, mock_run_plan, mock_call_llm,
+    ):
+        """최대 재시도까지 전부 실패하면 해당 operation을 결과에서 제외한다."""
+        from tasks.generate_patch_plan import generate_hwp_patch_plan_with_anchor_verification
+
+        plan = self._plan_with_op()
+        mock_run_plan.return_value = plan
+        mock_call_llm.return_value = plan
+        mock_subprocess.run.return_value = self._mock_verify_result(found=False)
+
+        result = generate_hwp_patch_plan_with_anchor_verification("요청", self.file_context)
+
+        self.assertEqual(result["operations"], [], "끝까지 실패한 operation은 제외돼야 한다")
+
+    @patch("tasks.generate_patch_plan._run_generate_patch_plan")
+    @patch("tasks.generate_patch_plan.subprocess")
+    def test_verification_infra_failure_lets_plan_through_unmodified(self, mock_subprocess, mock_run_plan):
+        """검증 worker 자체가 실행 실패하면(인프라 경계) plan을 막지 않고 그대로 통과시킨다."""
+        from tasks.generate_patch_plan import generate_hwp_patch_plan_with_anchor_verification
+
+        plan = self._plan_with_op()
+        mock_run_plan.return_value = plan
+        failure = MagicMock()
+        failure.returncode = 1
+        failure.stderr = b"node: command not found"
+        mock_subprocess.run.return_value = failure
+
+        result = generate_hwp_patch_plan_with_anchor_verification("요청", self.file_context)
+
+        self.assertEqual(len(result["operations"]), 1, "검증 불가 시 원래 plan을 그대로 반환해야 한다")
 
 
 if __name__ == "__main__":
