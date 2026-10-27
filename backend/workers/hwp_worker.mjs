@@ -21,6 +21,8 @@
 // frontend 설치본 재사용 — 별도 npm install 불필요
 import initRhwp, { HwpDocument } from '../../frontend/node_modules/@rhwp/core/rhwp.js';
 import { readFileSync } from 'node:fs';
+import { searchAllTextWhitespaceTolerant } from './hwp_search_utils.mjs';
+import { findNearestEmptyCellForward, sortMatchesSafeFirst } from './hwp_cell_utils.mjs';
 
 // ── stdin 읽기 헬퍼 ────────────────────────────────────────────────────────────
 
@@ -36,91 +38,7 @@ async function readStdin() {
   return Buffer.concat(chunks).toString('utf-8');
 }
 
-// ── 공백-둔감 검색 헬퍼 ────────────────────────────────────────────────────────
-
-/**
- * hwp_text_extract.mjs의 normalizeText()가 연속 공백을 1칸으로 뭉개서 LLM에게
- * 보여주므로, PatchPlan의 original은 실제 문서보다 공백이 적은 형태로 생성될
- * 수 있다(예: 문서엔 "주  소"(2칸)인데 original은 "주 소"(1칸)). 정확 일치
- * 검색이 실패하면, original의 공백런(run)마다 폭을 1~6칸으로 바꿔가며 재시도한다.
- * @param {string} original
- * @returns {string[]} original 자신을 제외한 공백-폭 변형 목록(중복 제거)
- */
-function buildWhitespaceWidthVariants(original, maxWidth = 6) {
-  const parts = original.split(/(\s+)/);
-  const gapIndices = [];
-  parts.forEach((p, i) => { if (/^\s+$/.test(p)) gapIndices.push(i); });
-  if (gapIndices.length === 0) return [];
-
-  // 조합 폭발 방지 — 공백런이 많아도 시도 횟수를 상한선 안으로 제한한다.
-  const maxCombos = 200;
-  let combos = [[]];
-  outer:
-  for (let g = 0; g < gapIndices.length; g += 1) {
-    const next = [];
-    for (const combo of combos) {
-      for (let w = 1; w <= maxWidth; w += 1) {
-        next.push([...combo, w]);
-        if (next.length >= maxCombos) break outer;
-      }
-    }
-    combos = next;
-  }
-
-  const variants = new Set();
-  for (const combo of combos) {
-    const p = [...parts];
-    gapIndices.forEach((idx, k) => { p[idx] = ' '.repeat(combo[k]); });
-    const variant = p.join('');
-    if (variant !== original) variants.add(variant);
-  }
-  return [...variants];
-}
-
-/**
- * doc.searchAllText를 원본 그대로 먼저 시도하고, 매치가 없으면 공백 폭
- * 변형으로 재시도한다. 실제 치환에 쓸 query 문자열도 함께 반환한다.
- * @returns {{ matches: any[], usedQuery: string }}
- */
-function searchAllTextWhitespaceTolerant(doc, original) {
-  const tryQuery = (query) => {
-    try {
-      const parsed = JSON.parse(doc.searchAllText(query, false, true));
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
-  };
-
-  const exact = tryQuery(original);
-  if (exact.length > 0) return { matches: exact, usedQuery: original };
-
-  for (const variant of buildWhitespaceWidthVariants(original)) {
-    const matches = tryQuery(variant);
-    if (matches.length > 0) return { matches, usedQuery: variant };
-  }
-  return { matches: [], usedQuery: original };
-}
-
 // ── 표 셀 헬퍼 ────────────────────────────────────────────────────────────────
-
-/**
- * 표 셀이 비어 있는지(공백뿐인지) 확인한다. 셀이 없거나 조회에 실패하면
- * 비어 있지 않은 것으로 간주해 원래 셀 치환 경로로 폴백한다.
- */
-function cellIsEmpty(doc, sec, parentPara, ctrlIdx, cellIdx) {
-  try {
-    const paraCount = doc.getCellParagraphCount(sec, parentPara, ctrlIdx, cellIdx);
-    if (paraCount < 0) return false;
-    for (let p = 0; p < paraCount; p += 1) {
-      const text = doc.getTextInCell(sec, parentPara, ctrlIdx, cellIdx, p, 0, 1000) || '';
-      if (text.trim()) return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * 값 칸에 문단이 여러 개(빈 줄 패딩) 있어도, 라벨/접미사 셀(대개 문단 1개)과
@@ -314,6 +232,12 @@ async function main() {
       );
     }
 
+    // 같은 라벨 글자가 문서 안에 여러 군데(예: 진짜 입력 칸 라벨 vs 안내문
+    // 속 우연한 동일 텍스트) 있을 수 있어, 안전하게 적용 가능한 매치를 앞으로
+    // 오도록 재정렬한다 — occurrence(기본값 1)가 우연히 안전하지 않은 매치를
+    // 집지 않도록(각 그룹 내부 순서는 유지하는 stable 정렬).
+    matches = sortMatchesSafeFirst(doc, matches, original, replacement);
+
     // occurrence가 매치 수를 초과하면 실패로 마킹
     if (occurrence > matches.length) {
       process.stderr.write(
@@ -333,14 +257,19 @@ async function main() {
       let ok;
       if (m.cellContext) {
         const { parentPara, ctrlIdx, cellIdx, cellPara } = m.cellContext;
-        // 라벨/값 셀 쌍 구조 대응: replacement가 "라벨 + 값" 형태(원본으로 시작)이고
-        // 라벨 셀 바로 옆 셀이 비어 있으면, 좁은 라벨 셀 안에서 여러 줄로 감기지
-        // 않도록 라벨 셀은 그대로 두고 값만 옆의 빈 값 셀에 넣는다.
+        // 라벨/값 셀 쌍 구조 대응: replacement가 "라벨 + 값" 형태(원본으로 시작)이면,
+        // 좁은 라벨 셀 안에서 여러 줄로 감기지 않도록 라벨 셀은 그대로 두고 값은
+        // 읽기 순서상 가장 가까운 빈 칸에 넣는다. 바로 옆 칸만 보면 "열 헤더 행들 +
+        // 그 아래 별도의 빈 입력 행" 구조(정부 공문서 양식에 흔함)를 놓치므로,
+        // 몇 칸 떨어져 있어도 찾도록 findNearestEmptyCellForward로 넓혀 스캔한다.
         const appendedValue = replacement.startsWith(original)
           ? replacement.slice(original.length).trim()
           : '';
-        if (appendedValue && cellIsEmpty(doc, m.sec, parentPara, ctrlIdx, cellIdx + 1)) {
-          ok = insertValueIntoCell(doc, m.sec, parentPara, ctrlIdx, cellIdx + 1, appendedValue);
+        const valueCellIdx = appendedValue
+          ? findNearestEmptyCellForward(doc, m.sec, parentPara, ctrlIdx, cellIdx)
+          : null;
+        if (valueCellIdx !== null) {
+          ok = insertValueIntoCell(doc, m.sec, parentPara, ctrlIdx, valueCellIdx, appendedValue);
         } else {
           const delResult = JSON.parse(
             doc.deleteTextInCell(m.sec, parentPara, ctrlIdx, cellIdx, cellPara, m.charOffset, m.length)

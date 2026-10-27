@@ -349,5 +349,26 @@ console.log('\n[케이스 10] verticalAlign이 무엇이든 빈 문단이 정리
   }
 }
 
+// ── 케이스 11: [회귀] 안내문 속 우연한 동일 라벨이 먼저 매치돼도, 진짜 입력 칸에 적용된다 ──
+// 실제 문서(자동차멸실인정서신청서.hwp)에 "성 명"(공백 1칸)이 안내문 괄호 속에도
+// 있고, 진짜 "소유자 성명" 입력 칸 라벨은 "성    명"(공백 4칸)이다. 과거엔
+// 정확 일치로 먼저 매치되는 안내문 쪽에 값이 끼어들어가 문서가 깨졌다.
+console.log('\n[케이스 11] 안내문 속 우연한 동일 라벨이 있어도, 진짜 입력 칸(소유자 성명)에만 값이 들어간다');
+{
+  const input = readFileSync(new URL('../../scripts/eval_docs/자동차멸실인정서신청서.hwp', import.meta.url));
+
+  const out = runWorker(input, [
+    { operation_id: 'op11', original: '성 명', replacement: '성 명 박하람' },
+  ]);
+  assert(out.applied.includes('op11'), 'op11이 applied에 포함됨');
+  if (out.failed.length > 0) console.log('  failed:', JSON.stringify(out.failed));
+
+  const afterDoc = new HwpDocument(new Uint8Array(Buffer.from(out.output_b64, 'base64')));
+  const labelText = afterDoc.getTextInCell(0, 2, 0, 11, 0, 0, 200) || '';
+  const valueText = afterDoc.getTextInCell(0, 2, 0, 12, 0, 0, 200) || '';
+  assert(labelText.trim() === '성    명'.trim(), `라벨 셀은 그대로여야 함 (실제: ${JSON.stringify(labelText)})`);
+  assert(valueText.trim() === '박하람', `값 칸에 "박하람"만 들어가야 함 (실제: ${JSON.stringify(valueText)})`);
+}
+
 console.log(`\n총 ${passed + failedCount}건 중 PASS=${passed}, FAIL=${failedCount}`);
 process.exit(failedCount > 0 ? 1 : 0);
