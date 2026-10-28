@@ -1,0 +1,245 @@
+[
+  {
+    "doc": "저당권설정등록신청서.hwp",
+    "source_url": "https://www.sejong.go.kr/bbs/R4161/view.do?nttId=B000000076266Oy2nG1d&mno=sub07_02&pageIndex=2",
+    "prompt": "저당권자 성명에 '박하람'을 채워줘",
+    "expected_check": {
+      "type": "same_cell_append",
+      "note": "cellIdx=18 '성명(명칭)'은 colSpan=19인 넓은 단일 셀 — 라벨과 쓸 공간이 한 셀에 있다. 같은 셀 안에 라벨+값이 이어붙어야 한다.",
+      "cellIdx": 18,
+      "ctrlIdx": 2,
+      "parentPara": 0,
+      "must_contain": [
+        "성명",
+        "박하람"
+      ]
+    },
+    "proposed_operations": [
+      {
+        "operation_id": "op_001",
+        "format": "hwp",
+        "operation": "replace_text",
+        "title": "저당권자 성명 입력",
+        "original": "성명",
+        "replacement": "성명 박하람",
+        "reason": "사용자가 저당권자 성명란에 '박하람'을 채워 달라고 요청함. 문서에서 첫 번째 '성명'이 저당권자 항목에 해당함.",
+        "confidence": 0.8,
+        "anchor": {
+          "type": "text_match",
+          "target_text": "성명",
+          "occurrence": 1
+        },
+        "patch": {
+          "target_text": "성명",
+          "replacement": "성명 박하람",
+          "occurrence": 1
+        },
+        "risk": {
+          "level": "low"
+        }
+      }
+    ],
+    "worker_applied": [
+      "op_001"
+    ],
+    "worker_failed": [],
+    "structural_check": {
+      "cell_text": "성명(명칭)"
+    },
+    "strict_success": false,
+    "reason": "같은 셀 텍스트에 기대 문자열 누락: ['박하람'] (실제: '성명(명칭)')"
+  },
+  {
+    "doc": "폐기물처리업신청서.hwp",
+    "source_url": "https://www.sejong.go.kr/bbs/R4182/view.do?nttId=B000000080182Kk7mX5r&mno=sub06_03&pageIndex=1",
+    "prompt": "신청인 성명(대표자)에 '박하람'을 채워줘",
+    "expected_check": {
+      "type": "same_cell_append",
+      "note": "cellIdx=19 '③ 성명(대표자)'는 colSpan=11인 넓은 단일 셀 — 라벨과 쓸 공간이 한 셀에 있다.",
+      "cellIdx": 19,
+      "ctrlIdx": 2,
+      "parentPara": 0,
+      "must_contain": [
+        "성명",
+        "박하람"
+      ]
+    },
+    "proposed_operations": [
+      {
+        "operation_id": "op_001",
+        "format": "hwp",
+        "operation": "replace_text",
+        "title": "신청인 성명(대표자) 입력",
+        "original": "③ 성명(대표자)",
+        "replacement": "③ 성명(대표자) 박하람",
+        "reason": "사용자가 신청인 성명(대표자) 란에 '박하람'을 채워 달라고 요청함",
+        "confidence": 0.8,
+        "anchor": {
+          "type": "text_match",
+          "target_text": "③ 성명(대표자)",
+          "occurrence": 1
+        },
+        "patch": {
+          "target_text": "③ 성명(대표자)",
+          "replacement_text": "③ 성명(대표자) 박하람"
+        },
+        "risk": {
+          "level": "low"
+        }
+      }
+    ],
+    "worker_applied": [
+      "op_001"
+    ],
+    "worker_failed": [],
+    "structural_check": {
+      "cell_text": "③ 성명(대표자)"
+    },
+    "strict_success": false,
+    "reason": "같은 셀 텍스트에 기대 문자열 누락: ['박하람'] (실제: '③ 성명(대표자)')"
+  },
+  {
+    "doc": "건설기계등록원부신청서.hwp",
+    "source_url": "https://www.sejong.go.kr/bbs/R4161/view.do?nttId=B000000076287Sn0hX0j&mno=sub07_02&pageIndex=2",
+    "prompt": "신청인 성명에 '박하람'을 채워줘",
+    "expected_check": {
+      "type": "same_cell_append",
+      "note": "cellIdx=15 '성명'은 colSpan=18인 넓은 단일 셀 — 라벨과 쓸 공간이 한 셀에 있다.",
+      "cellIdx": 15,
+      "ctrlIdx": 2,
+      "parentPara": 0,
+      "must_contain": [
+        "성명",
+        "박하람"
+      ]
+    },
+    "proposed_operations": [
+      {
+        "operation_id": "op_001",
+        "format": "hwp",
+        "operation": "replace_text",
+        "title": "신청인 성명 기입",
+        "original": "성명",
+        "replacement": "성명 박하람",
+        "reason": "사용자 요청에 따라 신청인 성명란(문서 내 첫 번째 '성명' 항목)에 '박하람'을 채웁니다. 두 번째 '성명(명칭)'은 건설기계 소유자 항목이므로 수정하지 않습니다.",
+        "confidence": 0.75,
+        "anchor": {
+          "type": "text_match",
+          "target_text": "성명",
+          "occurrence": 1
+        },
+        "patch": {
+          "find": "성명",
+          "replace": "성명 박하람",
+          "occurrence": 1
+        },
+        "risk": {
+          "level": "medium"
+        }
+      }
+    ],
+    "worker_applied": [
+      "op_001"
+    ],
+    "worker_failed": [],
+    "structural_check": {
+      "cell_text": "성명"
+    },
+    "strict_success": false,
+    "reason": "같은 셀 텍스트에 기대 문자열 누락: ['박하람'] (실제: '성명')"
+  },
+  {
+    "doc": "마약류양도승인신청서.hwp",
+    "source_url": "https://www.sejong.go.kr/bbs/R2000/view.do?nttId=77968&mno=sub02_04&pageIndex=3",
+    "prompt": "담당자 성명에 '박하람'을 채워줘",
+    "expected_check": {
+      "type": "adjacent_cell",
+      "note": "cellIdx=53 '담당자 성명'(라벨) 바로 다음 cellIdx=54가 빈 칸 — 고전적인 라벨+인접 빈칸 구조.",
+      "label_cell_idx": 53,
+      "value_cell_idx": 54,
+      "ctrlIdx": 2,
+      "parentPara": 0,
+      "expected_value": "박하람"
+    },
+    "proposed_operations": [
+      {
+        "operation_id": "op_001",
+        "format": "hwp",
+        "operation": "replace_text",
+        "title": "담당자 성명 입력",
+        "original": "담당자 성명",
+        "replacement": "담당자 성명 박하람",
+        "reason": "사용자가 '담당자 성명' 칸에 '박하람'을 채워 달라고 요청했습니다.",
+        "confidence": 0.8,
+        "anchor": {
+          "type": "text_match",
+          "target_text": "담당자 성명",
+          "occurrence": 1
+        },
+        "patch": {
+          "target_text": "담당자 성명",
+          "replacement_text": "담당자 성명 박하람",
+          "occurrence": 1
+        }
+      }
+    ],
+    "worker_applied": [
+      "op_001"
+    ],
+    "worker_failed": [],
+    "structural_check": {
+      "label_text": "담당자 성명",
+      "value_text": "박하람"
+    },
+    "strict_success": true,
+    "reason": "라벨 보존 + 값 칸에 정확히 들어감 (라벨: '담당자 성명', 값: '박하람')"
+  },
+  {
+    "doc": "종합검사유효기간연장신청서.hwp",
+    "source_url": "https://www.sejong.go.kr/bbs/R4161/view.do?nttId=B000000077585Lo1tQ6m&mno=sub07_02&cmsNoStr=&kind=&pageIndex=1",
+    "prompt": "소유자 성명에 '박하람'을 채워줘",
+    "expected_check": {
+      "type": "adjacent_cell",
+      "note": "cellIdx=6 '성 명(상호)'(라벨) 바로 다음 cellIdx=7이 빈 칸 — 고전적인 라벨+인접 빈칸 구조.",
+      "label_cell_idx": 6,
+      "value_cell_idx": 7,
+      "ctrlIdx": 2,
+      "parentPara": 0,
+      "expected_value": "박하람"
+    },
+    "proposed_operations": [
+      {
+        "operation_id": "op_001",
+        "format": "hwp",
+        "operation": "replace_text",
+        "title": "소유자 성명 기입",
+        "original": "성 명(상호)",
+        "replacement": "성 명(상호) 박하람",
+        "reason": "사용자 요청에 따라 소유자 성명(상호) 칸에 '박하람'을 기입합니다.",
+        "confidence": 0.8,
+        "anchor": {
+          "type": "text_match",
+          "target_text": "성 명(상호)",
+          "occurrence": 1
+        },
+        "patch": {
+          "target_text": "성 명(상호)",
+          "replacement_text": "성 명(상호) 박하람"
+        },
+        "risk": {
+          "level": "low"
+        }
+      }
+    ],
+    "worker_applied": [
+      "op_001"
+    ],
+    "worker_failed": [],
+    "structural_check": {
+      "label_text": "성 명(상호)",
+      "value_text": "박하람"
+    },
+    "strict_success": true,
+    "reason": "라벨 보존 + 값 칸에 정확히 들어감 (라벨: '성 명(상호)', 값: '박하람')"
+  }
+]
