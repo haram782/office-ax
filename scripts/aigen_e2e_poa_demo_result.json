@@ -1,0 +1,44 @@
+{
+  "prompt": "위임하는 사람 이름에 '박하람'을 채워줘",
+  "operations": [
+    {
+      "operation_id": "op_001",
+      "format": "hwp",
+      "operation": "replace_text",
+      "title": "위임하는 사람 이름 입력",
+      "original": "이름",
+      "replacement": "이름 박하람",
+      "reason": "사용자가 '위임하는 사람'의 이름란에 '박하람'을 채워 달라고 요청했습니다. 문서에서 처음 나오는 '이름'이 '위임하는 사람' 항목의 이름란입니다.",
+      "confidence": 0.7,
+      "anchor": {
+        "type": "text_match",
+        "target_text": "이름",
+        "occurrence": 1
+      },
+      "patch": {
+        "target_text": "이름",
+        "occurrence": 1,
+        "replacement": "이름 박하람",
+        "note": "빈 이름란에 입력합니다. 표 구조에서 이름란이 별도 셀이라면 '이름' 라벨 셀 옆의 빈 셀에 '박하람'을 입력해야 합니다."
+      },
+      "risk": {
+        "level": "medium"
+      }
+    }
+  ],
+  "changes_sent_to_worker": [
+    {
+      "operation_id": "op_001",
+      "original": "이름",
+      "replacement": "이름 박하람"
+    }
+  ],
+  "worker_stderr": "[hwp_worker] 치환 성공 op=op_001: \"이름\"(1번째, 표 셀 내부) → \"이름 박하람\"\n",
+  "worker_result": {
+    "applied": [
+      "op_001"
+    ],
+    "failed": []
+  },
+  "applied_file": "/Users/haram/orca/office-ax-worktrees/aigen-portfolio-eval/scripts/위임장_적용후.hwp"
+}
